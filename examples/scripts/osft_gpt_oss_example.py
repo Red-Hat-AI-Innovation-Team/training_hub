@@ -39,7 +39,7 @@ def find_most_recent_checkpoint(output_dir):
         ValueError: If no checkpoints are found
     """
     # Get all checkpoint directories under hf_format
-    checkpoint_pattern = os.path.join(output_dir, "hf_format", "samples_*.0")
+    checkpoint_pattern = os.path.join(output_dir, "hf_format", "samples_*")
     checkpoint_dirs = glob.glob(checkpoint_pattern)
 
     if not checkpoint_dirs:
