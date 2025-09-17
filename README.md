@@ -6,7 +6,7 @@ An algorithm-focused interface for common llm training, continual learning, and 
 | Algorithm | InstructLab-Training | RHAI Innovation Mini-Trainer | PEFT | VERL | Status |
 |-----------|---------------------|---------------|------|------|--------|
 | **Supervised Fine-tuning (SFT)** | ✅ | - | - | - | Implemented |
-| Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | Planned |
+| Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | Implemented |
 | Direct Preference Optimization (DPO) | - | - | - | 🔄 | Planned |
 | Low-Rank Adaptation (LoRA) | 🔄 | - | 🔄 | - | Planned |
 | Group Relative Policy Optimization (GRPO) | - | - | - | 🔄 | Planned |
