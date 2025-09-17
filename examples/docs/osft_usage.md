@@ -90,6 +90,7 @@ result = osft(
     num_epochs=3,
     warmup_steps=100,
     use_liger=True,
+    osft_memory_efficient_init=True,  # Recommended for OOMs at model load time
     seed=42
 )
 ```
@@ -168,6 +169,7 @@ OSFTAlgorithm = AlgorithmRegistry.get_algorithm('osft')
 - `num_epochs` (int): Number of epochs to train for
 - `seed` (int): Random seed for training
 - `use_liger` (bool): Whether to use Liger kernels for training
+- `osft_memory_efficient_init` (bool): Enable memory-efficient initialization to reduce memory usage during model loading (recommended for OOMs)
 
 **Learning Rate Scheduler:**
 - `lr_scheduler` (str): Name of the PyTorch learning rate scheduler to use
@@ -266,7 +268,7 @@ result = osft(
 
 1. **unfreeze_rank_ratio**: Start with values between 0.1-0.5. Values >0.5 are rarely needed for general continual-learning regimes.
 
-2. **Memory Management**: OSFT doesn't reduce memory requirements compared to SFT, so adjust `max_tokens_per_gpu` accordingly.
+2. **Memory Management**: OSFT doesn't reduce memory requirements compared to SFT, so adjust `max_tokens_per_gpu` accordingly. For memory-constrained environments or OOMs during model loading, set `osft_memory_efficient_init=True`.
 
 3. **Data Processing**: The algorithm handles data processing automatically. Use `use_processed_dataset=True` only if you have pre-tokenized data.
 

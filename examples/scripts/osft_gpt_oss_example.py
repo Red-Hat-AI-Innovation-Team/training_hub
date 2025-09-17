@@ -122,6 +122,7 @@ def main():
 
             # Optimization
             'use_liger': True,                   # Enable Liger kernels for efficiency
+            'osft_memory_efficient_init': True,  # Recommended for OOMs at model load time
             'seed': 42,
             'lr_scheduler': 'cosine',           # Cosine scheduler works well with OSFT
 
