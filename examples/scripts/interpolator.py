@@ -26,6 +26,9 @@ def interpolate_models(
     if output_model_path is None:
         output_model_path = f"{trained_model_path}_interp"
 
+    if not (0.0 <= trained_model_weight <= 1.0):
+        raise ValueError(f"trained_model_weight must be in [0,1], got {trained_model_weight}")
+
     model_kwargs = {}
     if torch_dtype is not None:
         if isinstance(torch_dtype, str):
