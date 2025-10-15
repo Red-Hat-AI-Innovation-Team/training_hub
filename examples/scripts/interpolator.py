@@ -1,7 +1,7 @@
 """
-A simple model interpolation utility.
+Simple Model Interpolator
 
-This takes two checkpoints of the same model, and outputs a merged checkpoint with the linear interpolation.
+The script takes two checkpoints of the same model and outputs a merged checkpoint with linear interpolation.
 
 Example usage:
     python interpolator.py \\

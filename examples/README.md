@@ -27,6 +27,7 @@ The SFT algorithm supports training language models on supervised datasets with 
 - [SFT with Llama 3.1 8B](scripts/sft_llama_example.py) - Single-node multi-GPU training example with Llama 3.1 8B Instruct
 - [SFT with Phi 4 Mini](scripts/sft_phi_example.py) - Single-node multi-GPU training example with Phi 4 Mini Instruct
 - [SFT with GPT-OSS 20B](scripts/sft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
+- [SFT with Granite 3.3 8B](scripts/sft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 
 **Quick Example:**
 ```python
@@ -60,6 +61,7 @@ The OSFT algorithm supports continual training of pre-trained or instruction-tun
 - [OSFT with Llama 3.1 8B](scripts/osft_llama_example.py) - Single-node multi-GPU training example with Llama 3.1 8B Instruct
 - [OSFT with Phi 4 Mini](scripts/osft_phi_example.py) - Single-node multi-GPU training example with Phi 4 Mini Instruct
 - [OSFT with GPT-OSS 20B](scripts/osft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
+- [OSFT with Granite 3.3 8B](scripts/osft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 - [OSFT Continual Learning Example](scripts/osft_continual_learning_example.py) - Example script demonstrating continual learning without catastrophic forgetting
 
 **Quick Example:**
@@ -99,6 +101,25 @@ estimate(training_method='osft',
     verbose=2,
     unfreeze_rank_ratio: float = 0.25
 )
+```
+
+### Model Interpolation (Experimental / In-Development)
+
+training_hub has a utility for merging two checkpoints of the same model into one with linear interpolation.
+
+**Script:**
+- [interpolator.py](scripts/interpolator.py) - Python script for model interpolation
+
+**Command-Line Example:**
+```bash
+python interpolator.py --model-path ibm-granite/granite-3.3-8b-instruct --trained-model-path /path/to/checkpoint
+```
+
+**Python Example:**
+```python
+from interpolator import interpolate_models
+
+interpolate_models("ibm-granite/granite-3.3-8b-instruct", "/path/to/checkpoint")
 ```
 
 ## Getting Started
