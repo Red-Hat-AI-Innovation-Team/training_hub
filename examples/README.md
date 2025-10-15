@@ -78,6 +78,29 @@ result = osft(
 )
 ```
 
+### Memory Estimation (Experimental / In-Development)
+
+training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during the fine-tuning of a given model using SFT or OSFT. The calculations are built off of formulas presented in the blog post [How To Calculate GPU VRAM Requirements for an Large-Language Model](https://apxml.com/posts/how-to-calculate-vram-requirements-for-an-llm).
+NOTE: This feature is still a work in-progress. In particular, the given estimates for OSFT may vary from your actual results; the estimate mainly serves to give theoretical bounds.  
+The estimates for SFT should be reasonably close to actual results when using training_hub, but keep in mind that your actual results may still vary. 
+
+**Tutorials:**
+- [Memory Estimation Example](notebooks/memory_estimator_example.ipynb) - Interactive notebook showcasing how to utilize the memory estimator methods.
+
+**Quick Example:**
+```python
+from training_hub import estimate
+
+estimate(training_method='osft',
+    num_gpus=2,
+    model_path="/path/to/model",
+    max_tokens_per_gpu=8192,
+    use_liger=True,
+    verbose=2,
+    unfreeze_rank_ratio: float = 0.25
+)
+```
+
 ## Getting Started
 
 1. **For detailed parameter documentation**: Check the relevant guide in `docs/`
