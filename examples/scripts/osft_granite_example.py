@@ -120,7 +120,7 @@ def main():
     parser.add_argument('--learning-rate', type=float, default=default_learning_rate,
                        help=f'Learning rate for training (default: {default_learning_rate})')
     parser.add_argument('--unmask-messages', action='store_true', default=False,
-                       help='Unmask messages during training (default: False)')
+                       help='Unmask all non-system messages during training, otherwise only unmasks assistant messages (default: False)')
     parser.add_argument('--batch-size', type=int, default=default_batch_size,
                        help=f'Effective batch size for training (default: {default_batch_size})')
     parser.add_argument('--max-seq-len', type=int, default=default_max_seq_len,

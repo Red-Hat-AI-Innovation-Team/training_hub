@@ -5,8 +5,8 @@ The script takes two checkpoints of the same model and outputs a merged checkpoi
 
 Example usage:
     python interpolator.py \\
-        --model-path ibm-granite/granite-3.3-8b-instruct \\
-        --trained-model-path /path/to/checkpoint
+        --model-path /path/to/base/model \\
+        --trained-model-path /path/to/trained/checkpoint
 """
 # Standard
 import argparse
@@ -47,15 +47,15 @@ def interpolate_models(
         else:
             model_kwargs["torch_dtype"] = torch_dtype
 
-    # load original model
+    # load base model
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         **model_kwargs,
     )
     state_dict = model.state_dict()
-    original_model_weight = 1 - trained_model_weight
+    base_model_weight = 1 - trained_model_weight
     for key in state_dict.keys():
-        state_dict[key] = state_dict[key] * original_model_weight
+        state_dict[key] = state_dict[key] * base_model_weight
 
     # load trained model
     trained_model = AutoModelForCausalLM.from_pretrained(
@@ -66,12 +66,14 @@ def interpolate_models(
     for key in state_dict.keys():
         state_dict[key] += trained_state_dict[key] * trained_model_weight
 
-    # save interpolated model
+    # save merged model
     model.save_pretrained(output_model_path, state_dict=state_dict)
 
     # copy tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     tokenizer.save_pretrained(output_model_path)
+
+    print(f"Merged model saved at {output_model_path}")
 
     return output_model_path
 
@@ -84,7 +86,7 @@ def parse_arguments():
         "--model-path",
         type=str,
         required=True,
-        help="Path to the original model",
+        help="Path to the base model",
     )
     parser.add_argument(
         "--trained-model-path",

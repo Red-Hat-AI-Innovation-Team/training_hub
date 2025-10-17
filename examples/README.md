@@ -112,14 +112,14 @@ training_hub has a utility for merging two checkpoints of the same model into on
 
 **Command-Line Example:**
 ```bash
-python interpolator.py --model-path ibm-granite/granite-3.3-8b-instruct --trained-model-path /path/to/checkpoint
+python interpolator.py --model-path /path/to/base/model --trained-model-path /path/to/trained/checkpoint
 ```
 
 **Python Example:**
 ```python
 from interpolator import interpolate_models
 
-interpolate_models("ibm-granite/granite-3.3-8b-instruct", "/path/to/checkpoint")
+interpolate_models("/path/to/base/model", "/path/to/trained/checkpoint")
 ```
 
 ## Getting Started
