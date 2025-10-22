@@ -12,7 +12,7 @@ license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 dependencies = [
     "setuptools>=80.0",
-    "packaging>=24.2",
+    "packaging>=23.2",
     "wheel>=0.43",
     "instructlab-training>=0.12.1",
     "rhai-innovation-mini-trainer>=0.3.0",
@@ -23,6 +23,8 @@ dependencies = [
     "numpy>=1.26.4",
     "rich>=14.1.0",
     "peft>=0.15",
+    "unsloth",
+    "trl",
     "pydantic>=2.7.0",
     "aiofiles>=23.2.1",
     "accelerate>=0.34.2",

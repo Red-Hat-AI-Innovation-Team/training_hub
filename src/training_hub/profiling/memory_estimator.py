@@ -1,4 +1,7 @@
-from typing import override
+try:
+    from typing import override
+except ImportError:
+    from typing_extensions import override
 from transformers import AutoModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
 import numpy as np
