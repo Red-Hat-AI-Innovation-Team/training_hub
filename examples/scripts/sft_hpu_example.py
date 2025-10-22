@@ -46,6 +46,10 @@ def main():
                        help='Max tokens per GPU')
     parser.add_argument('--nproc-per-node', type=int, default=8,
                        help='Number of GPUs')
+    parser.add_argument('--torch-compile', action='store_true', default=False,
+                       help='Enable torch.compile, hpu only')    
+    parser.add_argument('--num-chunks', type=int, default=1,
+                       help='Number of chunks to split dataset into for sequential training')
     
     args = parser.parse_args()
 
@@ -95,6 +99,8 @@ def main():
             # HPU specific arguments
             disable_flash_attn = True,
             device = 'hpu',
+            torch_compile = args.torch_compile,
+            num_chunks = args.num_chunks,
         )
         
         end_time = time.time()
