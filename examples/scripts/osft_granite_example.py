@@ -158,7 +158,7 @@ def main():
     start_time = time.time()
     
     try:
-        result = osft(
+        osft(
             # Model and data
             model_path=args.model_path,
             data_path=args.data_path,

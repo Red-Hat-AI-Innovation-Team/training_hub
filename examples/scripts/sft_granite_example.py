@@ -144,7 +144,7 @@ def main():
     start_time = time.time()
     
     try:
-        result = sft(
+        sft(
             # Model and data
             model_path=args.model_path,
             data_path=args.data_path,
