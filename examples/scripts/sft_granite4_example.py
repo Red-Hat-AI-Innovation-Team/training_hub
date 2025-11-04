@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-SFT Training Example: Granite 3.3 8B Instruct
+SFT Training Example: Granite 4.0
 
-This script demonstrates SFT training with Granite 3.3 8B Instruct model
+This script demonstrates SFT training with Granite 4.0 models
 using a single-node, multi-GPU setup with training_hub.
 
 After the training, the script also creates a merged model with linear interpolation.
 
 Example usage:
-    python sft_granite_example.py \\
+    python sft_granite4_example.py \\
         --data-path /path/to/data.jsonl \\
         --ckpt-output-dir /path/to/checkpoints
 """
@@ -21,6 +21,7 @@ from datetime import datetime
 import argparse
 import torch
 
+from instructlab.training import FSDPOptions
 from training_hub import sft
 
 
@@ -29,10 +30,7 @@ from training_hub import sft
 # =============================================================================
 
 # Derived from generic_7b_example in examples/notebooks/sft_comprehensive_tutorial.ipynb
-granite_example = {
-    "model_name": "Granite 3.3 8B Instruct",
-    "model_path": "ibm-granite/granite-3.3-8b-instruct",  # HuggingFace model name or local path
-    "example_min_nproc_per_node": 2,
+granite4_example_template = {
     "example_max_tokens_per_gpu": 25000,
     "example_max_seq_len": 20000,
     "example_batch_size": 256,
@@ -40,7 +38,39 @@ granite_example = {
     "notes": "Good baseline for most 7B instruction-tuned models",
 }
 
-selected_example = granite_example  # Change this to your preferred example
+granite4hs_example = {
+    **granite4_example_template,
+    "model_name": "Granite-4.0-H-Small",
+    "model_path": "ibm-granite/granite-4.0-h-small",  # HuggingFace model name or local path
+    "example_min_nproc_per_node": 8,
+    "example_batch_size": 128,
+    "kwargs": {
+        "fsdp_options": FSDPOptions(cpu_offload_params=True),
+    },
+}
+granite4ht_example = {
+    **granite4_example_template,
+    "model_name": "Granite-4.0-H-Tiny",
+    "model_path": "ibm-granite/granite-4.0-h-tiny",  # HuggingFace model name or local path
+    "example_min_nproc_per_node": 2,
+}
+granite4hm_example = {
+    **granite4_example_template,
+    "model_name": "Granite-4.0-H-Micro",
+    "model_path": "ibm-granite/granite-4.0-h-micro",  # HuggingFace model name or local path
+    "example_min_nproc_per_node": 2,
+}
+granite4m_example = {
+    **granite4_example_template,
+    "model_name": "Granite-4.0-Micro",
+    "model_path": "ibm-granite/granite-4.0-micro",  # HuggingFace model name or local path
+    "example_min_nproc_per_node": 2,
+}
+
+selected_example = granite4hs_example  # Change this to your preferred example
+# selected_example = granite4ht_example  # Change this to your preferred example
+# selected_example = granite4hm_example  # Change this to your preferred example
+# selected_example = granite4m_example  # Change this to your preferred example
 
 model_name = selected_example['model_name']
 default_model_path = selected_example['model_path']
@@ -49,6 +79,7 @@ example_max_tokens_per_gpu = selected_example['example_max_tokens_per_gpu']
 example_max_seq_len = selected_example['example_max_seq_len']
 example_batch_size = selected_example['example_batch_size']
 example_learning_rate = selected_example['example_learning_rate']
+kwargs = selected_example.get('kwargs', {})
 default_num_epochs = 3
 default_nproc_per_node = torch.cuda.device_count() if torch.cuda.is_available() else 0
 default_model_weight = 0.5
@@ -58,7 +89,7 @@ default_model_weight = 0.5
 # =============================================================================
 
 # Experiment identification
-experiment_name = "sft_granite_example"
+experiment_name = "sft_granite4_example"
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 full_experiment_name = f"{experiment_name}_{timestamp}"
 
@@ -125,7 +156,7 @@ def main():
     if args.nproc_per_node < example_min_nproc_per_node:
         print(f"💡 Try --nproc-per-node {example_min_nproc_per_node} or larger if you see OOM errors")
     
-    # Granite 3.3 8B Instruct configuration
+    # Granite 4.0 configuration
     print(f"🚀 SFT Training: {model_name}")
     print("=" * 50)
     print(f"Model: {args.model_path}")
@@ -139,8 +170,8 @@ def main():
     print(f"Max sequence length: {args.max_seq_len:,}")
     print(f"Model weight: {args.model_weight}")
     print()
-    
-    # Training configuration optimized for Granite 3.3 8B Instruct
+
+    # Training configuration optimized for Granite 4.0
     start_time = time.time()
     
     try:
@@ -150,7 +181,7 @@ def main():
             data_path=args.data_path,
             ckpt_output_dir=args.ckpt_output_dir,
             
-            # Training parameters optimized for Granite 3.3 8B Instruct
+            # Training parameters optimized for Granite 4.0
             num_epochs=args.num_epochs,
             effective_batch_size=args.batch_size,
             learning_rate=args.learning_rate,
@@ -172,6 +203,9 @@ def main():
             # node_rank=0,
             # rdzv_id=102,
             # rdzv_endpoint="127.0.0.1:29500",
+            
+            # Additional parameters to the backend
+            **kwargs
         )
         
         end_time = time.time()
