@@ -23,8 +23,6 @@ dependencies = [
     "numpy>=1.26.4",
     "rich>=14.1.0",
     "peft>=0.15",
-    "unsloth",
-    "trl",
     "pydantic>=2.7.0",
     "aiofiles>=23.2.1",
     "accelerate>=0.34.2",
@@ -62,6 +60,12 @@ cuda = [
     "bitsandbytes>=0.47.0",
     "liger-kernel>=0.5.10",
     "mamba-ssm[causal-conv1d]>=2.2.5",
+]
+
+lora = [
+    "unsloth>=2025.10.12",
+    "flash-attn>=2.7.1,<=2.8.2",
+    "trl>=0.18.0",
 ]
 
 dev = [

@@ -18,10 +18,27 @@ class UnslothLoRABackend(Backend):
             from trl import SFTTrainer, SFTConfig
             from transformers import TrainingArguments
         except ImportError as e:
-            raise ImportError(
-                "Unsloth and TRL are required for Unsloth LoRA training. Install with: "
-                "pip install unsloth trl"
-            ) from e
+            # Handle common import issues with specific guidance
+            error_msg = str(e).lower()
+            if "unsloth" in error_msg:
+                raise ImportError(
+                    "Unsloth is not available. For optimized LoRA training with Unsloth, install with:\n"
+                    "pip install 'training-hub[cuda,lora]'\n"
+                    "\nThis installs unsloth>=2025.10.12 with compatible flash-attn and CUDA optimizations.\n"
+                    "Alternatively, use the Axolotl backend: backend='axolotl'"
+                ) from e
+            elif "trl" in error_msg:
+                raise ImportError(
+                    "TRL is required for Unsloth LoRA training. Install with:\n"
+                    "pip install 'training-hub[cuda,lora]'\n"
+                    "\nAlternatively, use the Axolotl backend: backend='axolotl'"
+                ) from e
+            else:
+                raise ImportError(
+                    f"Failed to import dependencies for Unsloth backend: {e}\n"
+                    "Install LoRA dependencies with: pip install 'training-hub[cuda,lora]'\n"
+                    "Or use the Axolotl backend: backend='axolotl'"
+                ) from e
 
         # Separate torchrun parameters from training parameters
         torchrun_keys = {'nproc_per_node', 'nnodes', 'node_rank', 'rdzv_id', 'rdzv_endpoint', 'master_addr', 'master_port'}
