@@ -195,7 +195,7 @@ def main():
             
             # Checkpointing
             checkpoint_at_epoch=True,
-            accelerate_full_state_at_epoch=True,  # Enable for auto-resumption (larger checkpoints)
+            accelerate_full_state_at_epoch=False, # Disable for smaller checkpoints (no auto-resumption)
             
             # Single-node multi-GPU setup
             nproc_per_node=args.nproc_per_node,
