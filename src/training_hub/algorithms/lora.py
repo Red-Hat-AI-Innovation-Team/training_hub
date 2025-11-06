@@ -118,10 +118,15 @@ class UnslothLoRABackend(Backend):
         """Apply LoRA configuration using Unsloth optimizations."""
         from unsloth import FastLanguageModel
 
+        # Handle target_modules - use default if None or not specified
+        target_modules = params.get('target_modules')
+        if target_modules is None:
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
         model = FastLanguageModel.get_peft_model(
             model,
             r=params.get('lora_r', 16),
-            target_modules=params.get('target_modules', ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]),
+            target_modules=target_modules,
             lora_alpha=params.get('lora_alpha', 32),
             lora_dropout=params.get('lora_dropout', 0.1),
             bias="none",
