@@ -49,9 +49,8 @@ class UnslothLoRABackend(Backend):
         # Extract training parameters (everything except torchrun params)
         training_params = {k: v for k, v in algorithm_params.items() if k not in torchrun_keys}
 
-        # Set up distributed training if needed
-        if torchrun_params:
-            self._setup_distributed_training(torchrun_params)
+        # Unsloth multi-GPU setup: Let Accelerate/torchrun handle distributed training
+        # No custom distributed initialization needed - Unsloth works with standard PyTorch DDP
 
         # Load model with Unsloth optimizations
         model, tokenizer = self._load_unsloth_model(training_params)
@@ -96,19 +95,29 @@ class UnslothLoRABackend(Backend):
         """Load model with Unsloth optimizations."""
         from unsloth import FastLanguageModel
 
-        # Determine quantization settings
+        # Determine quantization settings - only use if explicitly requested by user
         load_in_4bit = params.get('load_in_4bit', False)
         load_in_8bit = params.get('load_in_8bit', False)
 
-        # Use 4bit by default for memory efficiency unless specified otherwise
-        if not load_in_4bit and not load_in_8bit:
-            load_in_4bit = True
+        # Handle device placement for multi-GPU training
+        device_map_config = {}
+        import os
+        if params.get('enable_model_splitting', False):
+            # Use balanced device mapping for large models
+            device_map_config['device_map'] = "balanced"
+        elif 'LOCAL_RANK' in os.environ:
+            # For DDP training, explicitly set device based on LOCAL_RANK
+            import torch
+            local_rank = int(os.environ['LOCAL_RANK'])
+            torch.cuda.set_device(local_rank)
+            device_map_config['device_map'] = {"": local_rank}
 
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=params['model_path'],
             max_seq_length=params.get('max_seq_len', 2048),
             dtype=None,  # Auto-detect
             load_in_4bit=load_in_4bit,
+            **device_map_config,
             # Additional Unsloth optimizations
             # trust_remote_code=params.get('trust_remote_code', False),
         )
@@ -197,17 +206,37 @@ class UnslothLoRABackend(Backend):
 
         # Calculate steps and batch sizes
         num_epochs = params.get('num_epochs', 3)
-        micro_batch_size = params.get('micro_batch_size', 2)
-        gradient_accumulation_steps = params.get('gradient_accumulation_steps', 1)
 
-        # Handle effective batch size calculation
-        if 'effective_batch_size' in params:
+        # Determine actual number of GPUs being used
+        import torch
+        import os
+
+        # If we're in a distributed environment, use world size
+        if 'WORLD_SIZE' in os.environ:
+            num_gpus = int(os.environ['WORLD_SIZE'])
+        elif torch.cuda.is_available():
+            # Otherwise use the specified nproc_per_node or 1
             num_gpus = params.get('nproc_per_node', 1)
             if isinstance(num_gpus, str):
+                num_gpus = torch.cuda.device_count() if num_gpus == 'auto' else 1
+            # But don't use more GPUs than we're actually planning to use
+            if num_gpus > 1 and ('RANK' not in os.environ and 'LOCAL_RANK' not in os.environ):
+                # Single process mode - only using 1 GPU
                 num_gpus = 1
+        else:
+            num_gpus = 1
 
-            gradient_accumulation_steps = params['effective_batch_size'] // (micro_batch_size * num_gpus)
-            gradient_accumulation_steps = max(1, gradient_accumulation_steps)
+        # Handle batch size calculation: effective_batch_size = micro_batch_size * gradient_accumulation_steps * num_gpus
+        effective_batch_size = params.get('effective_batch_size')
+        gradient_accumulation_steps = params.get('gradient_accumulation_steps', 1)
+
+        if effective_batch_size is not None:
+            # Calculate micro_batch_size from effective_batch_size
+            micro_batch_size = effective_batch_size // (gradient_accumulation_steps * num_gpus)
+            micro_batch_size = max(1, micro_batch_size)
+        else:
+            # Use provided micro_batch_size or default
+            micro_batch_size = params.get('micro_batch_size', 2)
 
         training_args = SFTConfig(
             output_dir=params['ckpt_output_dir'],
@@ -232,6 +261,9 @@ class UnslothLoRABackend(Backend):
             dataloader_pin_memory=False,  # Unsloth recommendation
             remove_unused_columns=False,  # Required for custom datasets
 
+            # Multi-GPU / DDP configuration (required by Unsloth for multi-GPU)
+            ddp_find_unused_parameters=False,  # Required for Unsloth DDP
+
             # Chat template and conversation handling
             dataset_text_field="text",  # Use our preprocessed text field
             assistant_only_loss=True,  # Only train on assistant responses
@@ -243,19 +275,6 @@ class UnslothLoRABackend(Backend):
 
         return training_args
 
-    def _setup_distributed_training(self, torchrun_params: Dict[str, Any]) -> None:
-        """Set up distributed training environment variables."""
-        import os
-
-        # Set environment variables for distributed training
-        if 'master_addr' in torchrun_params:
-            os.environ['MASTER_ADDR'] = str(torchrun_params['master_addr'])
-        if 'master_port' in torchrun_params:
-            os.environ['MASTER_PORT'] = str(torchrun_params['master_port'])
-        if 'node_rank' in torchrun_params:
-            os.environ['NODE_RANK'] = str(torchrun_params['node_rank'])
-        if 'nnodes' in torchrun_params:
-            os.environ['WORLD_SIZE'] = str(torchrun_params['nnodes'])
 
 
 class AxolotlLoRABackend(Backend):
@@ -499,6 +518,8 @@ class LoRASFTAlgorithm(Algorithm):
               master_port: Optional[int] = None,
               # Backend-specific configurations
               axolotl_config: Optional[Dict[str, Any]] = None,
+              # Multi-GPU model splitting
+              enable_model_splitting: Optional[bool] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -580,6 +601,11 @@ class LoRASFTAlgorithm(Algorithm):
             rdzv_endpoint: Master node endpoint for multi-node training
             master_addr: Master node address for distributed training
             master_port: Master node port for distributed training
+
+            Multi-GPU Configuration:
+            enable_model_splitting: Enable device_map="balanced" for large models (default: False)
+                                   Use for models that don't fit on a single GPU (e.g., Llama 70B)
+                                   For smaller models, use standard DDP instead
 
             Advanced:
             axolotl_config: Additional Axolotl configuration dictionary
@@ -663,6 +689,8 @@ class LoRASFTAlgorithm(Algorithm):
             'master_port': master_port,
             # Backend-specific configurations
             'axolotl_config': axolotl_config,
+            # Multi-GPU model splitting
+            'enable_model_splitting': enable_model_splitting,
         }
 
         # Only add non-None parameters
@@ -745,6 +773,8 @@ class LoRASFTAlgorithm(Algorithm):
             'field_output': str,
             # Backend-specific configurations
             'axolotl_config': Dict[str, Any],
+            # Multi-GPU model splitting
+            'enable_model_splitting': bool,
         }
 
         # Combine all parameter types
@@ -819,6 +849,8 @@ def lora_sft(model_path: str,
          master_port: Optional[int] = None,
          # Additional Axolotl configuration
          axolotl_config: Optional[Dict[str, Any]] = None,
+         # Multi-GPU model splitting
+         enable_model_splitting: Optional[bool] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -876,6 +908,11 @@ def lora_sft(model_path: str,
         rdzv_endpoint: Master node endpoint for multi-node training
         master_addr: Master node address for distributed training
         master_port: Master node port for distributed training
+
+        Multi-GPU Configuration:
+        enable_model_splitting: Enable device_map="balanced" for large models (default: False)
+                               Use for models that don't fit on a single GPU (e.g., Llama 70B)
+                               For smaller models, use standard DDP with torchrun instead
 
         Advanced:
         axolotl_config: Additional Axolotl configuration dictionary to override defaults
@@ -957,5 +994,6 @@ def lora_sft(model_path: str,
         master_addr=master_addr,
         master_port=master_port,
         axolotl_config=axolotl_config,
+        enable_model_splitting=enable_model_splitting,
         **kwargs
     )
