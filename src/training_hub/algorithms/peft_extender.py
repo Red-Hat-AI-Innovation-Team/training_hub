@@ -65,7 +65,7 @@ class LoRAPEFTExtender(PEFTExtender):
         lora_defaults = {
             'lora_r': 16,
             'lora_alpha': 32,
-            'lora_dropout': 0.1,
+            'lora_dropout': 0.0,  # Unsloth optimized for 0 dropout
             'target_modules': None,  # Will be auto-detected by backends
             'load_in_4bit': False,
             'load_in_8bit': False,

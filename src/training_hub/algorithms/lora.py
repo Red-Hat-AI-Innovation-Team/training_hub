@@ -65,15 +65,16 @@ class UnslothLoRABackend(Backend):
         # Configure training arguments
         training_args = self._build_training_args(training_params)
 
-        # Create SFT trainer
+        # Determine dataset format and configure trainer accordingly
+        dataset_type = training_params.get('dataset_type', 'chat_template')
+
+        # Use the same trainer configuration for all dataset types since we pre-process in _prepare_dataset
         trainer = SFTTrainer(
             model=model,
             tokenizer=tokenizer,
             train_dataset=train_dataset,
             args=training_args,
             max_seq_length=training_params.get('max_seq_len', 2048),
-            dataset_text_field="text" if training_params.get('dataset_type') != 'chat_template' else None,
-            formatting_func=self._format_chat_template if training_params.get('dataset_type') == 'chat_template' else None,
             packing=training_params.get('sample_packing', True),
         )
 
@@ -111,6 +112,8 @@ class UnslothLoRABackend(Backend):
             # Additional Unsloth optimizations
             # trust_remote_code=params.get('trust_remote_code', False),
         )
+
+        # Use default tokenizer chat template
 
         return model, tokenizer
 
@@ -151,7 +154,23 @@ class UnslothLoRABackend(Backend):
         # Handle different dataset formats
         dataset_type = params.get('dataset_type', 'chat_template')
 
-        if dataset_type == 'alpaca':
+        if dataset_type == 'chat_template':
+            # Convert messages format using chat template
+            def format_chat_template(examples):
+                # examples['messages'] is a list of conversations (batched)
+                texts = []
+                for conversation in examples['messages']:
+                    text = tokenizer.apply_chat_template(
+                        conversation,
+                        tokenize=False,
+                        add_generation_prompt=False
+                    )
+                    texts.append(text)
+                return {"text": texts}
+
+            dataset = dataset.map(format_chat_template, batched=True)
+
+        elif dataset_type == 'alpaca':
             # Convert alpaca format to text
             def format_alpaca(examples):
                 texts = []
@@ -171,29 +190,10 @@ class UnslothLoRABackend(Backend):
 
         return dataset
 
-    def _format_chat_template(self, example):
-        """Format chat template for messages format."""
-        messages = example.get('messages', [])
-        if not messages:
-            return ""
 
-        # Simple chat formatting - this could be enhanced based on model-specific templates
-        formatted_text = ""
-        for message in messages:
-            role = message.get('role', '')
-            content = message.get('content', '')
-            if role == 'user':
-                formatted_text += f"### Human:\n{content}\n\n"
-            elif role == 'assistant':
-                formatted_text += f"### Assistant:\n{content}\n\n"
-            elif role == 'system':
-                formatted_text += f"### System:\n{content}\n\n"
-
-        return formatted_text.strip()
-
-    def _build_training_args(self, params: Dict[str, Any]) -> 'TrainingArguments':
-        """Build training arguments for SFTTrainer."""
-        from transformers import TrainingArguments
+    def _build_training_args(self, params: Dict[str, Any]):
+        """Build training arguments for SFTTrainer using SFTConfig."""
+        from trl import SFTConfig
 
         # Calculate steps and batch sizes
         num_epochs = params.get('num_epochs', 3)
@@ -209,7 +209,7 @@ class UnslothLoRABackend(Backend):
             gradient_accumulation_steps = params['effective_batch_size'] // (micro_batch_size * num_gpus)
             gradient_accumulation_steps = max(1, gradient_accumulation_steps)
 
-        training_args = TrainingArguments(
+        training_args = SFTConfig(
             output_dir=params['ckpt_output_dir'],
             num_train_epochs=num_epochs,
             per_device_train_batch_size=micro_batch_size,
@@ -231,6 +231,10 @@ class UnslothLoRABackend(Backend):
             # Performance optimizations
             dataloader_pin_memory=False,  # Unsloth recommendation
             remove_unused_columns=False,  # Required for custom datasets
+
+            # Chat template and conversation handling
+            dataset_text_field="text",  # Use our preprocessed text field
+            assistant_only_loss=True,  # Only train on assistant responses
 
             # Optional: Weights & Biases
             report_to="wandb" if params.get('wandb_project') else None,
