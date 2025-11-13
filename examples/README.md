@@ -81,6 +81,35 @@ result = osft(
 )
 ```
 
+### Low-Rank Adaptation (LoRA) + SFT
+
+LoRA provides parameter-efficient fine-tuning with significantly reduced memory requirements by training low-rank adaptation matrices instead of the full model weights. Training hub implements LoRA with supervised fine-tuning using the optimized Unsloth backend.
+
+**Documentation:**
+- [LoRA Usage Guide](docs/lora_usage.md) - Comprehensive usage documentation with parameter reference and examples
+
+**Scripts:**
+- [LoRA Example](scripts/lora_example.py) - Basic LoRA training examples with different configurations and dataset formats
+
+**Launch Requirements:**
+- **Single-GPU**: Standard Python launch: `python my_script.py`
+- **Multi-GPU**: Unlike other algorithms, LoRA requires torchrun: `torchrun --nproc-per-node=4 my_script.py`
+
+**Quick Example:**
+```python
+from training_hub import lora_sft
+
+result = lora_sft(
+    model_path="meta-llama/Llama-2-7b-hf",
+    data_path="/path/to/data.jsonl",
+    ckpt_output_dir="/path/to/outputs",
+    lora_r=16,
+    lora_alpha=32,
+    num_epochs=3,
+    learning_rate=2e-4
+)
+```
+
 ### Memory Estimation (Experimental / In-Development)
 
 training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during the fine-tuning of a given model using SFT or OSFT. The calculations are built off of formulas presented in the blog post [How To Calculate GPU VRAM Requirements for an Large-Language Model](https://apxml.com/posts/how-to-calculate-vram-requirements-for-an-llm).

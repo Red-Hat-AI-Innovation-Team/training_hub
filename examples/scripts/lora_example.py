@@ -17,12 +17,11 @@ def basic_lora_sft_example():
             model_path="microsoft/DialoGPT-small",  # Small model for quick testing
             data_path="./sample_data.jsonl",  # Your training data
             ckpt_output_dir="./outputs/lora_basic",
-            backend="unsloth",  # Default backend with performance optimizations
 
             # LoRA configuration
             lora_r=16,
             lora_alpha=32,
-            lora_dropout=0.1,
+            # lora_dropout defaults to 0.0 (optimized for Unsloth)
 
             # Training configuration
             num_epochs=1,
@@ -47,48 +46,6 @@ def basic_lora_sft_example():
         print(f"❌ Basic LoRA + SFT training failed: {e}")
 
 
-def backend_comparison_example():
-    """Compare different LoRA SFT backends."""
-    print("🚀 Demonstrating different LoRA + SFT backends...")
-
-    # Example 1: Unsloth Backend (default - optimized for performance)
-    print("\n1️⃣ Unsloth backend (performance optimized):")
-    try:
-        result = training_hub.lora_sft(
-            model_path="microsoft/DialoGPT-small",
-            data_path="./sample_data.jsonl",
-            ckpt_output_dir="./outputs/lora_unsloth",
-            backend="unsloth",  # Performance optimized with custom kernels
-
-            lora_r=8,
-            num_epochs=1,
-            micro_batch_size=1,
-            learning_rate=2e-4,
-            load_in_4bit=True,  # Automatic memory optimization
-        )
-        print("✅ Unsloth backend training completed!")
-    except Exception as e:
-        print(f"❌ Unsloth backend training failed: {e}")
-
-    # Example 2: Axolotl Backend (comprehensive features, but may have dependency conflicts)
-    print("\n2️⃣ Axolotl backend (comprehensive features):")
-    try:
-        result = training_hub.lora_sft(
-            model_path="microsoft/DialoGPT-small",
-            data_path="./sample_data.jsonl",
-            ckpt_output_dir="./outputs/lora_axolotl",
-            backend="axolotl",  # Full-featured framework
-
-            # Note: May require resolving dependency conflicts
-            lora_r=8,
-            num_epochs=1,
-            micro_batch_size=1,
-            learning_rate=2e-4,
-        )
-        print("✅ Axolotl backend training completed!")
-    except Exception as e:
-        print(f"❌ Axolotl backend training failed: {e}")
-        print("💡 Tip: Axolotl may have dependency conflicts. Try installing separately or use Unsloth backend.")
 
 
 def qlora_4bit_example():
@@ -100,14 +57,13 @@ def qlora_4bit_example():
             model_path="microsoft/DialoGPT-medium",
             data_path="./sample_data.jsonl",
             ckpt_output_dir="./outputs/qlora_4bit",
-            backend="unsloth",  # Unsloth provides optimized QLoRA
 
             # LoRA configuration
             lora_r=64,  # Higher rank for quantized model
             lora_alpha=128,
-            lora_dropout=0.1,
+            # lora_dropout defaults to 0.0 (optimized for Unsloth)
 
-            # QLoRA (4-bit quantization) - Unsloth handles optimization automatically
+            # QLoRA (4-bit quantization) - explicitly enable quantization
             load_in_4bit=True,
 
             # Training configuration
@@ -135,8 +91,15 @@ def qlora_4bit_example():
 
 
 def distributed_lora_sft_example():
-    """Multi-GPU LoRA + SFT training example."""
+    """Multi-GPU LoRA + SFT training example.
+
+    NOTE: This function demonstrates the parameters for multi-GPU training.
+    To actually run multi-GPU training, launch this script with torchrun:
+
+    torchrun --nproc-per-node=4 examples/scripts/lora_example.py
+    """
     print("🚀 Running distributed LoRA + SFT training example...")
+    print("ℹ️  For actual multi-GPU training, launch with: torchrun --nproc-per-node=4 examples/scripts/lora_example.py")
 
     try:
         result = training_hub.lora_sft(
@@ -155,13 +118,8 @@ def distributed_lora_sft_example():
             learning_rate=2e-4,
             max_seq_len=2048,
 
-            # Distributed training
-            nproc_per_node=4,  # 4 GPUs per node
-            nnodes=1,  # Single node
-
-            # Optimization
+            # Optimization (Unsloth provides automatic optimizations)
             bf16=True,
-            flash_attention=True,
             sample_packing=True,
 
             # Weights & Biases logging
@@ -316,24 +274,26 @@ if __name__ == "__main__":
     # Run examples (uncomment the ones you want to test)
     basic_lora_sft_example()
 
-    # Uncomment to test different backends
-    # backend_comparison_example()
-
     # Uncomment to test different data formats
     # data_format_examples()
 
+    # Uncomment to test QLoRA with 4-bit quantization
     # qlora_4bit_example()
+
+    # Uncomment to test distributed training (launch with torchrun for actual multi-GPU)
     # distributed_lora_sft_example()
 
     print("\n✨ Examples completed!")
     print("\nTo run these examples:")
-    print("1. Install training-hub with LoRA support: pip install 'training-hub[cuda,lora]'")
-    print("2. Or for development: pip install -e '.[cuda,lora]'")
+    print("1. Install training-hub with LoRA support: pip install 'training-hub[lora]'")
+    print("2. Or for development: pip install -e '.[lora]'")
     print("3. Prepare your training data in messages or Alpaca format")
     print("4. Adjust model paths and data paths as needed")
-    print("5. Run: python examples/lora_example.py")
+    print("5. Launch:")
+    print("   • Single-GPU: python examples/scripts/lora_example.py")
+    print("   • Multi-GPU:  torchrun --nproc-per-node=4 examples/scripts/lora_example.py")
     print("\n🚀 Benefits:")
     print("• Unsloth backend: 2x faster, 70% less VRAM, works with any HuggingFace model")
-    print("• Compatible flash-attn versions (2.7.1-2.8.2) with unsloth>=2025.10.12")
-    print("• Supports both LoRA and QLoRA with automatic optimizations")
+    print("• PyTorch-optimized xformers for compatibility and performance")
+    print("• Supports both LoRA and QLoRA (quantization only when explicitly requested)")
     print("• Compatible with existing SFT/OSFT data formats")
