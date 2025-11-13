@@ -22,22 +22,18 @@ class UnslothLoRABackend(Backend):
             error_msg = str(e).lower()
             if "unsloth" in error_msg:
                 raise ImportError(
-                    "Unsloth is not available. For optimized LoRA training with Unsloth, install with:\n"
-                    "pip install 'training-hub[cuda,lora]'\n"
-                    "\nThis installs unsloth>=2025.10.12 with compatible flash-attn and CUDA optimizations.\n"
-                    "Alternatively, use the Axolotl backend: backend='axolotl'"
+                    "Unsloth is not available. Install with:\n"
+                    "pip install 'training-hub[lora]'"
                 ) from e
             elif "trl" in error_msg:
                 raise ImportError(
                     "TRL is required for Unsloth LoRA training. Install with:\n"
-                    "pip install 'training-hub[cuda,lora]'\n"
-                    "\nAlternatively, use the Axolotl backend: backend='axolotl'"
+                    "pip install 'training-hub[lora]'"
                 ) from e
             else:
                 raise ImportError(
                     f"Failed to import dependencies for Unsloth backend: {e}\n"
-                    "Install LoRA dependencies with: pip install 'training-hub[cuda,lora]'\n"
-                    "Or use the Axolotl backend: backend='axolotl'"
+                    "Install LoRA dependencies with: pip install 'training-hub[lora]'"
                 ) from e
 
         # Separate torchrun parameters from training parameters
@@ -277,166 +273,6 @@ class UnslothLoRABackend(Backend):
 
 
 
-class AxolotlLoRABackend(Backend):
-    """Axolotl backend for LoRA algorithm."""
-
-    def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
-        """Execute LoRA training using Axolotl."""
-        try:
-            from axolotl.train import train
-            from axolotl.utils.dict import DictDefault
-            from axolotl.utils.data import prepare_dataset
-        except ImportError as e:
-            raise ImportError(
-                "Axolotl is required for LoRA training. Install it with: "
-                "pip install axolotl[flash-attn,deepspeed]"
-            ) from e
-
-        # Separate torchrun parameters from training parameters
-        torchrun_keys = {'nproc_per_node', 'nnodes', 'node_rank', 'rdzv_id', 'rdzv_endpoint', 'master_addr', 'master_port'}
-
-        # Extract torchrun parameters
-        torchrun_params = {k: v for k, v in algorithm_params.items() if k in torchrun_keys}
-
-        # Extract training parameters (everything except torchrun params)
-        training_params = {k: v for k, v in algorithm_params.items() if k not in torchrun_keys}
-
-        # Build Axolotl configuration
-        cfg = self._build_axolotl_config(training_params)
-
-        # Prepare dataset metadata
-        dataset_meta = self._prepare_dataset_meta(training_params)
-
-        # Set up distributed training if needed
-        if torchrun_params:
-            self._setup_distributed_training(torchrun_params)
-
-        # Execute training
-        model, tokenizer, trainer = train(cfg=cfg, dataset_meta=dataset_meta)
-
-        return {
-            'model': model,
-            'tokenizer': tokenizer,
-            'trainer': trainer
-        }
-
-    def _build_axolotl_config(self, params: Dict[str, Any]) -> 'DictDefault':
-        """Build Axolotl configuration from training hub parameters."""
-        from axolotl.utils.dict import DictDefault
-
-        # Base configuration
-        cfg = DictDefault({
-            # Model configuration
-            'base_model': params['model_path'],
-            'model_type': 'AutoModelForCausalLM',
-            'tokenizer_type': 'AutoTokenizer',
-
-            # Dataset configuration
-            'datasets': [{
-                'path': params['data_path'],
-                'type': params.get('dataset_type', 'chat_template'),  # Default to messages format for compatibility
-            }],
-
-            # LoRA configuration
-            'adapter': 'lora',
-            'lora_r': params.get('lora_r', 16),
-            'lora_alpha': params.get('lora_alpha', 32),
-            'lora_dropout': params.get('lora_dropout', 0.1),
-            'lora_target_modules': params.get('target_modules'),
-
-            # Training configuration
-            'sequence_len': params.get('max_seq_len', 2048),
-            'sample_packing': params.get('sample_packing', True),
-            'pad_to_sequence_len': True,
-
-            # Training hyperparameters
-            'num_epochs': params.get('num_epochs', 3),
-            'micro_batch_size': params.get('micro_batch_size', 1),
-            'gradient_accumulation_steps': params.get('gradient_accumulation_steps', 1),
-            'learning_rate': params.get('learning_rate', 2e-4),
-            'lr_scheduler': params.get('lr_scheduler', 'cosine'),
-            'warmup_steps': params.get('warmup_steps', 10),
-
-            # Output configuration
-            'output_dir': params['ckpt_output_dir'],
-            'save_steps': params.get('save_steps', 500),
-            'eval_steps': params.get('eval_steps', 500),
-            'save_total_limit': params.get('save_total_limit', 3),
-
-            # Optimization features
-            'flash_attention': params.get('flash_attention', True),
-            'bf16': params.get('bf16', True),
-            'fp16': params.get('fp16', False),
-            'tf32': params.get('tf32', True),
-
-            # Quantization (if specified)
-            'load_in_8bit': params.get('load_in_8bit', False),
-            'load_in_4bit': params.get('load_in_4bit', False),
-
-            # Logging
-            'logging_steps': params.get('logging_steps', 10),
-            'wandb_project': params.get('wandb_project'),
-            'wandb_entity': params.get('wandb_entity'),
-            'wandb_watch': params.get('wandb_watch'),
-
-            # Early stopping
-            'early_stopping_patience': params.get('early_stopping_patience'),
-        })
-
-        # Handle quantization settings
-        if params.get('load_in_4bit'):
-            cfg.update({
-                'load_in_4bit': True,
-                'bnb_4bit_quant_type': params.get('bnb_4bit_quant_type', 'nf4'),
-                'bnb_4bit_compute_dtype': params.get('bnb_4bit_compute_dtype', 'bfloat16'),
-                'bnb_4bit_use_double_quant': params.get('bnb_4bit_use_double_quant', True),
-            })
-
-        # Handle dataset format configuration
-        dataset_config = cfg['datasets'][0]
-        if params.get('field_messages'):
-            dataset_config['field_messages'] = params['field_messages']
-        if params.get('field_instruction'):
-            dataset_config['field_instruction'] = params['field_instruction']
-        if params.get('field_input'):
-            dataset_config['field_input'] = params['field_input']
-        if params.get('field_output'):
-            dataset_config['field_output'] = params['field_output']
-
-        # Calculate effective batch size if needed
-        if 'effective_batch_size' in params:
-            micro_batch_size = cfg.get('micro_batch_size', 1)
-            num_gpus = params.get('nproc_per_node', 1)
-            if isinstance(num_gpus, str):
-                num_gpus = 1  # Default for 'auto' or 'gpu'
-
-            gradient_accumulation_steps = params['effective_batch_size'] // (micro_batch_size * num_gpus)
-            cfg['gradient_accumulation_steps'] = max(1, gradient_accumulation_steps)
-
-        # Handle any additional axolotl-specific parameters
-        axolotl_params = params.get('axolotl_config', {})
-        cfg.update(axolotl_params)
-
-        return cfg
-
-    def _prepare_dataset_meta(self, params: Dict[str, Any]) -> Any:
-        """Prepare dataset metadata for Axolotl training."""
-        # For now, return None - Axolotl will handle dataset preparation
-        # This can be extended to provide custom dataset handling if needed
-        return None
-
-    def _setup_distributed_training(self, torchrun_params: Dict[str, Any]) -> None:
-        """Set up distributed training environment variables."""
-        # Set environment variables for distributed training
-        if 'master_addr' in torchrun_params:
-            os.environ['MASTER_ADDR'] = str(torchrun_params['master_addr'])
-        if 'master_port' in torchrun_params:
-            os.environ['MASTER_PORT'] = str(torchrun_params['master_port'])
-        if 'node_rank' in torchrun_params:
-            os.environ['NODE_RANK'] = str(torchrun_params['node_rank'])
-        if 'nnodes' in torchrun_params:
-            os.environ['WORLD_SIZE'] = str(torchrun_params['nnodes'])
-
 
 class LoRASFTAlgorithm(Algorithm):
     """LoRA + SFT algorithm combining Supervised Fine-Tuning with LoRA parameter-efficient training."""
@@ -516,8 +352,6 @@ class LoRASFTAlgorithm(Algorithm):
               rdzv_endpoint: Optional[str] = None,
               master_addr: Optional[str] = None,
               master_port: Optional[int] = None,
-              # Backend-specific configurations
-              axolotl_config: Optional[Dict[str, Any]] = None,
               # Multi-GPU model splitting
               enable_model_splitting: Optional[bool] = None,
               **kwargs) -> Any:
@@ -608,7 +442,6 @@ class LoRASFTAlgorithm(Algorithm):
                                    For smaller models, use standard DDP instead
 
             Advanced:
-            axolotl_config: Additional Axolotl configuration dictionary
             **kwargs: Additional parameters passed to the backend
 
         Returns:
@@ -687,8 +520,6 @@ class LoRASFTAlgorithm(Algorithm):
             'rdzv_endpoint': rdzv_endpoint,
             'master_addr': master_addr,
             'master_port': master_port,
-            # Backend-specific configurations
-            'axolotl_config': axolotl_config,
             # Multi-GPU model splitting
             'enable_model_splitting': enable_model_splitting,
         }
@@ -771,8 +602,6 @@ class LoRASFTAlgorithm(Algorithm):
             'field_instruction': str,
             'field_input': str,
             'field_output': str,
-            # Backend-specific configurations
-            'axolotl_config': Dict[str, Any],
             # Multi-GPU model splitting
             'enable_model_splitting': bool,
         }
@@ -786,10 +615,9 @@ class LoRASFTAlgorithm(Algorithm):
         return all_params
 
 
-# Register the algorithm and backends
+# Register the algorithm and backend
 AlgorithmRegistry.register_algorithm('lora_sft', LoRASFTAlgorithm)
 AlgorithmRegistry.register_backend('lora_sft', 'unsloth', UnslothLoRABackend)
-AlgorithmRegistry.register_backend('lora_sft', 'axolotl', AxolotlLoRABackend)
 
 
 def lora_sft(model_path: str,
@@ -847,8 +675,6 @@ def lora_sft(model_path: str,
          rdzv_endpoint: Optional[str] = None,
          master_addr: Optional[str] = None,
          master_port: Optional[int] = None,
-         # Additional Axolotl configuration
-         axolotl_config: Optional[Dict[str, Any]] = None,
          # Multi-GPU model splitting
          enable_model_splitting: Optional[bool] = None,
          **kwargs) -> Any:
@@ -858,7 +684,7 @@ def lora_sft(model_path: str,
         model_path: Path to the model to fine-tune (local path or HuggingFace model ID)
         data_path: Path to the training data (JSON/JSONL format)
         ckpt_output_dir: Directory to save checkpoints and outputs
-        backend: Backend implementation to use (default: "axolotl")
+        backend: Backend implementation to use (default: "unsloth")
 
         LoRA Parameters:
         lora_r: LoRA rank (default: 16)
@@ -915,7 +741,6 @@ def lora_sft(model_path: str,
                                For smaller models, use standard DDP with torchrun instead
 
         Advanced:
-        axolotl_config: Additional Axolotl configuration dictionary to override defaults
         **kwargs: Additional parameters passed to the backend
 
     Returns:
@@ -993,7 +818,6 @@ def lora_sft(model_path: str,
         rdzv_endpoint=rdzv_endpoint,
         master_addr=master_addr,
         master_port=master_port,
-        axolotl_config=axolotl_config,
         enable_model_splitting=enable_model_splitting,
         **kwargs
     )
