@@ -36,14 +36,11 @@ class UnslothLoRABackend(Backend):
                     "Install LoRA dependencies with: pip install 'training-hub[lora]'"
                 ) from e
 
-        # Separate torchrun parameters from training parameters
-        torchrun_keys = {'nproc_per_node', 'nnodes', 'node_rank', 'rdzv_id', 'rdzv_endpoint', 'master_addr', 'master_port'}
-
-        # Extract torchrun parameters
-        torchrun_params = {k: v for k, v in algorithm_params.items() if k in torchrun_keys}
-
-        # Extract training parameters (everything except torchrun params)
-        training_params = {k: v for k, v in algorithm_params.items() if k not in torchrun_keys}
+        # Use all parameters as training parameters
+        # Note: Torchrun parameters (nproc_per_node, etc.) are handled by the torchrun launcher,
+        # not by the Python training code. The training code auto-detects distributed environment
+        # via environment variables (WORLD_SIZE, LOCAL_RANK, etc.) set by torchrun.
+        training_params = algorithm_params
 
         # Unsloth multi-GPU setup: Let Accelerate/torchrun handle distributed training
         # No custom distributed initialization needed - Unsloth works with standard PyTorch DDP
@@ -59,9 +56,6 @@ class UnslothLoRABackend(Backend):
 
         # Configure training arguments
         training_args = self._build_training_args(training_params)
-
-        # Determine dataset format and configure trainer accordingly
-        dataset_type = training_params.get('dataset_type', 'chat_template')
 
         # Use the same trainer configuration for all dataset types since we pre-process in _prepare_dataset
         trainer = SFTTrainer(
@@ -97,7 +91,6 @@ class UnslothLoRABackend(Backend):
 
         # Handle device placement for multi-GPU training
         device_map_config = {}
-        import os
         if params.get('enable_model_splitting', False):
             # Use balanced device mapping for large models
             device_map_config['device_map'] = "balanced"
@@ -108,11 +101,22 @@ class UnslothLoRABackend(Backend):
             torch.cuda.set_device(local_rank)
             device_map_config['device_map'] = {"": local_rank}
 
+        # Configure quantization options with BitsAndBytes defaults
+        quantization_kwargs = {}
+        if load_in_4bit:
+            quantization_kwargs.update({
+                'bnb_4bit_quant_type': params.get('bnb_4bit_quant_type', 'nf4'),  # BitsAndBytes default
+                'bnb_4bit_compute_dtype': params.get('bnb_4bit_compute_dtype', 'bfloat16'),  # BitsAndBytes default
+                'bnb_4bit_use_double_quant': params.get('bnb_4bit_use_double_quant', True),  # BitsAndBytes default
+            })
+
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=params['model_path'],
             max_seq_length=params.get('max_seq_len', 2048),
             dtype=None,  # Auto-detect
             load_in_4bit=load_in_4bit,
+            load_in_8bit=load_in_8bit,
+            **quantization_kwargs,
             **device_map_config,
             # Additional Unsloth optimizations
             # trust_remote_code=params.get('trust_remote_code', False),
@@ -136,7 +140,7 @@ class UnslothLoRABackend(Backend):
             r=params.get('lora_r', 16),
             target_modules=target_modules,
             lora_alpha=params.get('lora_alpha', 32),
-            lora_dropout=params.get('lora_dropout', 0.1),
+            lora_dropout=params.get('lora_dropout', 0.0),  # 0.0 is optimized for Unsloth
             bias="none",
             use_gradient_checkpointing="unsloth",  # Unsloth's optimized gradient checkpointing
             random_state=params.get('seed', 3407),
@@ -205,7 +209,6 @@ class UnslothLoRABackend(Backend):
 
         # Determine actual number of GPUs being used
         import torch
-        import os
 
         # If we're in a distributed environment, use world size
         if 'WORLD_SIZE' in os.environ:
@@ -380,7 +383,7 @@ class LoRASFTAlgorithm(Algorithm):
             LoRA Parameters (from PEFT extender):
             lora_r: LoRA rank (default: 16)
             lora_alpha: LoRA alpha parameter (default: 32)
-            lora_dropout: LoRA dropout rate (default: 0.1)
+            lora_dropout: LoRA dropout rate (default: 0.0, optimized for Unsloth)
             target_modules: List of module names to apply LoRA to (default: auto-detect)
             use_rslora: Use Rank-Stabilized LoRA (default: False)
             use_dora: Use DoRA (Weight-Decomposed Low-Rank Adaptation) (default: False)
@@ -604,6 +607,8 @@ class LoRASFTAlgorithm(Algorithm):
             'field_output': str,
             # Multi-GPU model splitting
             'enable_model_splitting': bool,
+            # Model saving
+            'save_model': bool,
         }
 
         # Combine all parameter types
@@ -689,17 +694,17 @@ def lora_sft(model_path: str,
         LoRA Parameters:
         lora_r: LoRA rank (default: 16)
         lora_alpha: LoRA alpha parameter (default: 32)
-        lora_dropout: LoRA dropout rate (default: 0.1)
+        lora_dropout: LoRA dropout rate (default: 0.0, optimized for Unsloth)
         target_modules: List of module names to apply LoRA to (default: auto-detect)
 
         Training Parameters:
         num_epochs: Number of training epochs (default: 3)
         effective_batch_size: Effective batch size across all GPUs
-        micro_batch_size: Batch size per GPU (default: 1)
+        micro_batch_size: Batch size per GPU (default: 2)
         gradient_accumulation_steps: Steps to accumulate gradients (default: 1)
         learning_rate: Learning rate (default: 2e-4)
         max_seq_len: Maximum sequence length (default: 2048)
-        lr_scheduler: Learning rate scheduler (default: 'cosine')
+        lr_scheduler: Learning rate scheduler (default: 'linear')
         warmup_steps: Number of warmup steps (default: 10)
 
         Quantization Parameters (QLoRA):
