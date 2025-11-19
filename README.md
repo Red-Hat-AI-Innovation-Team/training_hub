@@ -123,11 +123,11 @@ pip install -e .[lora]
 # Install base package (provides torch, packaging, wheel, ninja)
 pip install training-hub
 # Then install with CUDA extras
-pip install training-hub[cuda]
+pip install training-hub[cuda] --no-build-isolation
 
 # For development installation:
 pip install -e .
-pip install -e .[cuda]
+pip install -e .[cuda] --no-build-isolation
 ```
 
 **For uv users:** You may need the `--no-build-isolation` flag:

@@ -216,6 +216,11 @@ class UnslothLoRABackend(Backend):
 
             dataset = dataset.map(format_alpaca, batched=True)
 
+        elif dataset_type == 'passthrough':
+            # Pass dataset through without any preprocessing - user handles all formatting
+            # Useful for pre-tokenized data, custom formats, or when users want full control
+            pass
+
         return dataset
 
 
@@ -356,10 +361,7 @@ class LoRASFTAlgorithm(Algorithm):
               # Weights & Biases
               wandb_project: Optional[str] = None,
               wandb_entity: Optional[str] = None,
-              wandb_watch: Optional[str] = None,
               wandb_run_name: Optional[str] = None,
-              # Early stopping
-              early_stopping_patience: Optional[int] = None,
               # Dataset format parameters
               dataset_type: Optional[str] = None,
               field_messages: Optional[str] = None,
@@ -439,11 +441,10 @@ class LoRASFTAlgorithm(Algorithm):
             save_total_limit: Maximum number of checkpoints to keep (default: 3)
             wandb_project: Weights & Biases project name
             wandb_entity: Weights & Biases entity name
-            wandb_watch: What to watch in W&B ('gradients', 'all', etc.)
-            early_stopping_patience: Early stopping patience (epochs)
+            max_tokens_per_gpu: Maximum tokens per GPU (reserved for future implementation)
 
             Dataset Format Parameters:
-            dataset_type: Dataset format type ('chat_template', 'alpaca', 'input_output', etc.)
+            dataset_type: Dataset format type ('chat_template', 'alpaca', 'passthrough')
             field_messages: Field name for messages (default: 'messages' for chat_template)
             field_instruction: Field name for instruction (for alpaca format)
             field_input: Field name for input (for alpaca format)
@@ -525,9 +526,7 @@ class LoRASFTAlgorithm(Algorithm):
             'save_total_limit': save_total_limit,
             'wandb_project': wandb_project,
             'wandb_entity': wandb_entity,
-            'wandb_watch': wandb_watch,
             'wandb_run_name': wandb_run_name,
-            'early_stopping_patience': early_stopping_patience,
             # Dataset format parameters
             'dataset_type': dataset_type,
             'field_messages': field_messages,
@@ -615,9 +614,7 @@ class LoRASFTAlgorithm(Algorithm):
             'save_total_limit': int,
             'wandb_project': str,
             'wandb_entity': str,
-            'wandb_watch': str,
             'wandb_run_name': str,
-            'early_stopping_patience': int,
             # Dataset format parameters
             'dataset_type': str,
             'field_messages': str,
@@ -682,9 +679,6 @@ def lora_sft(model_path: str,
          # Weights & Biases
          wandb_project: Optional[str] = None,
          wandb_entity: Optional[str] = None,
-         wandb_watch: Optional[str] = None,
-         # Early stopping
-         early_stopping_patience: Optional[int] = None,
          # Dataset format parameters
          dataset_type: Optional[str] = None,
          field_messages: Optional[str] = None,
@@ -747,8 +741,6 @@ def lora_sft(model_path: str,
         save_total_limit: Maximum number of checkpoints to keep (default: 3)
         wandb_project: Weights & Biases project name
         wandb_entity: Weights & Biases entity name
-        wandb_watch: What to watch in W&B ('gradients', 'all', etc.)
-        early_stopping_patience: Early stopping patience (epochs)
 
         Distributed Training:
         nproc_per_node: Number of processes (GPUs) per node
@@ -828,8 +820,6 @@ def lora_sft(model_path: str,
         save_total_limit=save_total_limit,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
-        wandb_watch=wandb_watch,
-        early_stopping_patience=early_stopping_patience,
         dataset_type=dataset_type,
         field_messages=field_messages,
         field_instruction=field_instruction,
