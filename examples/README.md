@@ -100,7 +100,7 @@ LoRA provides parameter-efficient fine-tuning with significantly reduced memory 
 from training_hub import lora_sft
 
 result = lora_sft(
-    model_path="meta-llama/Llama-2-7b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="/path/to/data.jsonl",
     ckpt_output_dir="/path/to/outputs",
     lora_r=16,

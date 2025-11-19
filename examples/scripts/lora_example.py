@@ -38,7 +38,7 @@ from training_hub import lora_sft
 # DEFAULT CONFIGURATION
 # =============================================================================
 
-default_model_path = "meta-llama/Llama-2-7b-hf"
+default_model_path = "Qwen/Qwen2.5-1.5B-Instruct"
 default_lora_r = 32
 default_lora_alpha = 64
 default_learning_rate = 1e-4

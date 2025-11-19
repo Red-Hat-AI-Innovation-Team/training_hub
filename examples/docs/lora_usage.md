@@ -10,7 +10,7 @@ Low-Rank Adaptation (LoRA) is a parameter-efficient fine-tuning technique that a
 from training_hub import lora_sft
 
 result = lora_sft(
-    model_path="meta-llama/Llama-2-7b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="./training_data.jsonl",
     ckpt_output_dir="./outputs",
     lora_r=16,              # LoRA rank
@@ -64,7 +64,7 @@ For even lower memory usage, enable 4-bit quantization:
 
 ```python
 result = lora_sft(
-    model_path="meta-llama/Llama-2-13b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="./data.jsonl",
     ckpt_output_dir="./outputs",
     lora_r=64,              # Higher rank for quantized model
@@ -107,7 +107,7 @@ For distributed training across multiple GPUs:
 
 ```python
 result = lora_sft(
-    model_path="meta-llama/Llama-2-7b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="./large_dataset.jsonl",
     ckpt_output_dir="./outputs",
 
@@ -143,7 +143,7 @@ torchrun --nproc-per-node=4 my_script.py
 ### Custom Target Modules
 ```python
 result = lora_sft(
-    model_path="meta-llama/Llama-2-7b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="./data.jsonl",
     ckpt_output_dir="./outputs",
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # Attention only
@@ -155,7 +155,7 @@ result = lora_sft(
 ### Weights & Biases Integration
 ```python
 result = lora_sft(
-    model_path="meta-llama/Llama-2-7b-hf",
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
     data_path="./data.jsonl",
     ckpt_output_dir="./outputs",
     lora_r=16,

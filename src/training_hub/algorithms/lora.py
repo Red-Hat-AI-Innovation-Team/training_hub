@@ -765,7 +765,7 @@ def lora_sft(model_path: str,
     Example:
         # Basic LoRA training
         result = lora_sft(
-            model_path="microsoft/DialoGPT-medium",
+            model_path="Qwen/Qwen2.5-1.5B-Instruct",
             data_path="./training_data.jsonl",
             ckpt_output_dir="./outputs",
             lora_r=16,
@@ -776,7 +776,7 @@ def lora_sft(model_path: str,
 
         # QLoRA with 4-bit quantization
         result = lora_sft(
-            model_path="meta-llama/Llama-2-7b-hf",
+            model_path="Qwen/Qwen2.5-1.5B-Instruct",
             data_path="./training_data.jsonl",
             ckpt_output_dir="./outputs",
             load_in_4bit=True,
