@@ -130,7 +130,7 @@ pip install -e .
 pip install -e .[cuda] --no-build-isolation
 ```
 
-**For uv users:** You may need the `--no-build-isolation` flag:
+**For uv users:** Use the same pattern with uv
 ```bash
 uv pip install training-hub
 uv pip install training-hub[cuda] --no-build-isolation

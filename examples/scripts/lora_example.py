@@ -20,8 +20,7 @@ Example usage:
     # Multi-GPU training
     torchrun --nproc-per-node=4 lora_example.py \\
         --data-path /path/to/data.jsonl \\
-        --ckpt-output-dir /path/to/checkpoints \\
-        --distributed
+        --ckpt-output-dir /path/to/checkpoints
 """
 
 import os
@@ -119,7 +118,7 @@ Examples:
   python lora_example.py --data-path data.jsonl --ckpt-output-dir ./outputs --qlora
 
   # Multi-GPU training (requires torchrun)
-  torchrun --nproc-per-node=4 lora_example.py --data-path data.jsonl --ckpt-output-dir ./outputs --nproc-per-node=4
+  torchrun --nproc-per-node=4 lora_example.py --data-path data.jsonl --ckpt-output-dir ./outputs
 
   # Different model
   python lora_example.py --data-path data.jsonl --ckpt-output-dir ./outputs --model-path ibm-granite/granite-3.3-8b-instruct
@@ -209,6 +208,11 @@ def main():
     # Validate required arguments
     if not args.data_path:
         print("❌ Error: --data-path is required (or use --create-sample-data to generate test data)")
+        sys.exit(1)
+
+    # Validate quantization options
+    if args.qlora and args.load_in_8bit:
+        print("❌ Error: --qlora (4-bit) and --load-in-8bit cannot be used together. Please choose one.")
         sys.exit(1)
 
     # Check for multi-GPU setup
@@ -355,8 +359,7 @@ def main():
         print(f"Error: {e}")
         print()
         print("💡 Troubleshooting tips:")
-        print("• Try a smaller model size: --model-size small")
-        print("• Enable quantization: --qlora")
+        print("• Enable quantization to reduce memory: --qlora")
         print("• Reduce batch size: --micro-batch-size 1")
         print("• Reduce sequence length: --max-seq-len 512")
         print("• Check your data format matches --dataset-type")
