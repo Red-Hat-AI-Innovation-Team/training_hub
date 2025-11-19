@@ -135,18 +135,31 @@ class UnslothLoRABackend(Backend):
         if target_modules is None:
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=params.get('lora_r', 16),
-            target_modules=target_modules,
-            lora_alpha=params.get('lora_alpha', 32),
-            lora_dropout=params.get('lora_dropout', 0.0),  # 0.0 is optimized for Unsloth
-            bias="none",
-            use_gradient_checkpointing="unsloth",  # Unsloth's optimized gradient checkpointing
-            random_state=params.get('seed', 3407),
-            use_rslora=False,
-            loftq_config=None,
-        )
+        # Build LoRA config parameters
+        lora_config = {
+            'r': params.get('lora_r', 16),
+            'target_modules': target_modules,
+            'lora_alpha': params.get('lora_alpha', 32),
+            'lora_dropout': params.get('lora_dropout', 0.0),  # 0.0 is optimized for Unsloth
+            'bias': "none",
+            'use_gradient_checkpointing': "unsloth",  # Unsloth's optimized gradient checkpointing
+            'random_state': params.get('seed', 3407),
+            'use_rslora': params.get('use_rslora', False),
+        }
+
+        # Add optional advanced parameters if specified
+        if params.get('loftq_config') is not None:
+            lora_config['loftq_config'] = params.get('loftq_config')
+        if params.get('use_dora') is not None:
+            lora_config['use_dora'] = params.get('use_dora')
+        if params.get('init_lora_weights') is not None:
+            lora_config['init_lora_weights'] = params.get('init_lora_weights')
+        if params.get('rank_pattern') is not None:
+            lora_config['rank_pattern'] = params.get('rank_pattern')
+        if params.get('alpha_pattern') is not None:
+            lora_config['alpha_pattern'] = params.get('alpha_pattern')
+
+        model = FastLanguageModel.get_peft_model(model, **lora_config)
 
         return model
 
@@ -165,10 +178,12 @@ class UnslothLoRABackend(Backend):
 
         if dataset_type == 'chat_template':
             # Convert messages format using chat template
+            messages_field = params.get('field_messages', 'messages')
+
             def format_chat_template(examples):
-                # examples['messages'] is a list of conversations (batched)
+                # examples[messages_field] is a list of conversations (batched)
                 texts = []
-                for conversation in examples['messages']:
+                for conversation in examples[messages_field]:
                     text = tokenizer.apply_chat_template(
                         conversation,
                         tokenize=False,
@@ -181,12 +196,16 @@ class UnslothLoRABackend(Backend):
 
         elif dataset_type == 'alpaca':
             # Convert alpaca format to text
+            instruction_field = params.get('field_instruction', 'instruction')
+            input_field = params.get('field_input', 'input')
+            output_field = params.get('field_output', 'output')
+
             def format_alpaca(examples):
                 texts = []
-                for i in range(len(examples['instruction'])):
-                    instruction = examples['instruction'][i]
-                    input_text = examples.get('input', [''] * len(examples['instruction']))[i]
-                    output = examples['output'][i]
+                for i in range(len(examples[instruction_field])):
+                    instruction = examples[instruction_field][i]
+                    input_text = examples.get(input_field, [''] * len(examples[instruction_field]))[i]
+                    output = examples[output_field][i]
 
                     if input_text:
                         text = f"### Instruction:\n{instruction}\n\n### Input:\n{input_text}\n\n### Response:\n{output}"
@@ -753,7 +772,7 @@ def lora_sft(model_path: str,
 
     Example:
         # Basic LoRA training
-        result = lora(
+        result = lora_sft(
             model_path="microsoft/DialoGPT-medium",
             data_path="./training_data.jsonl",
             ckpt_output_dir="./outputs",
@@ -764,7 +783,7 @@ def lora_sft(model_path: str,
         )
 
         # QLoRA with 4-bit quantization
-        result = lora(
+        result = lora_sft(
             model_path="meta-llama/Llama-2-7b-hf",
             data_path="./training_data.jsonl",
             ckpt_output_dir="./outputs",
