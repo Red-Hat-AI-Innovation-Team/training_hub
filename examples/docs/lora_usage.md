@@ -153,6 +153,12 @@ result = lora_sft(
 ```
 
 ### Weights & Biases Integration
+
+**Note:** Weights & Biases is not included in the `[lora]` extras. Install it separately:
+```bash
+pip install wandb
+```
+
 ```python
 result = lora_sft(
     model_path="Qwen/Qwen2.5-1.5B-Instruct",
@@ -167,7 +173,7 @@ result = lora_sft(
 
 ## Examples
 
-See [lora_example.py](../lora_example.py) for complete working examples including:
+See [lora_example.py](../scripts/lora_example.py) for complete working examples including:
 - Basic LoRA training
 - QLoRA with 4-bit quantization
 - Multi-GPU distributed training

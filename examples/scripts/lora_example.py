@@ -201,8 +201,11 @@ def main():
     if args.create_sample_data:
         sample_path = "./sample_data.jsonl"
         create_sample_data(sample_path, args.sample_data_format)
-        print(f"\\nUse this sample data with:")
-        print(f"python {sys.argv[0]} --data-path {sample_path} --ckpt-output-dir ./outputs")
+        print("\\nUse this sample data with:")
+        if args.sample_data_format == 'alpaca':
+            print(f"python {sys.argv[0]} --data-path {sample_path} --ckpt-output-dir ./outputs --dataset-type alpaca")
+        else:
+            print(f"python {sys.argv[0]} --data-path {sample_path} --ckpt-output-dir ./outputs")
         return
 
     # Validate required arguments
@@ -221,15 +224,16 @@ def main():
     # Warn if user wants multi-GPU but didn't launch with torchrun
     if args.nproc_per_node > 1 and not is_distributed:
         print("⚠️  WARNING: You specified --nproc-per-node > 1 but aren't using torchrun!")
-        print(f"   For multi-GPU training, use:")
-        print(f"   torchrun --nproc-per-node={args.nproc_per_node} {' '.join(sys.argv)}")
+        print("   For multi-GPU training, use:")
+        script = Path(sys.argv[0]).name
+        print(f"   torchrun --nproc-per-node={args.nproc_per_node} {script} --data-path {args.data_path} --ckpt-output-dir {args.ckpt_output_dir}")
         print()
         print("   Continuing with single-GPU training...")
         args.nproc_per_node = 1
         print()
 
     # Print configuration
-    print(f"🚀 LoRA Training")
+    print("🚀 LoRA Training")
     print("=" * 60)
     print(f"Model: {args.model_path}")
     print(f"Data: {args.data_path}")

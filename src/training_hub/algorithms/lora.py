@@ -315,6 +315,13 @@ class UnslothLoRABackend(Backend):
             run_name=params.get('wandb_run_name'),
         )
 
+        # Set Weights & Biases project and entity via environment variables if provided
+        if params.get('wandb_project'):
+            import os
+            os.environ['WANDB_PROJECT'] = params.get('wandb_project')
+            if params.get('wandb_entity'):
+                os.environ['WANDB_ENTITY'] = params.get('wandb_entity')
+
         return training_args
 
 
@@ -413,7 +420,7 @@ class LoRASFTAlgorithm(Algorithm):
             effective_batch_size: Effective batch size across all GPUs
             learning_rate: Learning rate (default: 2e-4)
             max_seq_len: Maximum sequence length (default: 2048)
-            max_tokens_per_gpu: Maximum tokens per GPU in a mini-batch
+            max_tokens_per_gpu: Maximum tokens per GPU (reserved for future implementation)
             data_output_dir: Directory to save processed data
             save_samples: Number of samples to save after training
             warmup_steps: Number of warmup steps
@@ -447,11 +454,11 @@ class LoRASFTAlgorithm(Algorithm):
             bnb_4bit_use_double_quant: Use double quantization (default: True)
 
             Optimization Parameters:
-            flash_attention: Use Flash Attention (default: True)
+            flash_attention: Use flash attention as default over installed xformers (reserved for future implementation)
             sample_packing: Pack multiple samples per sequence (default: True)
             bf16: Use bfloat16 precision (default: True)
             fp16: Use float16 precision (default: False)
-            tf32: Use TensorFloat-32 (default: True)
+            tf32: Use TensorFloat-32 (reserved for future implementation)
 
             Logging and Saving:
             save_steps: Steps between checkpoints (default: 500)
