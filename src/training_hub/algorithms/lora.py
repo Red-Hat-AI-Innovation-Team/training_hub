@@ -317,7 +317,6 @@ class UnslothLoRABackend(Backend):
 
         # Set Weights & Biases project and entity via environment variables if provided
         if params.get('wandb_project'):
-            import os
             os.environ['WANDB_PROJECT'] = params.get('wandb_project')
             if params.get('wandb_entity'):
                 os.environ['WANDB_ENTITY'] = params.get('wandb_entity')

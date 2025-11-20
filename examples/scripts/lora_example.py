@@ -181,6 +181,8 @@ Examples:
                        help='Weights & Biases project name')
     parser.add_argument('--wandb-entity',
                        help='Weights & Biases entity name')
+    parser.add_argument('--wandb-run-name',
+                        help='Weights & Biases run name')
 
     # Utility options
     parser.add_argument('--create-sample-data', action='store_true',
