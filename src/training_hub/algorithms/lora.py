@@ -67,8 +67,25 @@ class UnslothLoRABackend(Backend):
             packing=training_params.get('sample_packing', True),
         )
 
-        # Execute training
-        trainer.train()
+        # Execute training with error handling for known Unsloth issues
+        try:
+            trainer.train()
+        except AssertionError as e:
+            if "wrong number of dimensions" in str(e) and "int8_mixed_scaled_mm" in str(e):
+                # Known Unsloth 8-bit quantization issue: https://github.com/unslothai/unsloth/issues/3501
+                raise RuntimeError(
+                    f"❌ Unsloth 8-bit quantization compatibility issue detected.\n"
+                    f"This is a known issue with Unsloth + 8-bit quantization + some model architectures.\n"
+                    f"See: https://github.com/unslothai/unsloth/issues/3501\n\n"
+                    f"💡 Recommended solutions:\n"
+                    f"• Try 4-bit quantization instead: load_in_4bit=True, load_in_8bit=False\n"
+                    f"• Use standard training without quantization: load_in_4bit=False, load_in_8bit=False\n"
+                    f"• Update Unsloth to the latest version in case this issue is fixed\n\n"
+                    f"Original error: {e}"
+                ) from e
+            else:
+                # Re-raise other AssertionErrors
+                raise
 
         # Save model
         if training_params.get('save_model', True):
