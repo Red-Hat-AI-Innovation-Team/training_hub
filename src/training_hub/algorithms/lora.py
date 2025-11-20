@@ -101,14 +101,16 @@ class UnslothLoRABackend(Backend):
             torch.cuda.set_device(local_rank)
             device_map_config['device_map'] = {"": local_rank}
 
-        # Configure quantization options with BitsAndBytes defaults
+        # Configure quantization options - only add BitsAndBytes parameters if explicitly provided
         quantization_kwargs = {}
         if load_in_4bit:
-            quantization_kwargs.update({
-                'bnb_4bit_quant_type': params.get('bnb_4bit_quant_type', 'nf4'),  # BitsAndBytes default
-                'bnb_4bit_compute_dtype': params.get('bnb_4bit_compute_dtype', 'bfloat16'),  # BitsAndBytes default
-                'bnb_4bit_use_double_quant': params.get('bnb_4bit_use_double_quant', True),  # BitsAndBytes default
-            })
+            # Only add BitsAndBytes-specific parameters if they were explicitly set by the user
+            if 'bnb_4bit_quant_type' in params:
+                quantization_kwargs['bnb_4bit_quant_type'] = params['bnb_4bit_quant_type']
+            if 'bnb_4bit_compute_dtype' in params:
+                quantization_kwargs['bnb_4bit_compute_dtype'] = params['bnb_4bit_compute_dtype']
+            if 'bnb_4bit_use_double_quant' in params:
+                quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=params['model_path'],
