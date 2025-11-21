@@ -329,6 +329,8 @@ def main():
         train_kwargs['wandb_project'] = args.wandb_project
         if args.wandb_entity:
             train_kwargs['wandb_entity'] = args.wandb_entity
+        if args.wandb_run_name:
+            train_kwargs['wandb_run_name'] = args.wandb_run_name
 
     # Start training
     print(f"🚀 Starting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
