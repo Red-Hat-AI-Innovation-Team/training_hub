@@ -3,7 +3,6 @@ try:
 except ImportError:
     from typing_extensions import override
 from transformers import AutoModel
-from mini_trainer.osft_utils import MODEL_CONFIGS
 import numpy as np
 
 """
@@ -325,6 +324,9 @@ class OSFTEstimatorExperimental(BasicEstimator):
             raise ValueError("Ratio must be in the range [0, 1]")
 
         # Check to see which terms need to be included in the search for valid layers
+        # MODEL_CONFIGS require transformers>4.56.0, that conflict with HPU enabling,
+        # temporary moving MODEL_CONFIGS import here to enable HPU support
+        from mini_trainer.osft_utils import MODEL_CONFIGS
         self.target_terms = MODEL_CONFIGS['default']['patterns']
         for key in MODEL_CONFIGS.keys():
             if self.model_path.find(key) > -1:
