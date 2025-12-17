@@ -94,7 +94,8 @@ LoRA provides parameter-efficient fine-tuning with significantly reduced memory 
 
 **Launch Requirements:**
 - **Single-GPU**: Standard Python launch: `python my_script.py`
-- **Multi-GPU**: Unlike other algorithms, LoRA requires torchrun: `torchrun --nproc-per-node=4 my_script.py`
+- **Multi-GPU (Data-Parallel)**: For data-parallel training, use torchrun: `torchrun --nproc-per-node=4 my_script.py`
+- **Multi-GPU (Model Splitting)**: For large models that don't fit on one GPU, use `enable_model_splitting=True` with standard Python launch
 
 **Quick Example:**
 ```python

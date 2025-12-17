@@ -58,16 +58,38 @@ Your training data should be in JSONL format with messages (same as SFT):
 python my_training_script.py
 ```
 
-**Multi-GPU (IMPORTANT):**
-Unlike other algorithms in training_hub, LoRA requires `torchrun` for multi-GPU setups:
+**Multi-GPU - Two Options:**
+
+LoRA supports two different multi-GPU strategies:
+
+1. **Data-Parallel Training (DDP)** - Each GPU holds a full copy of the model and processes different data batches. Requires `torchrun`:
 
 ```bash
-# For 4 GPUs
+# For 4 GPUs with data parallelism
 torchrun --nproc-per-node=4 my_training_script.py
-
-# For 8 GPUs
-torchrun --nproc-per-node=8 my_training_script.py
 ```
+
+2. **Model Splitting** - For very large models that don't fit on a single GPU (e.g., 70B models). The model is split across GPUs. No torchrun needed:
+
+```python
+result = lora_sft(
+    model_path="meta-llama/Llama-3.1-70B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    enable_model_splitting=True,  # Splits model across available GPUs
+    lora_r=16,
+    lora_alpha=32
+)
+```
+
+```bash
+# Launch with standard Python (no torchrun)
+python my_training_script.py
+```
+
+**When to use which:**
+- **Data-Parallel (torchrun)**: Model fits on one GPU, you want faster training with multiple GPUs processing data in parallel
+- **Model Splitting**: Model is too large for a single GPU, you need to distribute the model weights across GPUs
 
 ## Key Concepts
 
@@ -155,9 +177,9 @@ Exact savings depend on your model, LoRA configuration (rank, target modules), a
 
 ## Advanced Usage
 
-### Multi-GPU Distributed Training
+### Multi-GPU Data-Parallel Training
 
-For distributed training across multiple GPUs:
+For data-parallel training across multiple GPUs (each GPU processes different data batches):
 
 ```python
 result = lora_sft(
@@ -183,6 +205,38 @@ Launch with torchrun:
 ```bash
 torchrun --nproc-per-node=4 my_script.py
 ```
+
+### Model Splitting for Large Models
+
+For models too large to fit on a single GPU, use model splitting instead of data parallelism:
+
+```python
+result = lora_sft(
+    model_path="meta-llama/Llama-3.1-70B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+
+    # Enable model splitting across GPUs
+    enable_model_splitting=True,
+
+    # LoRA settings (lower rank may be needed for very large models)
+    lora_r=16,
+    lora_alpha=32,
+    load_in_4bit=True,  # QLoRA recommended for large models
+
+    # Training settings
+    num_epochs=1,
+    learning_rate=1e-4,
+    micro_batch_size=1
+)
+```
+
+Launch with standard Python (no torchrun needed):
+```bash
+python my_script.py
+```
+
+**Note:** Model splitting is slower than data parallelism but allows training models that exceed single-GPU memory capacity.
 
 ### Custom Target Modules
 
@@ -238,9 +292,11 @@ result = lora_sft(
 - Reduce `max_seq_len`
 
 ### Multi-GPU Issues
-- Ensure you're using `torchrun` for multi-GPU (not direct Python execution)
-- Check that `effective_batch_size` is divisible by `nproc_per_node * micro_batch_size`
-- For very large models, try `enable_model_splitting=True`
+- **Data-Parallel (DDP)**: Ensure you're using `torchrun` (not direct Python execution)
+- **Model Splitting**: Use `enable_model_splitting=True` with standard Python (no torchrun)
+- Don't mix both approaches - use either DDP or model splitting, not both
+- For DDP: Check that `effective_batch_size` is divisible by `nproc_per_node * micro_batch_size`
+- For model splitting: Reduce `micro_batch_size` if you hit OOM errors
 
 ### Installation Issues
 - If xformers conflicts occur, the LoRA extras use PyTorch-optimized builds
