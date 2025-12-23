@@ -22,6 +22,9 @@ def sft(
     warmup_steps: Optional[int] = None,
     accelerate_full_state_at_epoch: Optional[bool] = None,
     checkpoint_at_epoch: Optional[bool] = None,
+    is_pretraining: Optional[bool] = None,
+    block_size: Optional[int] = None,
+    document_column_name: Optional[str] = None,
     nproc_per_node: Optional[int] = None,
     nnodes: Optional[int] = None,
     node_rank: Optional[int] = None,
@@ -69,6 +72,14 @@ def sft(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `data_output_dir` | `str` | `None` | Directory to save processed training data. If not specified, processed data may be stored in a temporary location. |
+
+#### Pretraining
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `is_pretraining` | `bool` | `None` | When `True`, switches to document-style pretraining mode. |
+| `block_size` | `int` | `None` | Required when `is_pretraining=True`. Token length of each document block. |
+| `document_column_name` | `str` | `"document"` | Column containing raw documents when `is_pretraining=True`. |
 
 #### Checkpointing
 

@@ -23,6 +23,9 @@ def osft(
     use_liger: bool | None = None,
     use_processed_dataset: bool | None = None,
     unmask_messages: bool | None = None,
+    is_pretraining: bool | None = None,
+    block_size: int | None = None,
+    document_column_name: str | None = None,
     lr_scheduler: str | None = None,
     warmup_steps: int | None = None,
     lr_scheduler_kwargs: dict[str, str] | None = None,
@@ -68,6 +71,14 @@ def osft(
 | `data_output_dir` | `str` | `None` | Directory for data processing outputs. |
 | `use_processed_dataset` | `bool` | Backend default | Whether the data at `data_path` is already preprocessed. Set to `True` to skip preprocessing. |
 | `unmask_messages` | `bool` | Backend default | If `True`, unmasks all messages during data processing (excluding system messages). |
+
+#### Pretraining
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `is_pretraining` | `bool` | `None` | When `True`, switches to document-style continual pretraining mode. |
+| `block_size` | `int` | `None` | Required when `is_pretraining=True`. Token length of each document block. |
+| `document_column_name` | `str` | `"document"` | Column containing raw documents when `is_pretraining=True`. |
 
 #### OSFT-Specific Configuration
 

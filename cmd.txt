@@ -1,0 +1,25 @@
+CUDA_VISIBLE_DEVICES=0,1  python oleg-train-comp.py     --task_name dummy     --split train     --block_size 512     --rehersal_rate 0.0     --subsample_ratio 1.0     --model_name qwen/Qwen2.5-1.5B-Instruct     --output_dir ./test-output     --num_train_epochs 10     --per_device_train_batch_size 2     --logging_steps 1 --report_to=wandb  --logging_steps=1      --bf16 True
+
+ your settings modified) would be:
+CUDA_VISIBLE_DEVICES=0,1 torchrun \
+    --nproc_per_node=2 oleg-train-comp.py \
+    --seed=42 \
+    --model_name=meta-llama/Llama-3.2-1B-Instruct \
+    --block_size=512 \
+    --per_device_train_batch_size=2 \
+    --gradient_accumulation_steps=1 \
+    --num_train_epochs=10 \
+    --learning_rate=2e-5 \
+    --rehersal_rate=0.0 \
+    --subsample_ratio=1.0 \
+    --task_name=dummy \
+    --split=train \
+    --logging_steps=1 \
+    --bf16=True \
+    --output_dir=./test-output \
+    --report_to=wandb \
+    --save_strategy=no \
+    --lr_scheduler_type=cosine \
+    --log_level=info \
+    --fsdp="hybrid_shard auto_wrap" \
+    --fsdp_config="fsdp_config.json"

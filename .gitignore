@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Ignore wandb
+wandb
+
 # C extensions
 *.so
 

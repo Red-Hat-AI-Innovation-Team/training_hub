@@ -1,0 +1,1 @@
+MINITRAINER_PADDED_BATCHES=1  MINITRAINER_HF_PARITY=0 python oleg-osft-comp.py        --block_size 512 --max_tokens_per_gpu 1024  --model_name='qwen/Qwen2.5-1.5B-Instruct' 

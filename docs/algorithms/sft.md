@@ -53,6 +53,30 @@ Your training data should be in JSONL format with messages:
 
 That's it! The `sft()` function handles all the complexity of distributed training, data processing, and checkpointing automatically.
 
+### Continual Pretraining (Optional)
+
+Need to keep feeding your base model new raw documents before instruction tuning? Enable continual pretraining by providing a `block_size`. Training Hub will automatically switch to the document-style data processing pipeline from `instructlab-training`.
+
+```python
+result = sft(
+    model_path="Qwen/Qwen2.5-7B",
+    data_path="./raw_documents.jsonl",
+    ckpt_output_dir="./checkpoints",
+    is_pretraining=True,
+    block_size=512,
+    document_column_name="text",  # optional, defaults to "document"
+)
+```
+
+Each line in `raw_documents.jsonl` should contain the raw text under the specified column name, for example:
+
+```json
+{"text": "First article ..."}
+{"text": "Second article ..."}
+```
+
+See the [Continual Pretraining Guide](/guides/continual-pretraining.md) for more details and best practices.
+
 ## Key Concepts
 
 ### Training Data
