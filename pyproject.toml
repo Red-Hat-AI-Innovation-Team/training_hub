@@ -45,7 +45,7 @@ dependencies = [
     "attr>=0.3.2",
     "filelock>=3.19.1",
     "mpmath>=1.3.0",
-    "pytest>=8.0"
+    "pytest>=8.0",
 ]
 
 dynamic = ["version"]
@@ -70,7 +70,13 @@ lora = [
 
 dev = [
     "ipykernel",
-    "ipython"
+    "ipython",
+    # Required for the model validation script
+    "rich",
+    # Required for Mistral and other tokenizers
+    "protobuf>=4.0",
+    "mistral-common>=1.5.0",
+    "sentencepiece>=0.2.0",
 ]
 
 [project.urls]

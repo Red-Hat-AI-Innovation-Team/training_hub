@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+tmp-outputs/
+tmp-datasets/
+
 # Ignore wandb
 wandb
 
