@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Model Validation Script for Training Hub
 
@@ -26,9 +25,9 @@ import json
 import os
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 
 from rich.console import Console
@@ -40,84 +39,32 @@ from rich import box
 # Rich console for formatted output
 console = Console()
 
-# CRITICAL: Set this BEFORE any transformers imports to prevent worker processes
-# from using incompatible cached remote code
-os.environ["HF_HUB_DISABLE_REMOTE_CODE_EXECUTION"] = "1"
 
-# Models that require trust_remote_code - populated from MODELS registry after it's defined
-_MODELS_REQUIRING_TRUST_REMOTE_CODE: set[str] = set()
-
-
-def _patch_trust_remote_code():
+@contextmanager
+def trust_remote_code_context(enabled: bool):
     """
-    Monkey-patch transformers and instructlab to selectively trust remote code.
+    Context manager to temporarily enable/disable trust_remote_code via environment variable.
 
-    Only enables trust_remote_code for models explicitly marked with
-    requires_trust_remote_code=True in the MODELS registry. This prevents
-    using potentially incompatible remote code when transformers has native support.
+    When enabled=True, sets HF_HUB_TRUST_REMOTE_CODE=1 which tells Hugging Face
+    to trust remote code without requiring the explicit parameter.
     """
-    from transformers import dynamic_module_utils
+    env_var = "HF_HUB_TRUST_REMOTE_CODE"
+    old_value = os.environ.get(env_var)
 
-    original_resolve = dynamic_module_utils.resolve_trust_remote_code
+    if enabled:
+        os.environ[env_var] = "1"
+        console.print(f"[dim]🔓 Enabling trust_remote_code via {env_var}[/dim]")
+    elif env_var in os.environ:
+        del os.environ[env_var]
 
-    def patched_resolve_trust_remote_code(
-        trust_remote_code, model_name, has_local_code, has_remote_code,
-        error_message=None, upstream_repo=None
-    ):
-        # If trust_remote_code was explicitly set, honor it
-        if trust_remote_code is not None:
-            return original_resolve(
-                trust_remote_code, model_name, has_local_code, has_remote_code,
-                error_message, upstream_repo
-            )
-
-        # Only trust remote code for models explicitly configured to require it
-        if has_remote_code:
-            # Check if this model is in our allow-list
-            for allowed_model in _MODELS_REQUIRING_TRUST_REMOTE_CODE:
-                if allowed_model in model_name:
-                    print(f"🔓 Trusting remote code for: {model_name}")
-                    return True
-            # NOT in allow-list - use local/native implementation
-            if has_local_code:
-                print(f"🔒 Using native transformers implementation for: {model_name}")
-                return False
-
-        # No remote code or no local code - use original logic
-        return original_resolve(
-            trust_remote_code, model_name, has_local_code, has_remote_code,
-            error_message, upstream_repo
-        )
-
-    dynamic_module_utils.resolve_trust_remote_code = patched_resolve_trust_remote_code
-
-    # Also patch instructlab's Model class to inject trust_remote_code into base_model_args
     try:
-        from instructlab.training import model as ilab_model
-
-        original_model_init = ilab_model.Model.__init__
-
-        def patched_model_init(self, *args, **kwargs):
-            original_model_init(self, *args, **kwargs)
-            # Inject trust_remote_code based on allow-list
-            model_path = self.base_model_args.get("pretrained_model_name_or_path", "")
-            should_trust = any(allowed in model_path for allowed in _MODELS_REQUIRING_TRUST_REMOTE_CODE)
-            self.base_model_args["trust_remote_code"] = should_trust
-            if should_trust:
-                print(f"  [Worker] Trusting remote code: {model_path}")
-            else:
-                print(f"  [Worker] Using native implementation: {model_path}")
-
-        ilab_model.Model.__init__ = patched_model_init
-        print("✅ Patched instructlab Model class for worker processes")
-    except ImportError:
-        pass  # instructlab not loaded yet
-
-    print("✅ Patched transformers for selective trust_remote_code")
-
-
-# Apply the patch immediately
-_patch_trust_remote_code()
+        yield
+    finally:
+        # Restore original state
+        if old_value is not None:
+            os.environ[env_var] = old_value
+        elif env_var in os.environ:
+            del os.environ[env_var]
 
 # ============================================================================
 # CONFIGURATION - Edit these settings as needed
@@ -138,6 +85,9 @@ MAX_SEQ_LEN = 4096  # Should be enough for our single sample
 
 # Dataset size (copies of single sample)
 NUM_SAMPLES = 1000
+
+# Convergence threshold - loss below this indicates successful overfitting
+CONVERGENCE_THRESHOLD = 0.1
 
 # ============================================================================
 # MODEL REGISTRY
@@ -241,12 +191,6 @@ MODELS = {
     ),
 }
 
-# Populate the trust_remote_code allow-list from MODELS registry
-for _key, _config in MODELS.items():
-    if _config.requires_trust_remote_code:
-        _MODELS_REQUIRING_TRUST_REMOTE_CODE.add(_config.model_id)
-        print(f"  → {_config.model_id} requires trust_remote_code")
-
 # ============================================================================
 # SAMPLE DATA FOR OVERFITTING
 # ============================================================================
@@ -262,6 +206,77 @@ OVERFIT_SAMPLE = {
         },
     ]
 }
+
+
+# ============================================================================
+# LOSS EXTRACTION
+# ============================================================================
+
+
+def get_final_sft_loss(output_dir: str) -> float | None:
+    """
+    Get final loss from SFT training metrics.
+
+    SFT (instructlab-training) logs to: training_params_and_metrics_global{rank}.jsonl
+    Loss field: "avg_loss"
+
+    Args:
+        output_dir: The checkpoint output directory used for training
+
+    Returns:
+        Final average loss value, or None if not found
+    """
+    metrics_file = os.path.join(output_dir, "training_params_and_metrics_global0.jsonl")
+    if not os.path.exists(metrics_file):
+        console.print(f"[dim]Loss file not found: {metrics_file}[/dim]")
+        return None
+
+    last_entry = None
+    with open(metrics_file) as f:
+        for line in f:
+            if line.strip():
+                try:
+                    last_entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+    if last_entry is None:
+        return None
+
+    return last_entry.get("avg_loss")
+
+
+def get_final_osft_loss(output_dir: str) -> float | None:
+    """
+    Get final loss from OSFT training metrics.
+
+    OSFT (mini-trainer) logs to: training_metrics_{node_rank}.jsonl
+    Loss field: "loss"
+
+    Args:
+        output_dir: The checkpoint output directory used for training
+
+    Returns:
+        Final loss value, or None if not found
+    """
+    metrics_file = os.path.join(output_dir, "training_metrics_0.jsonl")
+    if not os.path.exists(metrics_file):
+        console.print(f"[dim]Loss file not found: {metrics_file}[/dim]")
+        return None
+
+    last_entry = None
+    with open(metrics_file) as f:
+        for line in f:
+            if line.strip():
+                try:
+                    last_entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+    if last_entry is None:
+        return None
+
+    return last_entry.get("loss")
 
 
 def format_duration(seconds: float) -> str:
@@ -315,11 +330,13 @@ def print_validation_summary(results: list[dict], results_file: str):
         and (r.get("is_vision_model") or r.get("requires_dev_transformers"))
     )
     unexpected_fail_count = failed_count - expected_fail_count
+    converged_count = sum(1 for r in results if r.get("converged", False))
 
     # Create summary panel
     summary_text = Text()
     summary_text.append(f"Total: {len(results)}  ", style="bold")
     summary_text.append(f"Success: {success_count}  ", style="bold green")
+    summary_text.append(f"Converged: {converged_count}  ", style="bold cyan")
     if unexpected_fail_count > 0:
         summary_text.append(f"Failed: {unexpected_fail_count}  ", style="bold red")
     if expected_fail_count > 0:
@@ -339,6 +356,7 @@ def print_validation_summary(results: list[dict], results_file: str):
     table.add_column("Mode", style="cyan", no_wrap=True)
     table.add_column("Liger", style="magenta", no_wrap=True)
     table.add_column("Status", no_wrap=True)
+    table.add_column("Final Loss", no_wrap=True)
     table.add_column("Duration", style="dim", no_wrap=True)
     table.add_column("Notes", overflow="fold")
 
@@ -363,6 +381,17 @@ def print_validation_summary(results: list[dict], results_file: str):
 
         duration = format_duration(r.get("duration_seconds", 0))
 
+        # Format final loss with convergence indicator
+        final_loss = r.get("final_loss")
+        if final_loss is not None:
+            converged = r.get("converged", False)
+            if converged:
+                loss_text = Text(f"{final_loss:.4f}", style="bold green")
+            else:
+                loss_text = Text(f"{final_loss:.4f}", style="yellow")
+        else:
+            loss_text = Text("-", style="dim")
+
         # Notes/error
         notes = ""
         if r.get("is_vision_model"):
@@ -377,7 +406,7 @@ def print_validation_summary(results: list[dict], results_file: str):
             else:
                 notes = error_str
 
-        table.add_row(model_short, mode, liger, status_text, duration, notes)
+        table.add_row(model_short, mode, liger, status_text, loss_text, duration, notes)
 
     console.print(table)
 
@@ -469,34 +498,41 @@ def run_sft_validation(
     }
 
     try:
-        sft(
-            model_path=model_config.model_id,
-            data_path=data_path,
-            ckpt_output_dir=output_dir,
-            # Training parameters
-            num_epochs=NUM_EPOCHS,
-            effective_batch_size=EFFECTIVE_BATCH_SIZE,
-            learning_rate=LEARNING_RATE,
-            max_seq_len=max_seq,
-            max_tokens_per_gpu=max_tokens,
-            # Data processing
-            data_output_dir=os.path.join(output_dir, "_data_processing"),
-            warmup_steps=0,
-            save_samples=0,  # Disable sample-based checkpointing
-            # Checkpointing
-            checkpoint_at_epoch=False,
-            accelerate_full_state_at_epoch=False,
-            # Multi-GPU setup
-            nproc_per_node=NUM_GPUS,
-            nnodes=1,
-            node_rank=0,
-            rdzv_id=f"validation-sft-{int(time.time())}",
-            rdzv_endpoint="127.0.0.1:42067",
-            # Optimization - passed through kwargs to TrainingArgs
-            use_liger=use_liger,
-        )
+        with trust_remote_code_context(model_config.requires_trust_remote_code):
+            sft(
+                model_path=model_config.model_id,
+                data_path=data_path,
+                ckpt_output_dir=output_dir,
+                # Training parameters
+                num_epochs=NUM_EPOCHS,
+                effective_batch_size=EFFECTIVE_BATCH_SIZE,
+                learning_rate=LEARNING_RATE,
+                max_seq_len=max_seq,
+                max_tokens_per_gpu=max_tokens,
+                # Data processing
+                data_output_dir=os.path.join(output_dir, "_data_processing"),
+                warmup_steps=0,
+                save_samples=0,  # Disable sample-based checkpointing
+                # Checkpointing
+                checkpoint_at_epoch=False,
+                accelerate_full_state_at_epoch=False,
+                # Multi-GPU setup
+                nproc_per_node=NUM_GPUS,
+                nnodes=1,
+                node_rank=0,
+                rdzv_id=f"validation-sft-{int(time.time())}",
+                rdzv_endpoint="127.0.0.1:42067",
+                # Optimization - passed through kwargs to TrainingArgs
+                use_liger=use_liger,
+            )
 
         result["status"] = "success"
+
+        # Extract final loss
+        final_loss = get_final_sft_loss(output_dir)
+        result["final_loss"] = final_loss
+        if final_loss is not None:
+            result["converged"] = final_loss < CONVERGENCE_THRESHOLD
 
     except Exception as e:
         result["status"] = "failed"
@@ -544,37 +580,44 @@ def run_osft_validation(
     }
 
     try:
-        osft(
-            model_path=model_config.model_id,
-            data_path=data_path,
-            ckpt_output_dir=output_dir,
-            # OSFT-specific parameters
-            unfreeze_rank_ratio=OSFT_UNFREEZE_RANK_RATIO,
-            # Training parameters
-            num_epochs=NUM_EPOCHS,
-            effective_batch_size=EFFECTIVE_BATCH_SIZE,
-            learning_rate=LEARNING_RATE,
-            max_seq_len=max_seq,
-            max_tokens_per_gpu=max_tokens,
-            # Data processing
-            data_output_dir=os.path.join(output_dir, "_data_processing"),
-            warmup_steps=0,
-            # Optimization
-            use_liger=use_liger,
-            seed=42,
-            lr_scheduler="cosine",
-            # Checkpointing
-            checkpoint_at_epoch=True,
-            save_final_checkpoint=True,
-            # Multi-GPU setup
-            nproc_per_node=NUM_GPUS,
-            nnodes=1,
-            node_rank=0,
-            rdzv_id=f"validation-osft-{int(time.time())}",
-            rdzv_endpoint="127.0.0.1:29500",
-        )
+        with trust_remote_code_context(model_config.requires_trust_remote_code):
+            osft(
+                model_path=model_config.model_id,
+                data_path=data_path,
+                ckpt_output_dir=output_dir,
+                # OSFT-specific parameters
+                unfreeze_rank_ratio=OSFT_UNFREEZE_RANK_RATIO,
+                # Training parameters
+                num_epochs=NUM_EPOCHS,
+                effective_batch_size=EFFECTIVE_BATCH_SIZE,
+                learning_rate=LEARNING_RATE,
+                max_seq_len=max_seq,
+                max_tokens_per_gpu=max_tokens,
+                # Data processing
+                data_output_dir=os.path.join(output_dir, "_data_processing"),
+                warmup_steps=0,
+                # Optimization
+                use_liger=use_liger,
+                seed=42,
+                lr_scheduler="cosine",
+                # Checkpointing
+                checkpoint_at_epoch=True,
+                save_final_checkpoint=True,
+                # Multi-GPU setup
+                nproc_per_node=NUM_GPUS,
+                nnodes=1,
+                node_rank=0,
+                rdzv_id=f"validation-osft-{int(time.time())}",
+                rdzv_endpoint="127.0.0.1:29500",
+            )
 
         result["status"] = "success"
+
+        # Extract final loss
+        final_loss = get_final_osft_loss(output_dir)
+        result["final_loss"] = final_loss
+        if final_loss is not None:
+            result["converged"] = final_loss < CONVERGENCE_THRESHOLD
 
     except Exception as e:
         result["status"] = "failed"
@@ -634,7 +677,19 @@ def run_single_validation(
 
     # Print result summary
     if result["status"] == "success":
-        console.print(f"[bold green]SUCCESS[/bold green] - Completed in {format_duration(result['duration_seconds'])}")
+        duration_str = format_duration(result['duration_seconds'])
+        final_loss = result.get("final_loss")
+        if final_loss is not None:
+            converged = result.get("converged", False)
+            loss_style = "bold green" if converged else "yellow"
+            converge_status = "converged" if converged else "not converged"
+            console.print(
+                f"[bold green]SUCCESS[/bold green] - "
+                f"Final loss: [{loss_style}]{final_loss:.4f}[/{loss_style}] ({converge_status}) - "
+                f"Completed in {duration_str}"
+            )
+        else:
+            console.print(f"[bold green]SUCCESS[/bold green] - Completed in {duration_str}")
     else:
         console.print(f"[bold red]FAILED[/bold red] - {result['error']}")
 
@@ -737,17 +792,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Run single model validation
-    python model_validation.py --model-key llama --mode sft
-    python model_validation.py --model-key llama --mode osft --use-liger
-    python model_validation.py --model-key llama --mode osft --no-liger
+    # Run validation for specific model(s)
+    python model_validation.py --models llama --mode sft
+    python model_validation.py --models llama granite --mode osft
+    python model_validation.py --models llama --mode both
 
     # Run all models for a specific mode
     python model_validation.py --run-all --mode sft
     python model_validation.py --run-all --mode osft
 
-    # Run all combinations
+    # Run all combinations (all models, both modes, liger on/off)
     python model_validation.py --run-all --mode both
+
+    # Disable liger kernel variations (run only with liger enabled or disabled)
+    python model_validation.py --models llama --mode osft --no-liger
 
     # List available models
     python model_validation.py --list-models
@@ -758,7 +816,10 @@ Available model keys:
     )
 
     parser.add_argument(
-        "--model-key", choices=list(MODELS.keys()), help="Model key to validate (see --list-models for options)"
+        "--models",
+        nargs="+",
+        choices=list(MODELS.keys()),
+        help="Model(s) to validate (see --list-models for options)",
     )
     parser.add_argument("--mode", choices=["sft", "osft", "both"], default="sft", help="Training mode (default: sft)")
     parser.add_argument(
@@ -766,9 +827,6 @@ Available model keys:
     )
     parser.add_argument("--no-liger", action="store_true", help="Disable Liger kernels for OSFT")
     parser.add_argument("--run-all", action="store_true", help="Run validation for all models")
-    parser.add_argument(
-        "--models", nargs="+", choices=list(MODELS.keys()), help="Specific models to test (with --run-all)"
-    )
     parser.add_argument(
         "--output-dir", default=BASE_OUTPUT_DIR, help=f"Base output directory (default: {BASE_OUTPUT_DIR})"
     )
@@ -786,31 +844,23 @@ Available model keys:
         print_models_table()
         return
 
-    if args.run_all:
+    if args.run_all or args.models:
+        # Determine which models to run
+        model_keys = args.models if args.models else None  # None means all models
+
         # Determine liger modes to test
-        if args.mode == "osft":
-            liger_modes = [True, False] if not args.no_liger else [False]
-        else:
-            liger_modes = [True, False]
+        liger_modes = [use_liger] if args.no_liger or not use_liger else [True, False]
 
         run_all_validations(
             mode=args.mode,
             liger_modes=liger_modes,
             base_output_dir=args.output_dir,
             dataset_dir=args.dataset_dir,
-            model_keys=args.models,
-        )
-    elif args.model_key:
-        run_single_validation(
-            model_key=args.model_key,
-            mode=args.mode if args.mode != "both" else "sft",
-            use_liger=use_liger,
-            base_output_dir=args.output_dir,
-            dataset_dir=args.dataset_dir,
+            model_keys=model_keys,
         )
     else:
         parser.print_help()
-        print("\nError: Either --model-key or --run-all is required")
+        print("\nError: Either --models or --run-all is required")
         sys.exit(1)
 
 
