@@ -31,6 +31,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "fsspec>=2025.0",
     "pandas>=2.2",
+    "matplotlib>=3.9",
     "multiprocess>=0.70.16",
     "aiohttp>=3.12",
     "pyparsing>=3.0",

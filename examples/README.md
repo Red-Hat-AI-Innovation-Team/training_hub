@@ -135,6 +135,31 @@ estimate(training_method='osft',
 )
 ```
 
+### Training Loss Visualization
+
+training_hub includes a `plot_loss` utility for visualizing training loss curves after running SFT or OSFT training. This is useful for monitoring training progress, comparing different experiments, and identifying issues like overfitting.
+
+**Tutorials:**
+- [Plot Loss Example](notebooks/plot_loss_example.ipynb) - Interactive notebook demonstrating loss visualization features
+
+**Quick Example:**
+```python
+from training_hub import sft, plot_loss
+
+# After training
+sft(model_path="...", ckpt_output_dir="./checkpoints", ...)
+
+# Plot and save loss curve
+plot_loss("./checkpoints")
+
+# Compare multiple runs with EMA smoothing
+plot_loss(
+    ["./run1", "./run2", "./run3"],
+    labels=["baseline", "lr=1e-5", "lr=5e-6"],
+    ema=True
+)
+```
+
 ### Model Interpolation (Experimental / In-Development)
 
 training_hub has a utility for merging two checkpoints of the same model into one with linear interpolation.
