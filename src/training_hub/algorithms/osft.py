@@ -68,6 +68,14 @@ class OSFTAlgorithm(Algorithm):
         rdzv_endpoint: str | None = None,
         master_addr: str | None = None,
         master_port: int | None = None,
+        # Logging parameters
+        wandb_project: str | None = None,
+        wandb_entity: str | None = None,
+        wandb_run_name: str | None = None,
+        tensorboard_log_dir: str | None = None,
+        mlflow_tracking_uri: str | None = None,
+        mlflow_experiment_name: str | None = None,
+        mlflow_run_name: str | None = None,
         **kwargs,
     ) -> any:
         """
@@ -148,6 +156,13 @@ class OSFTAlgorithm(Algorithm):
             master_addr (str): Master node address for distributed training (only used with
                 static rdzv_backend).
             master_port (int): Master node port for distributed training.
+            wandb_project (str): Weights & Biases project name.
+            wandb_entity (str): Weights & Biases team/entity name.
+            wandb_run_name (str): Weights & Biases run name.
+            tensorboard_log_dir (str): Directory for TensorBoard logs.
+            mlflow_tracking_uri (str): MLflow tracking server URI.
+            mlflow_experiment_name (str): MLflow experiment name.
+            mlflow_run_name (str): MLflow run name.
             **kwargs: Additional parameters passed to the backend.
 
         Returns:
@@ -168,7 +183,7 @@ class OSFTAlgorithm(Algorithm):
             )
 
         if not is_pretraining and block_size is not None:
-            warnings.warn('block_size only valid with is_pretraining=True')
+            warnings.warn('block_size only valid with is_pretraining=True', stacklevel=2)
 
         required_params = {
             'model_path': model_path,
@@ -214,6 +229,14 @@ class OSFTAlgorithm(Algorithm):
             'rdzv_endpoint': rdzv_endpoint,
             'master_addr': master_addr,
             'master_port': master_port,
+            # logging params
+            'wandb_project': wandb_project,
+            'wandb_entity': wandb_entity,
+            'wandb_run_name': wandb_run_name,
+            'tensorboard_log_dir': tensorboard_log_dir,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
+            'mlflow_run_name': mlflow_run_name,
         }
 
         # now do validation now that we've set everything up
@@ -275,6 +298,14 @@ class OSFTAlgorithm(Algorithm):
             'rdzv_endpoint': str,
             'master_addr': str,
             'master_port': int,
+            # logging params
+            'wandb_project': str,
+            'wandb_entity': str,
+            'wandb_run_name': str,
+            'tensorboard_log_dir': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
+            'mlflow_run_name': str,
         }
 
     def _validate_param_types(self, params: dict[str, any]):
@@ -381,6 +412,20 @@ class MiniTrainerOSFTBackend(Backend):
 
         # Rename parameters before sending to backend
         algorithm_params = {renames.get(k, k): v for k, v in algorithm_params.items()}
+
+        # Populate logging params from environment variables if not explicitly set
+        if not algorithm_params.get('mlflow_tracking_uri'):
+            algorithm_params['mlflow_tracking_uri'] = os.environ.get('MLFLOW_TRACKING_URI')
+        if not algorithm_params.get('mlflow_experiment_name'):
+            algorithm_params['mlflow_experiment_name'] = os.environ.get('MLFLOW_EXPERIMENT_NAME')
+        if not algorithm_params.get('mlflow_run_name'):
+            algorithm_params['mlflow_run_name'] = os.environ.get('MLFLOW_RUN_NAME')
+        if not algorithm_params.get('wandb_project'):
+            algorithm_params['wandb_project'] = os.environ.get('WANDB_PROJECT')
+        if not algorithm_params.get('wandb_entity'):
+            algorithm_params['wandb_entity'] = os.environ.get('WANDB_ENTITY')
+        if not algorithm_params.get('wandb_run_name'):
+            algorithm_params['wandb_run_name'] = os.environ.get('WANDB_RUN_NAME')
 
         # Separate parameters into their respective dataclass fields
         torchrun_args_fields = {f.name for f in fields(TorchrunArgs)}
@@ -556,6 +601,14 @@ def osft(
     rdzv_endpoint: str | None = None,
     master_port: int | None = None,
     master_addr: str | None = None,
+    # Logging parameters
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+    wandb_run_name: str | None = None,
+    tensorboard_log_dir: str | None = None,
+    mlflow_tracking_uri: str | None = None,
+    mlflow_experiment_name: str | None = None,
+    mlflow_run_name: str | None = None,
     **kwargs,
 ) -> any:
     from . import create_algorithm
@@ -596,5 +649,12 @@ def osft(
         rdzv_endpoint=rdzv_endpoint,
         master_port=master_port,
         master_addr=master_addr,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        wandb_run_name=wandb_run_name,
+        tensorboard_log_dir=tensorboard_log_dir,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+        mlflow_run_name=mlflow_run_name,
         **kwargs,
     )

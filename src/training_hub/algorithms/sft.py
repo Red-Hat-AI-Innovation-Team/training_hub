@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, Type, Optional
 from instructlab.training import (
     run_training,
@@ -20,8 +21,10 @@ class InstructLabTrainingSFTBackend(Backend):
         
         # Extract torchrun parameters
         torchrun_params = {k: v for k, v in algorithm_params.items() if k in torchrun_keys}
-        
+
         # Extract training parameters (everything except torchrun params)
+        # Note: instructlab-training auto-detects loggers based on mlflow_tracking_uri,
+        # wandb_project, and tensorboard_log_dir parameters
         training_params = {k: v for k, v in algorithm_params.items() if k not in torchrun_keys}
         
         # Map training_hub parameter names to instructlab-training parameter names
@@ -108,6 +111,14 @@ class SFTAlgorithm(Algorithm):
               rdzv_endpoint: Optional[str] = None,
               master_addr: Optional[str] = None,
               master_port: Optional[int] = None,
+              # Logging parameters
+              wandb_project: Optional[str] = None,
+              wandb_entity: Optional[str] = None,
+              wandb_run_name: Optional[str] = None,
+              tensorboard_log_dir: Optional[str] = None,
+              mlflow_tracking_uri: Optional[str] = None,
+              mlflow_experiment_name: Optional[str] = None,
+              mlflow_run_name: Optional[str] = None,
               **kwargs) -> Any:
         """Execute SFT training.
         
@@ -139,6 +150,13 @@ class SFTAlgorithm(Algorithm):
             rdzv_endpoint: Master node endpoint for multi-node training
             master_addr: Master node address for distributed training
             master_port: Master node port for distributed training
+            wandb_project: Weights & Biases project name
+            wandb_entity: Weights & Biases team/entity name
+            wandb_run_name: Weights & Biases run name
+            tensorboard_log_dir: Directory for TensorBoard logs
+            mlflow_tracking_uri: MLflow tracking server URI
+            mlflow_experiment_name: MLflow experiment name
+            mlflow_run_name: MLflow run name
             **kwargs: Additional parameters passed to the backend
             
         Returns:
@@ -175,6 +193,14 @@ class SFTAlgorithm(Algorithm):
             'rdzv_endpoint': rdzv_endpoint,
             'master_addr': master_addr,
             'master_port': master_port,
+            # Logging parameters
+            'wandb_project': wandb_project,
+            'wandb_entity': wandb_entity,
+            'wandb_run_name': wandb_run_name,
+            'tensorboard_log_dir': tensorboard_log_dir,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
+            'mlflow_run_name': mlflow_run_name,
         }
         
         # Only add non-None parameters (let TrainingArgs handle defaults)
@@ -224,6 +250,14 @@ class SFTAlgorithm(Algorithm):
             'rdzv_endpoint': str,
             'master_addr': str,
             'master_port': int,
+            # Logging parameters
+            'wandb_project': str,
+            'wandb_entity': str,
+            'wandb_run_name': str,
+            'tensorboard_log_dir': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
+            'mlflow_run_name': str,
         }
 
 
@@ -263,6 +297,14 @@ def sft(model_path: str,
         rdzv_endpoint: Optional[str] = None,
         master_addr: Optional[str] = None,
         master_port: Optional[int] = None,
+        # Logging parameters
+        wandb_project: Optional[str] = None,
+        wandb_entity: Optional[str] = None,
+        wandb_run_name: Optional[str] = None,
+        tensorboard_log_dir: Optional[str] = None,
+        mlflow_tracking_uri: Optional[str] = None,
+        mlflow_experiment_name: Optional[str] = None,
+        mlflow_run_name: Optional[str] = None,
         **kwargs) -> Any:
     """Convenience function to run SFT training.
     
@@ -295,7 +337,13 @@ def sft(model_path: str,
         rdzv_endpoint: Master node endpoint for multi-node training
         master_addr: Master node address for distributed training
         master_port: Master node port for distributed training
-
+        wandb_project: Weights & Biases project name
+        wandb_entity: Weights & Biases team/entity name
+        wandb_run_name: Weights & Biases run name
+        tensorboard_log_dir: Directory for TensorBoard logs
+        mlflow_tracking_uri: MLflow tracking server URI
+        mlflow_experiment_name: MLflow experiment name
+        mlflow_run_name: MLflow run name
         **kwargs: Additional parameters passed to the backend
     
     Returns:
@@ -332,6 +380,13 @@ def sft(model_path: str,
         rdzv_endpoint=rdzv_endpoint,
         master_addr=master_addr,
         master_port=master_port,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        wandb_run_name=wandb_run_name,
+        tensorboard_log_dir=tensorboard_log_dir,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+        mlflow_run_name=mlflow_run_name,
         **kwargs
     )
 

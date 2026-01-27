@@ -247,6 +247,20 @@ class UnslothLoRABackend(Backend):
         """Build training arguments for SFTTrainer using SFTConfig."""
         from trl import SFTConfig
 
+        # Populate logging params from environment variables if not explicitly set
+        if not params.get('mlflow_tracking_uri'):
+            params['mlflow_tracking_uri'] = os.environ.get('MLFLOW_TRACKING_URI')
+        if not params.get('mlflow_experiment_name'):
+            params['mlflow_experiment_name'] = os.environ.get('MLFLOW_EXPERIMENT_NAME')
+        if not params.get('mlflow_run_name'):
+            params['mlflow_run_name'] = os.environ.get('MLFLOW_RUN_NAME')
+        if not params.get('wandb_project'):
+            params['wandb_project'] = os.environ.get('WANDB_PROJECT')
+        if not params.get('wandb_entity'):
+            params['wandb_entity'] = os.environ.get('WANDB_ENTITY')
+        if not params.get('wandb_run_name'):
+            params['wandb_run_name'] = os.environ.get('WANDB_RUN_NAME')
+
         # Calculate steps and batch sizes
         num_epochs = params.get('num_epochs', 3)
 
@@ -295,6 +309,7 @@ class UnslothLoRABackend(Backend):
 
             # Logging
             logging_steps=params.get('logging_steps', 1),
+            logging_dir=params.get('tensorboard_log_dir'),
             save_steps=params.get('save_steps', 500),
             eval_steps=params.get('eval_steps', 500),
             save_total_limit=params.get('save_total_limit', 3),
@@ -310,8 +325,8 @@ class UnslothLoRABackend(Backend):
             dataset_text_field="text",  # Use our preprocessed text field
             assistant_only_loss=True,  # Only train on assistant responses
 
-            # Optional: Weights & Biases
-            report_to="wandb" if params.get('wandb_project') else "none",
+            # Logging configuration - use loggers list if provided, otherwise fallback to wandb_project
+            report_to=self._get_report_to(params),
             run_name=params.get('wandb_run_name'),
         )
 
@@ -321,7 +336,28 @@ class UnslothLoRABackend(Backend):
             if params.get('wandb_entity'):
                 os.environ['WANDB_ENTITY'] = params.get('wandb_entity')
 
+        # Set MLflow tracking URI if provided
+        if params.get('mlflow_tracking_uri'):
+            os.environ['MLFLOW_TRACKING_URI'] = params.get('mlflow_tracking_uri')
+            if params.get('mlflow_experiment_name'):
+                os.environ['MLFLOW_EXPERIMENT_NAME'] = params.get('mlflow_experiment_name')
+
         return training_args
+
+    def _get_report_to(self, params: Dict[str, Any]) -> Optional[Union[str, List[str]]]:
+        """Determine which loggers to report to based on config params."""
+        # Auto-detect loggers from their config parameters
+        detected = []
+        if params.get('wandb_project') or os.environ.get('WANDB_PROJECT'):
+            detected.append("wandb")
+        if params.get('mlflow_tracking_uri') or os.environ.get('MLFLOW_TRACKING_URI'):
+            detected.append("mlflow")
+        if params.get('tensorboard_log_dir'):
+            detected.append("tensorboard")
+
+        if detected:
+            return detected if len(detected) > 1 else detected[0]
+        return None
 
 
 
@@ -383,10 +419,14 @@ class LoRASFTAlgorithm(Algorithm):
               eval_steps: Optional[int] = None,
               logging_steps: Optional[int] = None,
               save_total_limit: Optional[int] = None,
-              # Weights & Biases
+              # Logging configuration
               wandb_project: Optional[str] = None,
               wandb_entity: Optional[str] = None,
               wandb_run_name: Optional[str] = None,
+              tensorboard_log_dir: Optional[str] = None,
+              mlflow_tracking_uri: Optional[str] = None,
+              mlflow_experiment_name: Optional[str] = None,
+              mlflow_run_name: Optional[str] = None,
               # Dataset format parameters
               dataset_type: Optional[str] = None,
               field_messages: Optional[str] = None,
@@ -466,7 +506,11 @@ class LoRASFTAlgorithm(Algorithm):
             save_total_limit: Maximum number of checkpoints to keep (default: 3)
             wandb_project: Weights & Biases project name
             wandb_entity: Weights & Biases entity name
-            max_tokens_per_gpu: Maximum tokens per GPU (reserved for future implementation)
+            wandb_run_name: Weights & Biases run name
+            tensorboard_log_dir: TensorBoard log directory
+            mlflow_tracking_uri: MLflow tracking URI
+            mlflow_experiment_name: MLflow experiment name
+            mlflow_run_name: MLflow run name
 
             Dataset Format Parameters:
             dataset_type: Dataset format type ('chat_template', 'alpaca', 'passthrough')
@@ -549,9 +593,14 @@ class LoRASFTAlgorithm(Algorithm):
             'eval_steps': eval_steps,
             'logging_steps': logging_steps,
             'save_total_limit': save_total_limit,
+            # Logging configuration
             'wandb_project': wandb_project,
             'wandb_entity': wandb_entity,
             'wandb_run_name': wandb_run_name,
+            'tensorboard_log_dir': tensorboard_log_dir,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
+            'mlflow_run_name': mlflow_run_name,
             # Dataset format parameters
             'dataset_type': dataset_type,
             'field_messages': field_messages,
@@ -637,9 +686,14 @@ class LoRASFTAlgorithm(Algorithm):
             'eval_steps': int,
             'logging_steps': int,
             'save_total_limit': int,
+            # Logging configuration
             'wandb_project': str,
             'wandb_entity': str,
             'wandb_run_name': str,
+            'tensorboard_log_dir': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
+            'mlflow_run_name': str,
             # Dataset format parameters
             'dataset_type': str,
             'field_messages': str,
@@ -701,10 +755,14 @@ def lora_sft(model_path: str,
          eval_steps: Optional[int] = None,
          logging_steps: Optional[int] = None,
          save_total_limit: Optional[int] = None,
-         # Weights & Biases
+         # Logging configuration
          wandb_project: Optional[str] = None,
          wandb_entity: Optional[str] = None,
          wandb_run_name: Optional[str] = None,
+         tensorboard_log_dir: Optional[str] = None,
+         mlflow_tracking_uri: Optional[str] = None,
+         mlflow_experiment_name: Optional[str] = None,
+         mlflow_run_name: Optional[str] = None,
          # Dataset format parameters
          dataset_type: Optional[str] = None,
          field_messages: Optional[str] = None,
@@ -767,6 +825,11 @@ def lora_sft(model_path: str,
         save_total_limit: Maximum number of checkpoints to keep (default: 3)
         wandb_project: Weights & Biases project name
         wandb_entity: Weights & Biases entity name
+        wandb_run_name: Weights & Biases run name
+        tensorboard_log_dir: TensorBoard log directory
+        mlflow_tracking_uri: MLflow tracking URI
+        mlflow_experiment_name: MLflow experiment name
+        mlflow_run_name: MLflow run name
 
         Distributed Training:
         nproc_per_node: Number of processes (GPUs) per node
@@ -847,6 +910,10 @@ def lora_sft(model_path: str,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_name=wandb_run_name,
+        tensorboard_log_dir=tensorboard_log_dir,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+        mlflow_run_name=mlflow_run_name,
         dataset_type=dataset_type,
         field_messages=field_messages,
         field_instruction=field_instruction,

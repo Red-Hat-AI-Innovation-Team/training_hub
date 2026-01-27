@@ -99,6 +99,26 @@ def sft(
 | `rdzv_id` | `int` | Random | Unique job ID for rendezvous. All nodes must use the same ID. |
 | `rdzv_endpoint` | `str` | Required for multi-node | Endpoint of the master node (node 0) in the format `"hostname:port"` (e.g., `"192.168.1.10:29500"`). |
 
+#### Logging Configuration
+
+Loggers are automatically enabled when their configuration parameters are set:
+
+| Logger      | Enabled By            | Env Variable Fallback |
+| ----------- | --------------------- | --------------------- |
+| MLflow      | `mlflow_tracking_uri` | `MLFLOW_TRACKING_URI` |
+| W&B         | `wandb_project`       | `WANDB_PROJECT`       |
+| TensorBoard | `tensorboard_log_dir` | -                     |
+
+| Parameter                | Type  | Default                    | Description                                                                     |
+| ------------------------ | ----- | -------------------------- | ------------------------------------------------------------------------------- |
+| `mlflow_tracking_uri`    | `str` | `MLFLOW_TRACKING_URI` env  | MLflow tracking server URI. Enables MLflow logging.                             |
+| `mlflow_experiment_name` | `str` | `MLFLOW_EXPERIMENT_NAME` env | MLflow experiment name.                                                       |
+| `mlflow_run_name`        | `str` | `None`                     | MLflow run name (supports `{time}`, `{utc_time}`, `{rank}` placeholders).       |
+| `wandb_project`          | `str` | `WANDB_PROJECT` env        | W&B project name. Enables W&B logging.                                          |
+| `wandb_entity`           | `str` | `WANDB_ENTITY` env         | W&B team/entity.                                                                |
+| `wandb_run_name`         | `str` | `None`                     | W&B run name.                                                                   |
+| `tensorboard_log_dir`    | `str` | `None`                     | TensorBoard log directory. Enables TensorBoard.                                 |
+
 #### Additional Parameters
 
 | Parameter | Type | Default | Description |
