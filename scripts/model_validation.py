@@ -703,7 +703,7 @@ def run_single_validation(
 
 def run_all_validations(
     mode: Literal["sft", "osft", "both"] = "both",
-    liger_modes: list[bool] = [True, False],
+    liger_modes: list[bool] | None = None,
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
     model_keys: list[str] | None = None,
@@ -721,6 +721,8 @@ def run_all_validations(
     Returns:
         List of validation results
     """
+    if liger_modes is None:
+        liger_modes = [True, False]
     results = []
     models_to_test = model_keys or list(MODELS.keys())
     modes_to_test = ["sft", "osft"] if mode == "both" else [mode]
