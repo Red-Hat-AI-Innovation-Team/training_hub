@@ -645,7 +645,7 @@ def run_single_validation(
     Args:
         model_key: Key from MODELS dictionary
         mode: Training mode ("sft" or "osft")
-        use_liger: Whether to use Liger kernels (OSFT only)
+        use_liger: Whether to use Liger kernels (applies to both SFT and OSFT)
         base_output_dir: Base directory for outputs
         dataset_dir: Directory for dataset
 
@@ -713,7 +713,7 @@ def run_all_validations(
 
     Args:
         mode: Training mode(s) to test
-        liger_modes: Liger configurations to test (OSFT only)
+        liger_modes: Liger configurations to test (applies to both SFT and OSFT)
         base_output_dir: Base directory for outputs
         dataset_dir: Directory for dataset
         model_keys: Optional list of specific model keys to test
@@ -822,10 +822,19 @@ Available model keys:
         help="Model(s) to validate (see --list-models for options)",
     )
     parser.add_argument("--mode", choices=["sft", "osft", "both"], default="sft", help="Training mode (default: sft)")
-    parser.add_argument(
-        "--use-liger", action="store_true", default=True, help="Enable Liger kernels for OSFT (default: True)"
+    liger_group = parser.add_mutually_exclusive_group()
+    liger_group.add_argument(
+        "--use-liger", dest="use_liger", action="store_true", default=True,
+        help="Enable Liger kernels (default: True)"
     )
-    parser.add_argument("--no-liger", action="store_true", help="Disable Liger kernels for OSFT")
+    liger_group.add_argument(
+        "--no-liger", dest="use_liger", action="store_false",
+        help="Disable Liger kernels"
+    )
+    parser.add_argument(
+        "--liger-variants", action="store_true",
+        help="Test both Liger on/off variants"
+    )
     parser.add_argument("--run-all", action="store_true", help="Run validation for all models")
     parser.add_argument(
         "--output-dir", default=BASE_OUTPUT_DIR, help=f"Base output directory (default: {BASE_OUTPUT_DIR})"
@@ -837,9 +846,6 @@ Available model keys:
 
     args = parser.parse_args()
 
-    # Handle liger flag
-    use_liger = not args.no_liger if args.no_liger else args.use_liger
-
     if args.list_models:
         print_models_table()
         return
@@ -849,7 +855,7 @@ Available model keys:
         model_keys = args.models if args.models else None  # None means all models
 
         # Determine liger modes to test
-        liger_modes = [use_liger] if args.no_liger or not use_liger else [True, False]
+        liger_modes = [True, False] if args.liger_variants else [args.use_liger]
 
         run_all_validations(
             mode=args.mode,

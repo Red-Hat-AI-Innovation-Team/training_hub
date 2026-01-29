@@ -162,7 +162,7 @@ Validates that model architectures can train successfully with SFT and OSFT by o
 
 ```bash
 python scripts/model_validation.py --models llama --mode sft
-python scripts/model_validation.py --run-all --mode both
+python scripts/model_validation.py --run-all --mode both --liger-variants
 python scripts/model_validation.py --list-models
 ```
 
