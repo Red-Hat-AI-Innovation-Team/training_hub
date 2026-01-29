@@ -311,7 +311,7 @@ class UnslothLoRABackend(Backend):
             assistant_only_loss=True,  # Only train on assistant responses
 
             # Optional: Weights & Biases
-            report_to="wandb" if params.get('wandb_project') else None,
+            report_to="wandb" if params.get('wandb_project') else "none",
             run_name=params.get('wandb_run_name'),
         )
 
