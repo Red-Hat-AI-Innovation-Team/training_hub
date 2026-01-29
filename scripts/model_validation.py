@@ -6,8 +6,8 @@ using both SFT and OSFT algorithms. The goal is to overfit on a single sample
 (replicated 1000 times) to achieve NLL approaching 0.
 
 Usage:
-    python model_validation.py --model-key llama --mode sft
-    python model_validation.py --model-key llama --mode osft --use-liger
+    python model_validation.py --models llama --mode sft
+    python model_validation.py --models llama --mode osft --use-liger
     python model_validation.py --run-all
     python model_validation.py --run-all --mode sft
 
@@ -16,7 +16,7 @@ Configuration:
     - Effective batch size: 32
     - Learning rate: 1e-5
     - Tokens per GPU: 8192 (8k)
-    - Epochs: 5
+    - Epochs: 1
     - OSFT unfreeze rank ratio: 0.5
 """
 

@@ -154,6 +154,18 @@ from interpolator import interpolate_models
 interpolate_models("/path/to/base/model", "/path/to/trained/checkpoint")
 ```
 
+### Model Validation (Development / QA)
+
+Validates that model architectures can train successfully with SFT and OSFT by overfitting on a single sample.
+
+**Script:** [model_validation.py](../scripts/model_validation.py)
+
+```bash
+python scripts/model_validation.py --models llama --mode sft
+python scripts/model_validation.py --run-all --mode both
+python scripts/model_validation.py --list-models
+```
+
 ## Getting Started
 
 1. **For detailed parameter documentation**: Visit the [Training Hub Documentation](https://ai-innovation.team/training_hub)
