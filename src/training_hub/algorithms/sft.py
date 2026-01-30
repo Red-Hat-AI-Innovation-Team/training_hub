@@ -77,9 +77,9 @@ class SFTAlgorithm(Algorithm):
         self.backend = backend
         self.config = kwargs
     
-    def train(self, 
+    def train(self,
               model_path: str,
-              data_path: str, 
+              data_path: str,
               ckpt_output_dir: str,
               # Training parameters (defaults from TrainingArgs)
               num_epochs: Optional[int] = None,
@@ -100,6 +100,13 @@ class SFTAlgorithm(Algorithm):
               beta2: Optional[float] = None,
               eps: Optional[float] = None,
               weight_decay: Optional[float] = None,
+              # Logging parameters
+              wandb_run_name: Optional[str] = None,
+              wandb_project: Optional[str] = None,
+              wandb_entity: Optional[str] = None,
+              mlflow_run_name: Optional[str] = None,
+              mlflow_tracking_uri: Optional[str] = None,
+              mlflow_experiment_name: Optional[str] = None,
               # Torchrun parameters for multi-node support
               nproc_per_node: Optional[str | int] = None,
               nnodes: Optional[int] = None,
@@ -132,6 +139,12 @@ class SFTAlgorithm(Algorithm):
             beta2: AdamW optimizer beta2 coefficient (RMSprop).
             eps: AdamW optimizer epsilon for numerical stability.
             weight_decay: AdamW optimizer weight decay coefficient.
+            wandb_run_name: Weights & Biases run name.
+            wandb_project: Weights & Biases project name.
+            wandb_entity: Weights & Biases entity/team name.
+            mlflow_run_name: MLflow run name.
+            mlflow_tracking_uri: MLflow tracking server URI.
+            mlflow_experiment_name: MLflow experiment name.
             nproc_per_node: Number of processes (GPUs) per node
             nnodes: Total number of nodes
             node_rank: Rank of this node (0 to nnodes-1)
@@ -167,6 +180,13 @@ class SFTAlgorithm(Algorithm):
             'beta2': beta2,
             'eps': eps,
             'weight_decay': weight_decay,
+            # Logging parameters
+            'wandb_run_name': wandb_run_name,
+            'wandb_project': wandb_project,
+            'wandb_entity': wandb_entity,
+            'mlflow_run_name': mlflow_run_name,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
             # Torchrun parameters
             'nproc_per_node': nproc_per_node,
             'nnodes': nnodes,
@@ -216,6 +236,13 @@ class SFTAlgorithm(Algorithm):
             'beta2': float,
             'eps': float,
             'weight_decay': float,
+            # Logging parameters
+            'wandb_run_name': str,
+            'wandb_project': str,
+            'wandb_entity': str,
+            'mlflow_run_name': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
             # Torchrun parameters
             'nproc_per_node': str | int,
             'nnodes': int,
@@ -232,8 +259,8 @@ AlgorithmRegistry.register_algorithm('sft', SFTAlgorithm)
 AlgorithmRegistry.register_backend('sft', 'instructlab-training', InstructLabTrainingSFTBackend)
 
 
-def sft(model_path: str, 
-        data_path: str, 
+def sft(model_path: str,
+        data_path: str,
         ckpt_output_dir: str,
         backend: str = "instructlab-training",
         # Training parameters (defaults from TrainingArgs)
@@ -255,6 +282,13 @@ def sft(model_path: str,
         beta2: Optional[float] = None,
         eps: Optional[float] = None,
         weight_decay: Optional[float] = None,
+        # Logging parameters
+        wandb_run_name: Optional[str] = None,
+        wandb_project: Optional[str] = None,
+        wandb_entity: Optional[str] = None,
+        mlflow_run_name: Optional[str] = None,
+        mlflow_tracking_uri: Optional[str] = None,
+        mlflow_experiment_name: Optional[str] = None,
         # Torchrun parameters for multi-node support
         nproc_per_node: Optional[str | int] = None,
         nnodes: Optional[int] = None,
@@ -288,6 +322,12 @@ def sft(model_path: str,
         beta2: AdamW optimizer beta2 coefficient (RMSprop).
         eps: AdamW optimizer epsilon for numerical stability.
         weight_decay: AdamW optimizer weight decay coefficient.
+        wandb_run_name: Weights & Biases run name.
+        wandb_project: Weights & Biases project name.
+        wandb_entity: Weights & Biases entity/team name.
+        mlflow_run_name: MLflow run name.
+        mlflow_tracking_uri: MLflow tracking server URI.
+        mlflow_experiment_name: MLflow experiment name.
         nproc_per_node: Number of processes (GPUs) per node for distributed training
         nnodes: Total number of nodes for distributed training
         node_rank: Rank of this node (0 to nnodes-1) for distributed training
@@ -297,12 +337,12 @@ def sft(model_path: str,
         master_port: Master node port for distributed training
 
         **kwargs: Additional parameters passed to the backend
-    
+
     Returns:
         Training result from the backend
     """
     from . import create_algorithm
-    
+
     algorithm = create_algorithm('sft', backend)
     return algorithm.train(
         model_path=model_path,
@@ -325,6 +365,12 @@ def sft(model_path: str,
         beta2=beta2,
         eps=eps,
         weight_decay=weight_decay,
+        wandb_run_name=wandb_run_name,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        mlflow_run_name=mlflow_run_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
         nproc_per_node=nproc_per_node,
         nnodes=nnodes,
         node_rank=node_rank,

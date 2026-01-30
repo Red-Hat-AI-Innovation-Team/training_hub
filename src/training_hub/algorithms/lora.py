@@ -310,18 +310,38 @@ class UnslothLoRABackend(Backend):
             dataset_text_field="text",  # Use our preprocessed text field
             assistant_only_loss=True,  # Only train on assistant responses
 
-            # Optional: Weights & Biases
-            report_to="wandb" if params.get('wandb_project') else None,
-            run_name=params.get('wandb_run_name'),
+            # Logging backends - determine which to enable
+            report_to=self._get_report_to(params),
+            run_name=params.get('wandb_run_name') or params.get('mlflow_run_name'),
         )
 
-        # Set Weights & Biases project and entity via environment variables if provided
+        # Set Weights & Biases configuration via environment variables if provided
         if params.get('wandb_project'):
             os.environ['WANDB_PROJECT'] = params.get('wandb_project')
             if params.get('wandb_entity'):
                 os.environ['WANDB_ENTITY'] = params.get('wandb_entity')
 
+        # Set MLflow configuration via environment variables if provided
+        if params.get('mlflow_tracking_uri'):
+            os.environ['MLFLOW_TRACKING_URI'] = params.get('mlflow_tracking_uri')
+        if params.get('mlflow_experiment_name'):
+            os.environ['MLFLOW_EXPERIMENT_NAME'] = params.get('mlflow_experiment_name')
+
         return training_args
+
+    def _get_report_to(self, params: Dict[str, Any]) -> str | list | None:
+        """Determine which logging backends to enable based on provided params."""
+        backends = []
+        if params.get('wandb_project'):
+            backends.append('wandb')
+        if params.get('mlflow_tracking_uri') or params.get('mlflow_experiment_name'):
+            backends.append('mlflow')
+
+        if not backends:
+            return None
+        if len(backends) == 1:
+            return backends[0]
+        return backends
 
 
 
@@ -387,6 +407,10 @@ class LoRASFTAlgorithm(Algorithm):
               wandb_project: Optional[str] = None,
               wandb_entity: Optional[str] = None,
               wandb_run_name: Optional[str] = None,
+              # MLflow
+              mlflow_run_name: Optional[str] = None,
+              mlflow_tracking_uri: Optional[str] = None,
+              mlflow_experiment_name: Optional[str] = None,
               # Dataset format parameters
               dataset_type: Optional[str] = None,
               field_messages: Optional[str] = None,
@@ -466,6 +490,10 @@ class LoRASFTAlgorithm(Algorithm):
             save_total_limit: Maximum number of checkpoints to keep (default: 3)
             wandb_project: Weights & Biases project name
             wandb_entity: Weights & Biases entity name
+            wandb_run_name: Weights & Biases run name
+            mlflow_run_name: MLflow run name
+            mlflow_tracking_uri: MLflow tracking server URI
+            mlflow_experiment_name: MLflow experiment name
             max_tokens_per_gpu: Maximum tokens per GPU (reserved for future implementation)
 
             Dataset Format Parameters:
@@ -552,6 +580,9 @@ class LoRASFTAlgorithm(Algorithm):
             'wandb_project': wandb_project,
             'wandb_entity': wandb_entity,
             'wandb_run_name': wandb_run_name,
+            'mlflow_run_name': mlflow_run_name,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
             # Dataset format parameters
             'dataset_type': dataset_type,
             'field_messages': field_messages,
@@ -640,6 +671,9 @@ class LoRASFTAlgorithm(Algorithm):
             'wandb_project': str,
             'wandb_entity': str,
             'wandb_run_name': str,
+            'mlflow_run_name': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
             # Dataset format parameters
             'dataset_type': str,
             'field_messages': str,
@@ -705,6 +739,10 @@ def lora_sft(model_path: str,
          wandb_project: Optional[str] = None,
          wandb_entity: Optional[str] = None,
          wandb_run_name: Optional[str] = None,
+         # MLflow
+         mlflow_run_name: Optional[str] = None,
+         mlflow_tracking_uri: Optional[str] = None,
+         mlflow_experiment_name: Optional[str] = None,
          # Dataset format parameters
          dataset_type: Optional[str] = None,
          field_messages: Optional[str] = None,
@@ -767,6 +805,10 @@ def lora_sft(model_path: str,
         save_total_limit: Maximum number of checkpoints to keep (default: 3)
         wandb_project: Weights & Biases project name
         wandb_entity: Weights & Biases entity name
+        wandb_run_name: Weights & Biases run name
+        mlflow_run_name: MLflow run name
+        mlflow_tracking_uri: MLflow tracking server URI
+        mlflow_experiment_name: MLflow experiment name
 
         Distributed Training:
         nproc_per_node: Number of processes (GPUs) per node
@@ -847,6 +889,9 @@ def lora_sft(model_path: str,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_name=wandb_run_name,
+        mlflow_run_name=mlflow_run_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
         dataset_type=dataset_type,
         field_messages=field_messages,
         field_instruction=field_instruction,

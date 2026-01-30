@@ -253,7 +253,11 @@ result = lora_sft(
 )
 ```
 
-### Weights & Biases Integration
+### Logging Integration
+
+LoRA training supports integration with external logging platforms. Unlike SFT and OSFT (which use structured JSON logging to files), LoRA uses HuggingFace's built-in logging integrations.
+
+**Weights & Biases**
 
 **Note:** Weights & Biases is not included in the `[lora]` extras. Install separately:
 
@@ -271,7 +275,23 @@ result = lora_sft(
     lora_r=16,
     lora_alpha=32,
     wandb_project="my-lora-project",
-    wandb_entity="my-team"
+    wandb_entity="my-team",
+    wandb_run_name="lora-experiment-1"
+)
+```
+
+**MLflow**
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=16,
+    lora_alpha=32,
+    mlflow_tracking_uri="http://localhost:5000",
+    mlflow_experiment_name="lora-experiments",
+    mlflow_run_name="lora-experiment-1"
 )
 ```
 

@@ -60,6 +60,13 @@ class OSFTAlgorithm(Algorithm):
         is_pretraining: bool | None = None,
         block_size: int | None = None,
         document_column_name: str | None = None,
+        # Logging parameters
+        wandb_run_name: str | None = None,
+        wandb_project: str | None = None,
+        wandb_entity: str | None = None,
+        mlflow_run_name: str | None = None,
+        mlflow_tracking_uri: str | None = None,
+        mlflow_experiment_name: str | None = None,
         # Torchrun parameters for multi-node support
         nproc_per_node: Literal['auto', 'gpu'] | int | None = None,
         nnodes: int | None = None,
@@ -145,6 +152,12 @@ class OSFTAlgorithm(Algorithm):
             node_rank (int): Rank of this node (0 to nnodes-1) for distributed training.
             rdzv_id (str | int): Unique job ID for rendezvous in distributed training.
             rdzv_endpoint (str): Master node endpoint for multi-node training.
+            wandb_run_name (str): Weights & Biases run name.
+            wandb_project (str): Weights & Biases project name.
+            wandb_entity (str): Weights & Biases entity/team name.
+            mlflow_run_name (str): MLflow run name.
+            mlflow_tracking_uri (str): MLflow tracking server URI.
+            mlflow_experiment_name (str): MLflow experiment name.
             master_addr (str): Master node address for distributed training (only used with
                 static rdzv_backend).
             master_port (int): Master node port for distributed training.
@@ -206,6 +219,13 @@ class OSFTAlgorithm(Algorithm):
             'num_epochs': num_epochs,
             'use_liger': use_liger,
             'seed': seed,
+            # logging params
+            'wandb_run_name': wandb_run_name,
+            'wandb_project': wandb_project,
+            'wandb_entity': wandb_entity,
+            'mlflow_run_name': mlflow_run_name,
+            'mlflow_tracking_uri': mlflow_tracking_uri,
+            'mlflow_experiment_name': mlflow_experiment_name,
             # torchrun params
             'nproc_per_node': nproc_per_node,
             'nnodes': nnodes,
@@ -268,6 +288,14 @@ class OSFTAlgorithm(Algorithm):
             'is_pretraining': bool,
             'block_size': int,
             'document_column_name': str,
+            # Logging parameters
+            'wandb_run_name': str,
+            'wandb_project': str,
+            'wandb_entity': str,
+            'mlflow_run_name': str,
+            'mlflow_tracking_uri': str,
+            'mlflow_experiment_name': str,
+            # Torchrun parameters
             'nproc_per_node': Literal['auto', 'gpu'] | int,
             'nnodes': int,
             'node_rank': int,
@@ -548,6 +576,13 @@ def osft(
     checkpoint_at_epoch: bool | None = None,
     save_final_checkpoint: bool | None = None,
     num_epochs: int | None = None,
+    # Logging parameters
+    wandb_run_name: str | None = None,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+    mlflow_run_name: str | None = None,
+    mlflow_tracking_uri: str | None = None,
+    mlflow_experiment_name: str | None = None,
     # Torchrun parameters for multi-node support
     nproc_per_node: Literal['auto', 'gpu'] | int | None = None,
     nnodes: int | None = None,
@@ -589,6 +624,12 @@ def osft(
         checkpoint_at_epoch=checkpoint_at_epoch,
         save_final_checkpoint=save_final_checkpoint,
         num_epochs=num_epochs,
+        wandb_run_name=wandb_run_name,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        mlflow_run_name=mlflow_run_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
         nproc_per_node=nproc_per_node,
         nnodes=nnodes,
         node_rank=node_rank,
