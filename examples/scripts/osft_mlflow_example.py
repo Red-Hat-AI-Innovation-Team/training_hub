@@ -116,7 +116,7 @@ def main():
     print(f"Unfreeze Ratio:   {args.unfreeze_rank_ratio}")
     print("-" * 60)
     print(f"MLflow URI:       {args.mlflow_uri}")
-    print(f"MLflow Experiment:{args.mlflow_experiment}")
+    print(f"MLflow Experiment: {args.mlflow_experiment}")
     print(f"Run Name:         {run_name}")
     print("=" * 60)
     print()
