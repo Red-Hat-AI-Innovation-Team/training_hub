@@ -132,7 +132,7 @@ def main():
         print(f"View results in MLflow: {args.mlflow_uri}")
         print("=" * 60)
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print()
         print("=" * 60)
         print(f"Training failed: {e}")

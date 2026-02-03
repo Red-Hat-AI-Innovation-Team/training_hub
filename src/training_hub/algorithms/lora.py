@@ -336,11 +336,13 @@ class UnslothLoRABackend(Backend):
             if params.get('wandb_entity'):
                 os.environ['WANDB_ENTITY'] = params.get('wandb_entity')
 
-        # Set MLflow tracking URI if provided
+        # Set MLflow tracking URI and related config if provided
         if params.get('mlflow_tracking_uri'):
             os.environ['MLFLOW_TRACKING_URI'] = params.get('mlflow_tracking_uri')
-            if params.get('mlflow_experiment_name'):
-                os.environ['MLFLOW_EXPERIMENT_NAME'] = params.get('mlflow_experiment_name')
+        if params.get('mlflow_experiment_name'):
+            os.environ['MLFLOW_EXPERIMENT_NAME'] = params.get('mlflow_experiment_name')
+        if params.get('mlflow_run_name'):
+            os.environ['MLFLOW_RUN_NAME'] = params.get('mlflow_run_name')
 
         return training_args
 
@@ -348,9 +350,20 @@ class UnslothLoRABackend(Backend):
         """Determine which loggers to report to based on config params."""
         # Auto-detect loggers from their config parameters
         detected = []
-        if params.get('wandb_project') or os.environ.get('WANDB_PROJECT'):
+        if (
+            params.get('wandb_project')
+            or params.get('wandb_run_name')
+            or params.get('wandb_entity')
+            or os.environ.get('WANDB_PROJECT')
+        ):
             detected.append("wandb")
-        if params.get('mlflow_tracking_uri') or os.environ.get('MLFLOW_TRACKING_URI'):
+        if (
+            params.get('mlflow_tracking_uri')
+            or params.get('mlflow_experiment_name')
+            or params.get('mlflow_run_name')
+            or os.environ.get('MLFLOW_TRACKING_URI')
+            or os.environ.get('MLFLOW_EXPERIMENT_NAME')
+        ):
             detected.append("mlflow")
         if params.get('tensorboard_log_dir'):
             detected.append("tensorboard")
