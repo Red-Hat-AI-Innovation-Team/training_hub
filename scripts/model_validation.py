@@ -88,7 +88,7 @@ MAX_SEQ_LEN = 4096  # Should be enough for our single sample
 # Dataset size (copies of single sample)
 NUM_SAMPLES = 1000
 
-# Convergence threshold - loss below this indicates successful overfitting
+# Convergence threshold - loss below this indicates successful overfitting (for SFT/OSFT)
 CONVERGENCE_THRESHOLD = 0.1
 
 # ============================================================================
@@ -281,18 +281,18 @@ def get_final_osft_loss(output_dir: str) -> float | None:
     return last_entry.get("loss")
 
 
-def get_final_lora_loss(output_dir: str) -> float | None:
+def get_lora_loss_trajectory(output_dir: str) -> tuple[float | None, float | None]:
     """
-    Get final loss from LoRA training metrics.
+    Get initial and final loss from LoRA training metrics.
 
     LoRA (Unsloth/TRL) logs to: checkpoint-*/trainer_state.json
-    Loss field: log_history[-1]["loss"]
+    Loss field: log_history[]["loss"]
 
     Args:
         output_dir: The checkpoint output directory used for training
 
     Returns:
-        Final loss value, or None if not found
+        Tuple of (initial_loss, final_loss), either may be None if not found
     """
     import glob as glob_module
 
@@ -302,7 +302,7 @@ def get_final_lora_loss(output_dir: str) -> float | None:
 
     if not checkpoint_dirs:
         console.print(f"[dim]No checkpoint directories found in: {output_dir}[/dim]")
-        return None
+        return None, None
 
     # Sort by checkpoint number to get the most recent
     def get_checkpoint_num(path):
@@ -318,26 +318,49 @@ def get_final_lora_loss(output_dir: str) -> float | None:
     trainer_state_file = os.path.join(latest_checkpoint, "trainer_state.json")
     if not os.path.exists(trainer_state_file):
         console.print(f"[dim]trainer_state.json not found in: {latest_checkpoint}[/dim]")
-        return None
+        return None, None
 
     try:
         with open(trainer_state_file) as f:
             trainer_state = json.load(f)
     except json.JSONDecodeError:
         console.print(f"[dim]Failed to parse trainer_state.json[/dim]")
-        return None
+        return None, None
 
-    # Extract loss from log_history
+    # Extract losses from log_history
     log_history = trainer_state.get("log_history", [])
     if not log_history:
-        return None
+        return None, None
 
-    # Find the last entry with a loss value
+    # Find first and last entries with loss values
+    initial_loss = None
+    final_loss = None
+
+    for entry in log_history:
+        if "loss" in entry:
+            initial_loss = entry["loss"]
+            break
+
     for entry in reversed(log_history):
         if "loss" in entry:
-            return entry["loss"]
+            final_loss = entry["loss"]
+            break
 
-    return None
+    return initial_loss, final_loss
+
+
+def get_final_lora_loss(output_dir: str) -> float | None:
+    """
+    Get final loss from LoRA training metrics.
+
+    Args:
+        output_dir: The checkpoint output directory used for training
+
+    Returns:
+        Final loss value, or None if not found
+    """
+    _, final_loss = get_lora_loss_trajectory(output_dir)
+    return final_loss
 
 
 def format_duration(seconds: float) -> str:
@@ -762,11 +785,13 @@ def run_lora_validation(
 
         result["status"] = "success"
 
-        # Extract final loss
-        final_loss = get_final_lora_loss(output_dir)
+        # Extract initial and final loss for LoRA
+        # LoRA convergence = any decrease in loss (not absolute threshold)
+        initial_loss, final_loss = get_lora_loss_trajectory(output_dir)
+        result["initial_loss"] = initial_loss
         result["final_loss"] = final_loss
-        if final_loss is not None:
-            result["converged"] = final_loss < CONVERGENCE_THRESHOLD
+        if initial_loss is not None and final_loss is not None:
+            result["converged"] = final_loss < initial_loss
 
     except Exception as e:
         result["status"] = "failed"
