@@ -2,14 +2,16 @@
 Model Validation Script for Training Hub
 
 This script validates that various model architectures can be trained successfully
-using both SFT and OSFT algorithms. The goal is to overfit on a single sample
+using SFT, OSFT, and LoRA algorithms. The goal is to overfit on a single sample
 (replicated 1000 times) to achieve NLL approaching 0.
 
 Usage:
     python model_validation.py --models llama --mode sft
     python model_validation.py --models llama --mode osft --use-liger
+    python model_validation.py --models llama --mode lora
+    python model_validation.py --models llama --mode lora --use-qlora
     python model_validation.py --run-all
-    python model_validation.py --run-all --mode sft
+    python model_validation.py --run-all --mode all
 
 Configuration:
     - GPUs: 8
@@ -279,6 +281,65 @@ def get_final_osft_loss(output_dir: str) -> float | None:
     return last_entry.get("loss")
 
 
+def get_final_lora_loss(output_dir: str) -> float | None:
+    """
+    Get final loss from LoRA training metrics.
+
+    LoRA (Unsloth/TRL) logs to: checkpoint-*/trainer_state.json
+    Loss field: log_history[-1]["loss"]
+
+    Args:
+        output_dir: The checkpoint output directory used for training
+
+    Returns:
+        Final loss value, or None if not found
+    """
+    import glob as glob_module
+
+    # Find checkpoint directories
+    checkpoint_pattern = os.path.join(output_dir, "checkpoint-*")
+    checkpoint_dirs = glob_module.glob(checkpoint_pattern)
+
+    if not checkpoint_dirs:
+        console.print(f"[dim]No checkpoint directories found in: {output_dir}[/dim]")
+        return None
+
+    # Sort by checkpoint number to get the most recent
+    def get_checkpoint_num(path):
+        try:
+            return int(os.path.basename(path).split("-")[1])
+        except (IndexError, ValueError):
+            return 0
+
+    checkpoint_dirs.sort(key=get_checkpoint_num, reverse=True)
+    latest_checkpoint = checkpoint_dirs[0]
+
+    # Read trainer_state.json
+    trainer_state_file = os.path.join(latest_checkpoint, "trainer_state.json")
+    if not os.path.exists(trainer_state_file):
+        console.print(f"[dim]trainer_state.json not found in: {latest_checkpoint}[/dim]")
+        return None
+
+    try:
+        with open(trainer_state_file) as f:
+            trainer_state = json.load(f)
+    except json.JSONDecodeError:
+        console.print(f"[dim]Failed to parse trainer_state.json[/dim]")
+        return None
+
+    # Extract loss from log_history
+    log_history = trainer_state.get("log_history", [])
+    if not log_history:
+        return None
+
+    # Find the last entry with a loss value
+    for entry in reversed(log_history):
+        if "loss" in entry:
+            return entry["loss"]
+
+    return None
+
+
 def format_duration(seconds: float) -> str:
     """Format duration in human-readable format."""
     if seconds < 60:
@@ -354,7 +415,7 @@ def print_validation_summary(results: list[dict], results_file: str):
     )
     table.add_column("Model", style="blue", no_wrap=True)
     table.add_column("Mode", style="cyan", no_wrap=True)
-    table.add_column("Liger", style="magenta", no_wrap=True)
+    table.add_column("Variant", style="magenta", no_wrap=True)
     table.add_column("Status", no_wrap=True)
     table.add_column("Final Loss", no_wrap=True)
     table.add_column("Duration", style="dim", no_wrap=True)
@@ -366,7 +427,12 @@ def print_validation_summary(results: list[dict], results_file: str):
         model_short = model_id.split("/")[-1] if "/" in model_id else model_id
 
         mode = r.get("mode", "?").upper()
-        liger = "Yes" if r.get("use_liger") else "No"
+
+        # Show variant based on mode: Liger for SFT/OSFT, QLoRA for LoRA
+        if r.get("mode") == "lora":
+            variant = "QLoRA" if r.get("use_qlora") else "LoRA"
+        else:
+            variant = "Liger" if r.get("use_liger") else "No Liger"
 
         status = r.get("status", "unknown")
         if status == "success":
@@ -406,7 +472,7 @@ def print_validation_summary(results: list[dict], results_file: str):
             else:
                 notes = error_str
 
-        table.add_row(model_short, mode, liger, status_text, loss_text, duration, notes)
+        table.add_row(model_short, mode, variant, status_text, loss_text, duration, notes)
 
     console.print(table)
 
@@ -414,7 +480,13 @@ def print_validation_summary(results: list[dict], results_file: str):
     console.print(f"\n[dim]Full results saved to:[/dim] [cyan]{results_file}[/cyan]")
 
 
-def print_test_header(model_config: "ModelConfig", mode: str, use_liger: bool, output_dir: str):
+def print_test_header(
+    model_config: "ModelConfig",
+    mode: str,
+    use_liger: bool,
+    use_qlora: bool,
+    output_dir: str,
+):
     """Print test header with rich formatting."""
     table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
     table.add_column("Field", style="dim")
@@ -423,7 +495,10 @@ def print_test_header(model_config: "ModelConfig", mode: str, use_liger: bool, o
     table.add_row("Architecture", model_config.architecture)
     table.add_row("Model", model_config.model_id)
     table.add_row("Mode", mode.upper())
-    table.add_row("Liger", "Enabled" if use_liger else "Disabled")
+    if mode == "lora":
+        table.add_row("QLoRA", "Enabled (4-bit)" if use_qlora else "Disabled")
+    else:
+        table.add_row("Liger", "Enabled" if use_liger else "Disabled")
     table.add_row("Output", output_dir)
 
     title = f"Validation: {model_config.architecture}"
@@ -627,6 +702,80 @@ def run_osft_validation(
     return result
 
 
+def run_lora_validation(
+    model_config: ModelConfig,
+    data_path: str,
+    output_dir: str,
+    use_qlora: bool = False,
+) -> dict:
+    """
+    Run LoRA validation for a model.
+
+    Args:
+        model_config: Model configuration
+        data_path: Path to training data
+        output_dir: Directory for checkpoints and outputs
+        use_qlora: Whether to enable QLoRA (4-bit quantization)
+
+    Returns:
+        Dictionary with validation results
+    """
+    from training_hub import lora_sft
+
+    # Use model-specific overrides or defaults
+    max_seq = model_config.max_seq_len or MAX_SEQ_LEN
+
+    start_time = time.time()
+    result = {
+        "model_id": model_config.model_id,
+        "architecture": model_config.architecture,
+        "mode": "lora",
+        "use_qlora": use_qlora,
+        "status": "unknown",
+        "error": None,
+        "duration_seconds": 0,
+        "is_vision_model": model_config.is_vision_model,
+        "requires_dev_transformers": model_config.requires_dev_transformers,
+    }
+
+    try:
+        with trust_remote_code_context(model_config.requires_trust_remote_code):
+            lora_sft(
+                model_path=model_config.model_id,
+                data_path=data_path,
+                ckpt_output_dir=output_dir,
+                # QLoRA - enable 4-bit quantization
+                load_in_4bit=use_qlora,
+                # Training parameters
+                num_epochs=NUM_EPOCHS,
+                effective_batch_size=EFFECTIVE_BATCH_SIZE,
+                learning_rate=LEARNING_RATE,
+                max_seq_len=max_seq,
+                warmup_steps=0,
+                # Multi-GPU setup
+                nproc_per_node=NUM_GPUS,
+                nnodes=1,
+                node_rank=0,
+                rdzv_id=f"validation-lora-{int(time.time())}",
+                rdzv_endpoint="127.0.0.1:29501",
+            )
+
+        result["status"] = "success"
+
+        # Extract final loss
+        final_loss = get_final_lora_loss(output_dir)
+        result["final_loss"] = final_loss
+        if final_loss is not None:
+            result["converged"] = final_loss < CONVERGENCE_THRESHOLD
+
+    except Exception as e:
+        result["status"] = "failed"
+        result["error"] = str(e)
+
+    result["duration_seconds"] = time.time() - start_time
+    return result
+
+
 # ============================================================================
 # VALIDATION ORCHESTRATION
 # ============================================================================
@@ -634,8 +783,9 @@ def run_osft_validation(
 
 def run_single_validation(
     model_key: str,
-    mode: Literal["sft", "osft"],
+    mode: Literal["sft", "osft", "lora"],
     use_liger: bool = True,
+    use_qlora: bool = False,
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
 ) -> dict:
@@ -644,8 +794,9 @@ def run_single_validation(
 
     Args:
         model_key: Key from MODELS dictionary
-        mode: Training mode ("sft" or "osft")
-        use_liger: Whether to use Liger kernels (applies to both SFT and OSFT)
+        mode: Training mode ("sft", "osft", or "lora")
+        use_liger: Whether to use Liger kernels (applies to SFT and OSFT)
+        use_qlora: Whether to use QLoRA (applies to LoRA mode)
         base_output_dir: Base directory for outputs
         dataset_dir: Directory for dataset
 
@@ -659,8 +810,11 @@ def run_single_validation(
 
     # Create output directory for this run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    liger_suffix = "_liger" if use_liger else "_noliger"
-    run_name = f"{model_key}_{mode}{liger_suffix}_{timestamp}"
+    if mode == "lora":
+        variant_suffix = "_qlora" if use_qlora else "_lora"
+    else:
+        variant_suffix = "_liger" if use_liger else "_noliger"
+    run_name = f"{model_key}_{mode}{variant_suffix}_{timestamp}"
     output_dir = os.path.join(base_output_dir, run_name)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -668,12 +822,14 @@ def run_single_validation(
     data_path = create_overfit_dataset(dataset_dir)
 
     # Print header
-    print_test_header(model_config, mode, use_liger, output_dir)
+    print_test_header(model_config, mode, use_liger, use_qlora, output_dir)
 
     if mode == "sft":
         result = run_sft_validation(model_config, data_path, output_dir, use_liger)
-    else:
+    elif mode == "osft":
         result = run_osft_validation(model_config, data_path, output_dir, use_liger)
+    else:  # lora
+        result = run_lora_validation(model_config, data_path, output_dir, use_qlora)
 
     # Print result summary
     if result["status"] == "success":
@@ -702,8 +858,9 @@ def run_single_validation(
 
 
 def run_all_validations(
-    mode: Literal["sft", "osft", "both"] = "both",
+    mode: Literal["sft", "osft", "lora", "all"] = "all",
     liger_modes: list[bool] | None = None,
+    qlora_modes: list[bool] | None = None,
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
     model_keys: list[str] | None = None,
@@ -712,8 +869,9 @@ def run_all_validations(
     Run validation tests for all models.
 
     Args:
-        mode: Training mode(s) to test
-        liger_modes: Liger configurations to test (applies to both SFT and OSFT)
+        mode: Training mode(s) to test ("sft", "osft", "lora", or "all")
+        liger_modes: Liger configurations to test (applies to SFT and OSFT)
+        qlora_modes: QLoRA configurations to test (applies to LoRA)
         base_output_dir: Base directory for outputs
         dataset_dir: Directory for dataset
         model_keys: Optional list of specific model keys to test
@@ -723,12 +881,19 @@ def run_all_validations(
     """
     if liger_modes is None:
         liger_modes = [True, False]
+    if qlora_modes is None:
+        qlora_modes = [True, False]
     results = []
     models_to_test = model_keys or list(MODELS.keys())
-    modes_to_test = ["sft", "osft"] if mode == "both" else [mode]
+    modes_to_test = ["sft", "osft", "lora"] if mode == "all" else [mode]
 
-    # Total tests = models * modes * liger_variants
-    total_tests = len(models_to_test) * len(modes_to_test) * len(liger_modes)
+    # Calculate total tests: SFT/OSFT use liger_modes, LoRA uses qlora_modes
+    total_tests = 0
+    for test_mode in modes_to_test:
+        if test_mode == "lora":
+            total_tests += len(models_to_test) * len(qlora_modes)
+        else:
+            total_tests += len(models_to_test) * len(liger_modes)
 
     # Print run configuration
     config_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
@@ -737,7 +902,10 @@ def run_all_validations(
     config_table.add_row("Total Tests", str(total_tests))
     config_table.add_row("Models", str(len(models_to_test)))
     config_table.add_row("Modes", ", ".join(modes_to_test))
-    config_table.add_row("Liger Variants", str(liger_modes))
+    if "lora" in modes_to_test:
+        config_table.add_row("QLoRA Variants", str(qlora_modes))
+    if any(m in modes_to_test for m in ["sft", "osft"]):
+        config_table.add_row("Liger Variants", str(liger_modes))
 
     console.print()
     console.print(Panel(config_table, title="Validation Run Configuration", border_style="cyan"))
@@ -746,15 +914,25 @@ def run_all_validations(
     test_num = 0
     for model_key in models_to_test:
         for test_mode in modes_to_test:
-            for use_liger in liger_modes:
+            # Choose variants based on mode
+            if test_mode == "lora":
+                variants = [(False, use_qlora) for use_qlora in qlora_modes]
+            else:
+                variants = [(use_liger, False) for use_liger in liger_modes]
+
+            for use_liger, use_qlora in variants:
                 test_num += 1
-                liger_str = "liger" if use_liger else "no-liger"
-                console.print(f"\n[bold cyan][{test_num}/{total_tests}][/bold cyan] Testing [green]{model_key}[/green] - {test_mode} ({liger_str})")
+                if test_mode == "lora":
+                    variant_str = "qlora" if use_qlora else "lora"
+                else:
+                    variant_str = "liger" if use_liger else "no-liger"
+                console.print(f"\n[bold cyan][{test_num}/{total_tests}][/bold cyan] Testing [green]{model_key}[/green] - {test_mode} ({variant_str})")
                 try:
                     result = run_single_validation(
                         model_key=model_key,
                         mode=test_mode,
                         use_liger=use_liger,
+                        use_qlora=use_qlora,
                         base_output_dir=base_output_dir,
                         dataset_dir=dataset_dir,
                     )
@@ -766,6 +944,7 @@ def run_all_validations(
                             "model_key": model_key,
                             "mode": test_mode,
                             "use_liger": use_liger,
+                            "use_qlora": use_qlora,
                             "status": "error",
                             "error": str(e),
                         }
@@ -797,17 +976,22 @@ Examples:
     # Run validation for specific model(s)
     python model_validation.py --models llama --mode sft
     python model_validation.py --models llama granite --mode osft
-    python model_validation.py --models llama --mode both
+    python model_validation.py --models llama --mode lora
+    python model_validation.py --models llama --mode lora --use-qlora
 
     # Run all models for a specific mode
     python model_validation.py --run-all --mode sft
     python model_validation.py --run-all --mode osft
+    python model_validation.py --run-all --mode lora
 
-    # Run all combinations (all models, both modes, liger on/off)
-    python model_validation.py --run-all --mode both
+    # Run all combinations (all models, all modes, variants on/off)
+    python model_validation.py --run-all --mode all
 
     # Disable liger kernel variations (run only with liger enabled or disabled)
     python model_validation.py --models llama --mode osft --no-liger
+
+    # Test LoRA with both standard and QLoRA variants
+    python model_validation.py --models llama --mode lora --qlora-variants
 
     # List available models
     python model_validation.py --list-models
@@ -823,20 +1007,43 @@ Available model keys:
         choices=list(MODELS.keys()),
         help="Model(s) to validate (see --list-models for options)",
     )
-    parser.add_argument("--mode", choices=["sft", "osft", "both"], default="sft", help="Training mode (default: sft)")
+    parser.add_argument(
+        "--mode",
+        choices=["sft", "osft", "lora", "all"],
+        default="sft",
+        help="Training mode (default: sft)",
+    )
+
+    # Liger arguments (for SFT and OSFT)
     liger_group = parser.add_mutually_exclusive_group()
     liger_group.add_argument(
         "--use-liger", dest="use_liger", action="store_true", default=True,
-        help="Enable Liger kernels (default: True)"
+        help="Enable Liger kernels for SFT/OSFT (default: True)"
     )
     liger_group.add_argument(
         "--no-liger", dest="use_liger", action="store_false",
-        help="Disable Liger kernels"
+        help="Disable Liger kernels for SFT/OSFT"
     )
     parser.add_argument(
         "--liger-variants", action="store_true",
-        help="Test both Liger on/off variants"
+        help="Test both Liger on/off variants for SFT/OSFT"
     )
+
+    # QLoRA arguments (for LoRA)
+    qlora_group = parser.add_mutually_exclusive_group()
+    qlora_group.add_argument(
+        "--use-qlora", dest="use_qlora", action="store_true", default=False,
+        help="Enable QLoRA (4-bit quantization) for LoRA training"
+    )
+    qlora_group.add_argument(
+        "--no-qlora", dest="use_qlora", action="store_false",
+        help="Disable QLoRA (standard LoRA)"
+    )
+    parser.add_argument(
+        "--qlora-variants", action="store_true",
+        help="Test both QLoRA on/off variants for LoRA mode"
+    )
+
     parser.add_argument("--run-all", action="store_true", help="Run validation for all models")
     parser.add_argument(
         "--output-dir", default=BASE_OUTPUT_DIR, help=f"Base output directory (default: {BASE_OUTPUT_DIR})"
@@ -856,12 +1063,16 @@ Available model keys:
         # Determine which models to run
         model_keys = args.models if args.models else None  # None means all models
 
-        # Determine liger modes to test
+        # Determine liger modes to test (for SFT/OSFT)
         liger_modes = [True, False] if args.liger_variants else [args.use_liger]
+
+        # Determine qlora modes to test (for LoRA)
+        qlora_modes = [True, False] if args.qlora_variants else [args.use_qlora]
 
         run_all_validations(
             mode=args.mode,
             liger_modes=liger_modes,
+            qlora_modes=qlora_modes,
             base_output_dir=args.output_dir,
             dataset_dir=args.dataset_dir,
             model_keys=model_keys,
