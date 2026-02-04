@@ -253,15 +253,23 @@ result = lora_sft(
 )
 ```
 
-### Weights & Biases Integration
+### Logging & Experiment Tracking
 
-**Note:** Weights & Biases is not included in the `[lora]` extras. Install separately:
+LoRA training supports multiple logging backends for experiment tracking. You can use any combination of these backends simultaneously:
+
+- **MLflow** - Open-source platform for ML lifecycle management
+- **Weights & Biases (wandb)** - Cloud-based experiment tracking
+- **TensorBoard** - Visualization toolkit for training metrics
+
+#### MLflow Integration
+
+**Note:** MLflow is not included in the `[lora]` extras. Install separately:
 
 ```bash
-pip install wandb
+pip install mlflow
 ```
 
-Then use in training:
+Then configure MLflow logging:
 
 ```python
 result = lora_sft(
@@ -270,8 +278,81 @@ result = lora_sft(
     ckpt_output_dir="./outputs",
     lora_r=16,
     lora_alpha=32,
+    # MLflow configuration
+    mlflow_tracking_uri="http://localhost:5000",  # Or your MLflow server
+    mlflow_experiment_name="lora-experiments",
+    mlflow_run_name="qwen-lora-run"
+)
+```
+
+You can also configure MLflow via environment variables:
+- `MLFLOW_TRACKING_URI` - Tracking server URI
+- `MLFLOW_EXPERIMENT_NAME` - Experiment name
+
+#### Weights & Biases Integration
+
+**Note:** Weights & Biases is not included in the `[lora]` extras. Install separately:
+
+```bash
+pip install wandb
+```
+
+Then configure wandb logging:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=16,
+    lora_alpha=32,
+    # Weights & Biases configuration
     wandb_project="my-lora-project",
-    wandb_entity="my-team"
+    wandb_entity="my-team",
+    wandb_run_name="qwen-lora-run"
+)
+```
+
+#### TensorBoard Integration
+
+**Note:** TensorBoard is not included in the `[lora]` extras. Install separately:
+
+```bash
+pip install tensorboard
+```
+
+Then configure TensorBoard logging:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=16,
+    lora_alpha=32,
+    # TensorBoard configuration
+    tensorboard_log_dir="./logs/tensorboard"
+)
+```
+
+View logs with: `tensorboard --logdir=./logs/tensorboard`
+
+#### Using Multiple Loggers
+
+You can enable multiple logging backends simultaneously:
+
+```python
+result = lora_sft(
+    model_path="Qwen/Qwen2.5-1.5B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./outputs",
+    lora_r=16,
+    lora_alpha=32,
+    # Enable all logging backends
+    mlflow_tracking_uri="http://localhost:5000",
+    mlflow_experiment_name="lora-experiments",
+    wandb_project="my-lora-project",
+    tensorboard_log_dir="./logs/tensorboard"
 )
 ```
 
