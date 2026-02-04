@@ -372,7 +372,7 @@ class UnslothLoRABackend(Backend):
 
         if detected:
             return detected if len(detected) > 1 else detected[0]
-        return None
+        return "none"
 
 
 
