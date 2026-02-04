@@ -5,13 +5,13 @@ SFT Training Example with MLflow Logging
 This script demonstrates SFT training with MLflow integration using training_hub.
 
 Example usage:
-    python sft_mlflow_example.py
+    python sft_mlflow_example.py --data-path /path/to/data.jsonl
 
     # With custom model:
-    python sft_mlflow_example.py --model-path /path/to/model
+    python sft_mlflow_example.py --data-path /path/to/data.jsonl --model-path /path/to/model
 
     # With custom MLflow settings:
-    python sft_mlflow_example.py --mlflow-uri http://remote-server:5000
+    python sft_mlflow_example.py --data-path /path/to/data.jsonl --mlflow-uri http://remote-server:5000
 """
 
 import argparse
@@ -36,7 +36,7 @@ def main():
     )
     parser.add_argument(
         "--ckpt-output-dir",
-        default="/tmp/sft-mlflow-checkpoints",
+        default="./sft-mlflow-checkpoints",
         help="Directory to save checkpoints",
     )
 
@@ -90,7 +90,7 @@ def main():
     print(f"Max tokens/GPU:   {args.max_tokens_per_gpu}")
     print("-" * 60)
     print(f"MLflow URI:       {args.mlflow_uri}")
-    print(f"MLflow Experiment:{args.mlflow_experiment}")
+    print(f"MLflow Experiment: {args.mlflow_experiment}")
     print(f"Run Name:         {run_name}")
     print("=" * 60)
     print()
@@ -107,8 +107,8 @@ def main():
             learning_rate=1e-5,
             max_seq_len=4096,
             max_tokens_per_gpu=args.max_tokens_per_gpu,
-            # Data processing (uses shared memory for performance on Linux)
-            data_output_dir="/dev/shm",
+            # Data processing - use temp directory for processed data
+            data_output_dir=args.ckpt_output_dir,
             warmup_steps=10,
             save_samples=0,
             # Checkpointing

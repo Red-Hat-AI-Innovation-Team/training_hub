@@ -327,7 +327,9 @@ class UnslothLoRABackend(Backend):
 
             # Logging configuration - use loggers list if provided, otherwise fallback to wandb_project
             report_to=self._get_report_to(params),
-            run_name=params.get('wandb_run_name'),
+            # Use wandb_run_name or mlflow_run_name for the HuggingFace Trainer run_name
+            # (used by both wandb and MLflow integrations)
+            run_name=params.get('wandb_run_name') or params.get('mlflow_run_name'),
         )
 
         # Set Weights & Biases project and entity via environment variables if provided
