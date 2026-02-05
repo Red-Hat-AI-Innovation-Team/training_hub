@@ -14,8 +14,8 @@ dependencies = [
     "setuptools>=80.0",
     "packaging>=24.2",
     "wheel>=0.43",
-    "instructlab-training>=0.13.0",
-    "rhai-innovation-mini-trainer>=0.5.0",
+    "instructlab-training>=0.14.0",
+    "rhai-innovation-mini-trainer>=0.6.0",
     "torch>=2.6.0",
     "numba>=0.62.0",
     "transformers>=5.0.0",
@@ -53,8 +53,8 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 cuda = [
-    "instructlab-training[cuda]>=0.13.0",
-    "rhai-innovation-mini-trainer[cuda]>=0.5.0",
+    "instructlab-training[cuda]>=0.14.0",
+    "rhai-innovation-mini-trainer[cuda]>=0.6.0",
     "flash-attn>=2.8",
     "einops>=0.8",
     "kernels>=0.9.0",
