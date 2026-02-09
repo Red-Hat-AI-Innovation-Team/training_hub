@@ -7,11 +7,11 @@ using SFT, OSFT, and LoRA algorithms. The goal is to overfit on a single sample
 
 Usage:
     python model_validation.py --models llama --mode sft
-    python model_validation.py --models llama --mode osft --use-liger
+    python model_validation.py --models llama --mode osft --liger off
     python model_validation.py --models llama --mode lora
-    python model_validation.py --models llama --mode lora --use-qlora
+    python model_validation.py --models llama --mode lora --qlora on
+    python model_validation.py --run-all --mode all --liger both --qlora both
     python model_validation.py --run-all
-    python model_validation.py --run-all --mode all
 
 Configuration:
     - GPUs: 8
@@ -324,7 +324,7 @@ def get_lora_loss_trajectory(output_dir: str) -> tuple[float | None, float | Non
         with open(trainer_state_file) as f:
             trainer_state = json.load(f)
     except json.JSONDecodeError:
-        console.print(f"[dim]Failed to parse trainer_state.json[/dim]")
+        console.print("[dim]Failed to parse trainer_state.json[/dim]")
         return None, None
 
     # Extract losses from log_history
@@ -1002,21 +1002,23 @@ Examples:
     python model_validation.py --models llama --mode sft
     python model_validation.py --models llama granite --mode osft
     python model_validation.py --models llama --mode lora
-    python model_validation.py --models llama --mode lora --use-qlora
+    python model_validation.py --models llama --mode lora --qlora on
 
     # Run all models for a specific mode
     python model_validation.py --run-all --mode sft
     python model_validation.py --run-all --mode osft
     python model_validation.py --run-all --mode lora
 
-    # Run all combinations (all models, all modes, variants on/off)
-    python model_validation.py --run-all --mode all
+    # Control Liger kernels (applies to SFT/OSFT)
+    python model_validation.py --models llama --mode osft --liger off
+    python model_validation.py --run-all --mode sft --liger both
 
-    # Disable liger kernel variations (run only with liger enabled or disabled)
-    python model_validation.py --models llama --mode osft --no-liger
+    # Control QLoRA (applies to LoRA)
+    python model_validation.py --models llama --mode lora --qlora on
+    python model_validation.py --run-all --mode lora --qlora both
 
-    # Test LoRA with both standard and QLoRA variants
-    python model_validation.py --models llama --mode lora --qlora-variants
+    # Run all combinations (all models, all modes, all variants)
+    python model_validation.py --run-all --mode all --liger both --qlora both
 
     # List available models
     python model_validation.py --list-models
@@ -1039,34 +1041,16 @@ Available model keys:
         help="Training mode (default: sft)",
     )
 
-    # Liger arguments (for SFT and OSFT)
-    liger_group = parser.add_mutually_exclusive_group()
-    liger_group.add_argument(
-        "--use-liger", dest="use_liger", action="store_true", default=True,
-        help="Enable Liger kernels for SFT/OSFT (default: True)"
-    )
-    liger_group.add_argument(
-        "--no-liger", dest="use_liger", action="store_false",
-        help="Disable Liger kernels for SFT/OSFT"
-    )
+    # Liger kernels (applies to SFT and OSFT)
     parser.add_argument(
-        "--liger-variants", action="store_true",
-        help="Test both Liger on/off variants for SFT/OSFT"
+        "--liger", choices=["on", "off", "both"], default="on",
+        help="Liger kernel mode for SFT/OSFT: on, off, or both (default: on)"
     )
 
-    # QLoRA arguments (for LoRA)
-    qlora_group = parser.add_mutually_exclusive_group()
-    qlora_group.add_argument(
-        "--use-qlora", dest="use_qlora", action="store_true", default=False,
-        help="Enable QLoRA (4-bit quantization) for LoRA training"
-    )
-    qlora_group.add_argument(
-        "--no-qlora", dest="use_qlora", action="store_false",
-        help="Disable QLoRA (standard LoRA)"
-    )
+    # QLoRA (applies to LoRA)
     parser.add_argument(
-        "--qlora-variants", action="store_true",
-        help="Test both QLoRA on/off variants for LoRA mode"
+        "--qlora", choices=["on", "off", "both"], default="off",
+        help="QLoRA (4-bit quantization) for LoRA: on, off, or both (default: off)"
     )
 
     parser.add_argument("--run-all", action="store_true", help="Run validation for all models")
@@ -1084,15 +1068,15 @@ Available model keys:
         print_models_table()
         return
 
+    # Map choice strings to mode lists
+    choice_map = {"on": [True], "off": [False], "both": [True, False]}
+
     if args.run_all or args.models:
         # Determine which models to run
         model_keys = args.models if args.models else None  # None means all models
 
-        # Determine liger modes to test (for SFT/OSFT)
-        liger_modes = [True, False] if args.liger_variants else [args.use_liger]
-
-        # Determine qlora modes to test (for LoRA)
-        qlora_modes = [True, False] if args.qlora_variants else [args.use_qlora]
+        liger_modes = choice_map[args.liger]
+        qlora_modes = choice_map[args.qlora]
 
         run_all_validations(
             mode=args.mode,
