@@ -34,7 +34,8 @@ Notable hidden options:
 - `osft=False`: Run plain SFT through the OSFT backend without orthogonal subspace constraints
 - Validation loss configuration (for convergence monitoring)
 - Training duration modes including "infinite" mode for indefinite training
-- W&B logging (requires `wandb` package installed separately)
+
+Note: W&B, MLflow, and TensorBoard logging are now first-class parameters on all algorithms (see SKILL.md "Experiment tracking" section) and no longer need to be passed as backend kwargs.
 
 ### SFT (instructlab-training)
 
@@ -50,7 +51,8 @@ The LoRA backend uses Unsloth's `FastLanguageModel` and HuggingFace's `SFTTraine
 Notable options:
 - `sample_packing`: Enable sample packing for efficiency
 - `bf16`: Enable bfloat16 training
-- W&B integration: `wandb_project`, `wandb_entity`, `wandb_run_name`
+
+Note: W&B, MLflow, and TensorBoard logging are now first-class parameters on all algorithms and no longer need to be passed as backend kwargs.
 
 ## Validation loss
 

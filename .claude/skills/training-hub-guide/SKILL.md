@@ -34,8 +34,9 @@ The two-step install for `[cuda]` is required because `flash-attn` and other CUD
 Loggers are not bundled. Install separately as needed:
 
 ```bash
-uv pip install wandb    # Weights & Biases
-uv pip install mlflow   # MLflow
+uv pip install wandb       # Weights & Biases
+uv pip install mlflow      # MLflow
+uv pip install tensorboard # TensorBoard
 ```
 
 ### Fixing CUDA/kernel import errors
@@ -107,6 +108,66 @@ When you hit OOM, these are the available knobs:
 If all knobs are exhausted, choose a smaller model or a node with more GPU memory.
 
 Use `from training_hub import estimate` for upfront memory estimation. See `examples/notebooks/memory_estimator_example.ipynb`.
+
+## Experiment tracking
+
+All three algorithms (`sft()`, `osft()`, `lora_sft()`) expose logging configuration as first-class parameters. Loggers are **auto-detected**: they are automatically enabled when their configuration parameters are set.
+
+### Logging parameters
+
+All algorithms accept the same logging parameters:
+
+| Parameter | Logger | Description |
+|-----------|--------|-------------|
+| `wandb_project` | W&B | Project name (enables W&B logging) |
+| `wandb_entity` | W&B | Team or user entity |
+| `wandb_run_name` | W&B | Run display name |
+| `mlflow_tracking_uri` | MLflow | Tracking server URI (enables MLflow logging) |
+| `mlflow_experiment_name` | MLflow | Experiment name |
+| `mlflow_run_name` | MLflow | Run name |
+| `tensorboard_log_dir` | TensorBoard | Log directory (enables TensorBoard logging) |
+
+### Example
+
+```python
+from training_hub import sft
+
+sft(
+    model_path="my-model",
+    data_path="data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    # W&B logging — enabled automatically because wandb_project is set
+    wandb_project="my-finetune",
+    wandb_entity="my-team",
+    wandb_run_name="sft-run-1",
+    # MLflow — also enabled, multiple loggers can run simultaneously
+    mlflow_tracking_uri="http://localhost:5000",
+    mlflow_experiment_name="sft-experiment",
+)
+```
+
+### Environment variable fallback
+
+If logging parameters are not passed explicitly, backends will check these environment variables as fallback:
+
+| Parameter | Environment variable |
+|-----------|---------------------|
+| `wandb_project` | `WANDB_PROJECT` |
+| `wandb_entity` | `WANDB_ENTITY` |
+| `wandb_run_name` | `WANDB_RUN_NAME` |
+| `mlflow_tracking_uri` | `MLFLOW_TRACKING_URI` |
+| `mlflow_experiment_name` | `MLFLOW_EXPERIMENT_NAME` |
+| `mlflow_run_name` | `MLFLOW_RUN_NAME` |
+
+Explicit kwargs always take precedence over environment variables.
+
+### Logger support matrix
+
+| Logger | SFT | OSFT | LoRA |
+|--------|-----|------|------|
+| W&B | Yes | Yes | Yes |
+| MLflow | Yes | Yes | Yes |
+| TensorBoard | Yes | Limited | Yes |
 
 ## Loss monitoring and convergence
 
