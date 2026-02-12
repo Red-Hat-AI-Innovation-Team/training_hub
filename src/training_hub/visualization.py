@@ -204,16 +204,16 @@ def plot_loss(
     EMA smoothing.
 
     Automatically detects the metrics format:
-    - JSONL files (SFT/OSFT via instructlab-training or mini-trainer)
-    - trainer_state.json (LoRA via Unsloth/TRL/HuggingFace Trainer)
+    - JSONL files (SFT/OSFT via instructlab-training or mini-trainer, LoRA via Unsloth/TRL)
+    - trainer_state.json (LoRA fallback for legacy checkpoints)
 
     Args:
         ckpt_output_dirs: Path to checkpoint directory, or list of paths
             for comparing multiple runs.
         metrics_file: Name of the metrics file within the checkpoint directory.
             If None, auto-detects by trying:
-            - training_log.jsonl, training_metrics.jsonl, metrics.jsonl (SFT/OSFT)
-            - trainer_state.json in checkpoint-* subdirectories (LoRA)
+            - training_log.jsonl, training_metrics.jsonl, metrics.jsonl (all algorithms)
+            - trainer_state.json in checkpoint-* subdirectories (LoRA fallback)
         output_path: Path to save the plot. If None, saves to 'loss_plot.png'
             in the first checkpoint directory.
         labels: Labels for each run in the legend. If None, uses directory names.

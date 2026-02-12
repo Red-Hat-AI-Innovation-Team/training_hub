@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any, Dict, List, Optional, Type, Union
 from pathlib import Path
@@ -6,6 +7,61 @@ from . import Algorithm, Backend, AlgorithmRegistry
 from .sft import SFTAlgorithm
 from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
 from training_hub import utils
+
+# Import TrainerCallback for JSONL logging - handle gracefully if not available
+try:
+    from transformers import TrainerCallback
+except ImportError:
+    # Fallback if transformers not available - will be checked later in execute_training
+    TrainerCallback = object
+
+
+class JSONLLoggingCallback(TrainerCallback):
+    """
+    Custom callback to write training metrics to JSONL format.
+
+    This provides consistency with SFT/OSFT backends which output training_log.jsonl.
+    Writes live metrics during training, not just at the end.
+    """
+
+    def __init__(self, output_dir: str):
+        """
+        Initialize the callback.
+
+        Args:
+            output_dir: Directory where training_log.jsonl will be written
+        """
+        self.output_file = os.path.join(output_dir, 'training_log.jsonl')
+        # Ensure directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """
+        Called when trainer logs metrics.
+
+        Writes entries in the same format as SFT/OSFT:
+        {"step": 1, "loss": 4.2727, "epoch": 0.015625, "learning_rate": 2e-6}
+        """
+        if logs is None:
+            return
+
+        # Create entry with consistent format
+        entry = {
+            "step": state.global_step,
+            "epoch": state.epoch,
+        }
+
+        # Add metrics from logs (loss, learning_rate, etc.)
+        for key, value in logs.items():
+            # Convert numpy/torch values to Python types for JSON serialization
+            if hasattr(value, 'item'):
+                entry[key] = value.item()
+            else:
+                entry[key] = value
+
+        # Write to JSONL file
+        with open(self.output_file, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
 
 
 class UnslothLoRABackend(Backend):
@@ -66,6 +122,10 @@ class UnslothLoRABackend(Backend):
             max_seq_length=training_params.get('max_seq_len', 2048),
             packing=training_params.get('sample_packing', True),
         )
+
+        # Add custom callback for JSONL logging (consistent with SFT/OSFT backends)
+        jsonl_callback = JSONLLoggingCallback(training_params['ckpt_output_dir'])
+        trainer.add_callback(jsonl_callback)
 
         # Execute training with error handling for known Unsloth issues
         try:
