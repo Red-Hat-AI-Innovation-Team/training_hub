@@ -20,7 +20,7 @@ class JSONLLoggingCallback(TrainerCallback):
     """
     Custom callback to write training metrics to JSONL format.
 
-    This provides consistency with SFT/OSFT backends which output training_log.jsonl.
+    This provides consistency with SFT/OSFT backends which output training_metrics.jsonl.
     Writes live metrics during training, not just at the end.
     """
 
@@ -29,9 +29,9 @@ class JSONLLoggingCallback(TrainerCallback):
         Initialize the callback.
 
         Args:
-            output_dir: Directory where training_log.jsonl will be written
+            output_dir: Directory where training_metrics.jsonl will be written
         """
-        self.output_file = os.path.join(output_dir, 'training_log.jsonl')
+        self.output_file = os.path.join(output_dir, 'training_metrics.jsonl')
         # Ensure directory exists
         os.makedirs(output_dir, exist_ok=True)
 
