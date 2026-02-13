@@ -45,6 +45,10 @@ class JSONLLoggingCallback(TrainerCallback):
         if logs is None:
             return
 
+        # Only write from global rank 0 to avoid duplicate entries in distributed training
+        if not state.is_world_process_zero:
+            return
+
         # Create entry with consistent format
         entry = {
             "step": state.global_step,
