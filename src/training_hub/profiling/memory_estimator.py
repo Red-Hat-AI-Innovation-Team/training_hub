@@ -581,13 +581,13 @@ class LoRAEstimator(BasicEstimator):
         # the gradients, whichever is higher (these tensors are NOT allocated simultaneously)
         if gpu_vram_grad > gpu_vram_outputs:
             if self.verbose > 0:
-                print("NOTE: The peak memory allocation of the output tensors is " + str(gpu_vram_outputs) + " GB.")
+                print("NOTE: The peak memory allocation of the output tensors is " + ROUNDER(gpu_vram_outputs) + " GB.")
                 print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
                 print("To reduce memory usage, focus on reducing the gradient allocation first.")
                 gpu_vram_outputs = 0
         else:
             if self.verbose > 0:
-                print("NOTE: The peak memory allocation of the gradient tensors is " + str(gpu_vram_grad) + " GB.")
+                print("NOTE: The peak memory allocation of the gradient tensors is " + ROUNDER(gpu_vram_grad) + " GB.")
                 print("However, in practice, this allocation does not impact the peak memory usage since the output allocation is higher.")
                 print("To reduce memory usage, focus on reducing the output allocation first.")
             gpu_vram_grad = 0
