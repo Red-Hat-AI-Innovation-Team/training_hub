@@ -1,5 +1,6 @@
 try: from typing import override
 except ImportError: from typing_extensions import override
+from deprecated import deprecated
 import warnings
 import torch
 from transformers import AutoModel
@@ -139,7 +140,6 @@ class BasicEstimator:
             self.model = AutoModel.from_pretrained(self.model_path,
                                                     trust_remote_code=trust_remote_code,
                                                     device_map="meta")
-            print(self.model.config)
         
         # Determine parameters needed for calculations
         self.num_params: int = self.model.num_parameters(only_trainable=False)
@@ -205,7 +205,6 @@ class BasicEstimator:
                     if layer_name.find(term) > -1:
                         # If so, add the input and output of the matrix to our accumulator
                         weight_size_total += (layer_data.shape[0] + layer_data.shape[1])
-            print(layer_data.shape)
         
         return weight_size_total
 
@@ -580,8 +579,18 @@ class LoRAEstimator(BasicEstimator):
 
         # The memory is bounded by either the size of the outputs or the size of
         # the gradients, whichever is higher (these tensors are NOT allocated simultaneously)
-        if gpu_vram_grad > gpu_vram_outputs: gpu_vram_outputs = 0
-        else: gpu_vram_grad = 0
+        if gpu_vram_grad > gpu_vram_outputs:
+            if self.verbose > 0:
+                print("NOTE: The peak memory allocation of the output tensors is " + str(gpu_vram_outputs) + " GB.")
+                print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
+                print("To reduce memory usage, focus on reducing the gradient allocation first.")
+                gpu_vram_outputs = 0
+        else:
+            if self.verbose > 0:
+                print("NOTE: The peak memory allocation of the gradient tensors is " + str(gpu_vram_grad) + " GB.")
+                print("However, in practice, this allocation does not impact the peak memory usage since the output allocation is higher.")
+                print("To reduce memory usage, focus on reducing the output allocation first.")
+            gpu_vram_grad = 0
 
         # Sum up each proposed amount of memory
         subtotal: int = gpu_vram_par + gpu_vram_opt + gpu_vram_grad + \
@@ -592,8 +601,9 @@ class LoRAEstimator(BasicEstimator):
 
     def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
-        print("NOTE: Due to its memory efficiency, " + \
-                "LoRA's lower bound estimate is lower than the basic sum of the components.")
+        if self.verbose > 0:
+            print("NOTE: Due to its memory efficiency, " + \
+                    "LoRA's lower bound estimate is lower than the basic sum of the components.")
         super()._print_results(results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional)
 
@@ -636,15 +646,16 @@ class QLoRAEstimator(LoRAEstimator):
         # TODO: Check that the model is actually stored in Float8 or if it gets sharded across GPUs...
         offload_memory = self.num_params * FLOAT8_BYTES_N
         if subtotal < offload_memory:
-            print("NOTE: The memory needed for this QLoRA training setup is bounded by the pre-quantized size of the model.")
-            print("You can only reduce the memory further by using a smaller model.")
+            if self.verbose > 0:
+                print("NOTE: The memory needed for this QLoRA training setup is bounded by the pre-quantized size of the model.")
+                print("You can only reduce the memory further by using a smaller model.")
             return offload_memory / self.num_gpus, offload_memory / self.num_gpus, 0, 0, 0, 0, 0
         else:
             return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
                 gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
 
 
-class OSFTEstimatorExperimental(BasicEstimator):
+class OSFTEstimator(BasicEstimator):
     """
     An estimator for the memory usage of an LLM trained via OSFT. 
     Subclasses the BasicEstimator class.
@@ -696,6 +707,7 @@ class OSFTEstimatorExperimental(BasicEstimator):
         else:
             self.osft_params = self._calc_osft_params()
 
+
     @override
     def _calc_model_params(self):
         """
@@ -703,10 +715,13 @@ class OSFTEstimatorExperimental(BasicEstimator):
         """
         return self.osft_params / self.num_gpus 
 
+
     @override
     def _calc_gradients(self):
         """
-        Override the optimizer parameter calculation by calculating based on OSFT's parameters
+        Calculate the VRAM for storing the gradients.
+        In OSFT, only the unfrozen gradients are stored in memory,
+        so we factor in the unfreeze rank ratio
         """
         return self.num_trainable_params * self.main_dtype_bytes * self.unfreeze_rank_ratio / self.num_gpus 
 
@@ -714,66 +729,17 @@ class OSFTEstimatorExperimental(BasicEstimator):
     @override
     def _calc_intermediate_activations(self):
         """
-        Calculate the VRAM for storing the model's intermediate activations
+        Calculate the VRAM for storing the intermediate activations.
+        In OSFT, the intermediate activations are only stored for the unfrozen parameters,
+        so we factor in the unfreeze rank ratio
         """
         return (self.tokens_per_gpu * self.main_dtype_bytes  * self.num_layers * self.hidden_size)  * self.unfreeze_rank_ratio
 
-    @override
-    def estimate(self) -> tuple[int, int, int]:
-        print("CAUTION: This estimator for OSFT's memory requirements is still under development.\n" +
-                "Actual memory requirements may vary from the given estimate.")
-        return super().estimate()
 
-
-class OSFTEstimator(BasicEstimator):
-    """
-    An estimator for the memory usage of an LLM trained via OSFT. 
-    Subclasses the BasicEstimator class.
-
-    NOTE: This is a more basic implementation of an OSFT estimator by
-    extrapolating from the SFT estimator.
-    Please be warned that the estimates may not be fully accurate.
-
-    Args (in addition to the BasicEstimator args):
-        unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
-                                    during OSFT.
-    """
-
-    @override
-    def __init__(
-        self,
-        num_gpus: int = 8,
-        gpu_memory: int = 85899345920,
-        model_path: str = "ibm-granite/granite-3.3-8b-instruct",
-        batch_size: int | None = None,
-        max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
-        use_liger: bool = False,
-        verbose: int = 1,
-        trust_remote_code: bool = False,
-        unfreeze_rank_ratio: float = 0.25,
-    ):
-        super().__init__(num_gpus, gpu_memory, model_path,
-                        batch_size, max_seq_len, max_tokens_per_gpu, 
-                        use_liger, verbose, trust_remote_code)
-        self.unfreeze_rank_ratio = unfreeze_rank_ratio
-        if not (0.0 <= self.unfreeze_rank_ratio <= 1.0):
-            raise ValueError("Ratio must be in the range [0, 1]")
-
-    @override
-    def _apply_overhead(self, subtotal):
-        """
-        In addition to the 0-30% overhead, apply a multiplier based on the unfreeze_rank_ratio
-        """
-        ratio_val = OSFT_RATIO(self.unfreeze_rank_ratio)
-        return super()._apply_overhead(subtotal * ratio_val)        
-    
-    @override
-    def estimate(self) -> tuple[int, int, int]:
-        print("CAUTION: This is a very rough estimate of OSFT's memory requirements.\n" +
-                "Actual memory requirements may vary from the given estimate.")
-
-        return super().estimate()
+@deprecated(reason="All experimental functionality has been moved into the main OSFTEstimator class, please use that instead.\n" + \
+                 "If you are seeing this by using the 'osft-e' option in the estimate function, please use 'osft' instead.")
+class OSFTEstimatorExperimental(OSFTEstimator):
+    pass
 
 
 def estimate(
