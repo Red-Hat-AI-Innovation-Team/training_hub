@@ -22,6 +22,9 @@ def sft(
     warmup_steps: Optional[int] = None,
     accelerate_full_state_at_epoch: Optional[bool] = None,
     checkpoint_at_epoch: Optional[bool] = None,
+    is_pretraining: Optional[bool] = None,
+    block_size: Optional[int] = None,
+    document_column_name: Optional[str] = None,
     nproc_per_node: Optional[int] = None,
     nnodes: Optional[int] = None,
     node_rank: Optional[int] = None,
@@ -70,6 +73,14 @@ def sft(
 |-----------|------|---------|-------------|
 | `data_output_dir` | `str` | `None` | Directory to save processed training data. If not specified, processed data may be stored in a temporary location. |
 
+#### Pretraining
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `is_pretraining` | `bool` | `None` | When `True`, enables pretraining mode for training on raw documents. |
+| `block_size` | `int` | `None` | Required when `is_pretraining=True`. Token length of each document block. |
+| `document_column_name` | `str` | `"document"` | Column containing raw documents when `is_pretraining=True`. |
+
 #### Checkpointing
 
 | Parameter | Type | Default | Description |
@@ -87,6 +98,26 @@ def sft(
 | `node_rank` | `int` | `0` | Rank of this node (0 to `nnodes-1`). Node 0 is the master node. |
 | `rdzv_id` | `int` | Random | Unique job ID for rendezvous. All nodes must use the same ID. |
 | `rdzv_endpoint` | `str` | Required for multi-node | Endpoint of the master node (node 0) in the format `"hostname:port"` (e.g., `"192.168.1.10:29500"`). |
+
+#### Logging Configuration
+
+Loggers are automatically enabled when their configuration parameters are set:
+
+| Logger      | Enabled By            | Env Variable Fallback |
+| ----------- | --------------------- | --------------------- |
+| MLflow      | `mlflow_tracking_uri` | `MLFLOW_TRACKING_URI` |
+| W&B         | `wandb_project`       | `WANDB_PROJECT`       |
+| TensorBoard | `tensorboard_log_dir` | -                     |
+
+| Parameter                | Type  | Default                    | Description                                                                     |
+| ------------------------ | ----- | -------------------------- | ------------------------------------------------------------------------------- |
+| `mlflow_tracking_uri`    | `str` | `MLFLOW_TRACKING_URI` env  | MLflow tracking server URI. Enables MLflow logging.                             |
+| `mlflow_experiment_name` | `str` | `MLFLOW_EXPERIMENT_NAME` env | MLflow experiment name.                                                       |
+| `mlflow_run_name`        | `str` | `None`                     | MLflow run name (supports `{time}`, `{utc_time}`, `{rank}` placeholders).       |
+| `wandb_project`          | `str` | `WANDB_PROJECT` env        | W&B project name. Enables W&B logging.                                          |
+| `wandb_entity`           | `str` | `WANDB_ENTITY` env         | W&B team/entity.                                                                |
+| `wandb_run_name`         | `str` | `None`                     | W&B run name.                                                                   |
+| `tensorboard_log_dir`    | `str` | `None`                     | TensorBoard log directory. Enables TensorBoard.                                 |
 
 #### Additional Parameters
 

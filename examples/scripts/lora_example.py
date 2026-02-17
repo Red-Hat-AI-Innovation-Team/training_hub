@@ -359,7 +359,7 @@ def main():
         if args.qlora:
             print("• Additional memory savings from 4-bit quantization")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         elapsed_time = time.time() - start_time
         print()
         print("=" * 60)

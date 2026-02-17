@@ -94,7 +94,8 @@ LoRA provides parameter-efficient fine-tuning with significantly reduced memory 
 
 **Launch Requirements:**
 - **Single-GPU**: Standard Python launch: `python my_script.py`
-- **Multi-GPU**: Unlike other algorithms, LoRA requires torchrun: `torchrun --nproc-per-node=4 my_script.py`
+- **Multi-GPU (Data-Parallel)**: For data-parallel training, use torchrun: `torchrun --nproc-per-node=4 my_script.py`
+- **Multi-GPU (Model Splitting)**: For large models that don't fit on one GPU, use `enable_model_splitting=True` with standard Python launch
 
 **Quick Example:**
 ```python
@@ -134,6 +135,31 @@ estimate(training_method='osft',
 )
 ```
 
+### Training Loss Visualization
+
+training_hub includes a `plot_loss` utility for visualizing training loss curves after running SFT or OSFT training. This is useful for monitoring training progress, comparing different experiments, and identifying issues like overfitting.
+
+**Tutorials:**
+- [Plot Loss Example](notebooks/plot_loss_example.ipynb) - Interactive notebook demonstrating loss visualization features
+
+**Quick Example:**
+```python
+from training_hub import sft, plot_loss
+
+# After training
+sft(model_path="...", ckpt_output_dir="./checkpoints", ...)
+
+# Plot and save loss curve
+plot_loss("./checkpoints")
+
+# Compare multiple runs with EMA smoothing
+plot_loss(
+    ["./run1", "./run2", "./run3"],
+    labels=["baseline", "lr=1e-5", "lr=5e-6"],
+    ema=True
+)
+```
+
 ### Model Interpolation (Experimental / In-Development)
 
 training_hub has a utility for merging two checkpoints of the same model into one with linear interpolation.
@@ -151,6 +177,18 @@ python interpolator.py --model-path /path/to/base/model --trained-model-path /pa
 from interpolator import interpolate_models
 
 interpolate_models("/path/to/base/model", "/path/to/trained/checkpoint")
+```
+
+### Model Validation (Development / QA)
+
+Validates that model architectures can train successfully with SFT and OSFT by overfitting on a single sample.
+
+**Script:** [model_validation.py](../scripts/model_validation.py)
+
+```bash
+python scripts/model_validation.py --models llama --mode sft
+python scripts/model_validation.py --run-all --mode both --liger-variants
+python scripts/model_validation.py --list-models
 ```
 
 ## Getting Started

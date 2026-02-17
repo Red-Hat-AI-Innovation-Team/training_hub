@@ -102,6 +102,14 @@ Executes the OSFT training process.
 | `use_processed_dataset` | `bool` | Backend default | Whether the data at `data_path` is already preprocessed. Set to `True` to skip preprocessing. |
 | `unmask_messages` | `bool` | Backend default | If `True`, unmasks all messages during data processing (excluding system messages). |
 
+###### Pretraining Mode
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `is_pretraining` | `bool` | `False` | When `True`, enables pretraining mode for training on raw documents. |
+| `block_size` | `int` | `None` | Required when `is_pretraining=True`. Number of tokens per training block (recommend starting with 2048). |
+| `document_column_name` | `str` | `"document"` | Column containing raw documents when `is_pretraining=True`. |
+
 ###### OSFT-Specific Configuration
 
 | Parameter | Type | Default | Description |
@@ -135,6 +143,26 @@ Executes the OSFT training process.
 | `node_rank` | `int` | `0` | Rank of this node (0 to `nnodes-1`). Node 0 is the master node. |
 | `rdzv_id` | `int` | Random | Unique job ID for rendezvous. All nodes must use the same ID. |
 | `rdzv_endpoint` | `str` | Required for multi-node | Endpoint of the master node in the format `"hostname:port"`. Master node uses `"0.0.0.0:port"`, workers use master's IP address. |
+
+###### Logging Configuration
+
+Loggers are automatically enabled when their configuration parameters are set:
+
+| Logger | Enabled By            | Env Variable Fallback |
+| ------ | --------------------- | --------------------- |
+| MLflow | `mlflow_tracking_uri` | `MLFLOW_TRACKING_URI` |
+| W&B    | `wandb_project`       | `WANDB_PROJECT`       |
+
+| Parameter                | Type  | Default                    | Description                                         |
+| ------------------------ | ----- | -------------------------- | --------------------------------------------------- |
+| `mlflow_tracking_uri`    | `str` | `MLFLOW_TRACKING_URI` env  | MLflow tracking server URI. Enables MLflow logging. |
+| `mlflow_experiment_name` | `str` | `MLFLOW_EXPERIMENT_NAME` env | MLflow experiment name.                           |
+| `mlflow_run_name`        | `str` | `None`                     | MLflow run name.                                    |
+| `wandb_project`          | `str` | `WANDB_PROJECT` env        | W&B project name. Enables W&B logging.              |
+| `wandb_entity`           | `str` | `WANDB_ENTITY` env         | W&B team/entity.                                    |
+| `wandb_run_name`         | `str` | `None`                     | W&B run name.                                       |
+
+> **Note:** OSFT does not support TensorBoard logging.
 
 ###### Additional Backend Parameters
 
@@ -206,6 +234,9 @@ Returns the optional parameters for OSFT.
     "data_output_dir": str,
     "use_processed_dataset": bool,
     "unmask_messages": bool,
+    "is_pretraining": bool,
+    "block_size": int,
+    "document_column_name": str,
     "target_patterns": list,
     "num_epochs": int,
     "warmup_steps": int,

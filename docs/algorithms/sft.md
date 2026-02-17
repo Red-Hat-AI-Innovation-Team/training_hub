@@ -53,6 +53,34 @@ Your training data should be in JSONL format with messages:
 
 That's it! The `sft()` function handles all the complexity of distributed training, data processing, and checkpointing automatically.
 
+### Pretraining Mode (Optional)
+
+To train on raw documents instead of chat-formatted data, enable pretraining mode by setting `is_pretraining=True` and specifying a `block_size`.
+
+```python
+result = sft(
+    model_path="Qwen/Qwen2.5-7B",
+    data_path="./raw_documents.jsonl",
+    ckpt_output_dir="./checkpoints",
+    is_pretraining=True,
+    block_size=2048,
+    document_column_name="text",  # optional, defaults to "document"
+)
+```
+
+Your data should be a JSONL file where each line contains document text:
+
+```json
+{"text": "First document..."}
+{"text": "Second document..."}
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `is_pretraining` | Yes | Set to `True` to enable pretraining mode |
+| `block_size` | Yes | Number of tokens per training block (recommend starting with 2048) |
+| `document_column_name` | No | Column name in JSONL file (default: `"document"`) |
+
 ## Key Concepts
 
 ### Training Data

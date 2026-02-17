@@ -63,7 +63,7 @@ Features:
 - 2x faster training compared to standard LoRA implementations
 - 70% less VRAM usage
 - QLoRA support with 4-bit quantization
-- Single-GPU and multi-GPU support (requires torchrun)
+- Single-GPU and multi-GPU support (data-parallel via torchrun, or model splitting via `enable_model_splitting`)
 - Optimized for memory efficiency
 
 **Learn more:** [Unsloth Backend Documentation](/api/backends/unsloth)
