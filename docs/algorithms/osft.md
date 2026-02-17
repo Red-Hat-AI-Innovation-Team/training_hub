@@ -81,10 +81,45 @@ Standard instruction tuning (default) - only assistant responses used for loss:
 osft(..., unmask_messages=False)  # Default
 ```
 
-Pretraining mode - all content except system messages used for loss:
+Instruction-style pretraining (unmask all conversational content except system messages):
 ```python
 osft(..., unmask_messages=True)
 ```
+
+### Pretraining Mode
+
+To train on raw documents instead of chat-formatted data, enable pretraining mode by setting `is_pretraining=True` and specifying a `block_size`.
+
+Your data should be a JSONL file where each line contains document text:
+
+```json
+{"document": "First document..."}
+{"document": "Second document..."}
+```
+
+```python
+result = osft(
+    model_path="meta-llama/Llama-3.1-8B-Instruct",
+    data_path="./domain_documents.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=2048,
+    learning_rate=2e-5,
+
+    # Enable pretraining mode
+    is_pretraining=True,
+    block_size=2048,
+    document_column_name="text",  # optional; defaults to "document"
+)
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `is_pretraining` | Yes | Set to `True` to enable pretraining mode |
+| `block_size` | Yes | Number of tokens per training block (recommend starting with 2048) |
+| `document_column_name` | No | Column name in JSONL file (default: `"document"`) |
 
 ### Pre-processed Dataset Format
 

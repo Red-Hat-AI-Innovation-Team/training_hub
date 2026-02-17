@@ -4,6 +4,7 @@ from .algorithms.osft import OSFTAlgorithm, MiniTrainerOSFTBackend, osft
 from .algorithms.lora import lora_sft, LoRASFTAlgorithm, UnslothLoRABackend
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
+from .visualization import plot_loss
 
 __all__ = [
     'Algorithm',
@@ -25,5 +26,6 @@ __all__ = [
     'OSFTEstimator',
     'LoRAEstimator',
     'QLoRAEstimator',
-    'estimate'
+    'estimate',
+    'plot_loss',
 ]

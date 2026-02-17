@@ -10,7 +10,7 @@ Training Hub supports distributed training at three levels:
 2. **Multi-GPU Training (Single Node)** - Multiple GPUs on one machine
 3. **Multi-Node Training** - Multiple machines with multiple GPUs each
 
-All algorithms ([SFT](/api/functions/sft), [OSFT](/api/functions/osft)) support distributed training using the same parameters.
+[SFT](/api/functions/sft) and [OSFT](/api/functions/osft) support distributed training using the same parameters. [LoRA](/api/functions/lora_sft) has different multi-GPU options (see [LoRA Multi-GPU](#lora-multi-gpu) below).
 
 ## Single-GPU Training
 
@@ -175,9 +175,22 @@ result = osft(
 )
 ```
 
+## LoRA Multi-GPU
+
+LoRA training has different multi-GPU options than SFT/OSFT:
+
+| Approach | Use When | Key Parameter | Launch Command |
+|----------|----------|---------------|----------------|
+| **Data-Parallel** | Model fits on 1 GPU, want faster training | None (use torchrun) | `torchrun --nproc-per-node=N script.py` |
+| **Model Splitting** | Model too large for 1 GPU | `enable_model_splitting=True` | `python script.py` |
+
+**Note:** Use either data-parallel OR model splitting, not both. See the [LoRA documentation](/algorithms/lora) for complete examples.
+
 ## See Also
 
 - [**sft() Function**](/api/functions/sft) - SFT distributed parameters
 - [**osft() Function**](/api/functions/osft) - OSFT distributed parameters
+- [**lora_sft() Function**](/api/functions/lora_sft) - LoRA distributed parameters
 - [**InstructLab Training Backend**](/api/backends/instructlab-training) - SFT backend details
 - [**Mini-Trainer Backend**](/api/backends/mini-trainer) - OSFT backend details
+- [**Unsloth Backend**](/api/backends/unsloth) - LoRA backend details
