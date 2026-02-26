@@ -63,7 +63,7 @@ cuda = [
 ]
 
 lora = [
-    "unsloth>=2026.1.0",
+    "unsloth>=2026.1.1",
     "trl>=0.18.0",
     "xformers>=0.0.33.post1",
 ]
