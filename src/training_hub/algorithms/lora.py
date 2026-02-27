@@ -8,12 +8,8 @@ from .sft import SFTAlgorithm
 from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
 from training_hub import utils
 
-# Import TrainerCallback for JSONL logging - handle gracefully if not available
-try:
-    from transformers import TrainerCallback
-except ImportError:
-    # Fallback if transformers not available - will be checked later in execute_training
-    TrainerCallback = object
+# TrainerCallback import - transformers is required for LoRA functionality
+from transformers import TrainerCallback
 
 
 class JSONLLoggingCallback(TrainerCallback):
@@ -57,6 +53,9 @@ class JSONLLoggingCallback(TrainerCallback):
 
         # Add metrics from logs (loss, learning_rate, etc.)
         for key, value in logs.items():
+            # Skip keys that already exist to avoid overwriting our structured data
+            if key in entry:
+                continue
             # Convert numpy/torch values to Python types for JSON serialization
             if hasattr(value, 'item'):
                 entry[key] = value.item()
@@ -66,6 +65,7 @@ class JSONLLoggingCallback(TrainerCallback):
         # Write to JSONL file
         with open(self.output_file, 'a') as f:
             f.write(json.dumps(entry) + '\n')
+            f.flush()  # Ensure immediate write for real-time monitoring
 
 
 class UnslothLoRABackend(Backend):
