@@ -191,6 +191,12 @@ MODELS = {
         notes="Qwen3 VL 2B Instruct (vision-language, expected to fail)",
         is_vision_model=True,
     ),
+    # Qwen3_5ForCausalLM (Gated DeltaNet + MoE hybrid)
+    "qwen3.5": ModelConfig(
+        model_id="Qwen/Qwen3.5-4B",
+        architecture="Qwen3_5ForCausalLM",
+        notes="Qwen3.5 4B (Gated DeltaNet hybrid, multi-modal origin but loaded as CausalLM)",
+    ),
 }
 
 # ============================================================================
@@ -563,6 +569,7 @@ def run_sft_validation(
     data_path: str,
     output_dir: str,
     use_liger: bool = False,
+    nproc_per_node: int = NUM_GPUS,
 ) -> dict:
     """
     Run SFT validation for a model.
@@ -615,7 +622,7 @@ def run_sft_validation(
                 checkpoint_at_epoch=False,
                 accelerate_full_state_at_epoch=False,
                 # Multi-GPU setup
-                nproc_per_node=NUM_GPUS,
+                nproc_per_node=nproc_per_node,
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-sft-{int(time.time())}",
@@ -645,6 +652,7 @@ def run_osft_validation(
     data_path: str,
     output_dir: str,
     use_liger: bool = True,
+    nproc_per_node: int = NUM_GPUS,
 ) -> dict:
     """
     Run OSFT validation for a model.
@@ -702,7 +710,7 @@ def run_osft_validation(
                 checkpoint_at_epoch=True,
                 save_final_checkpoint=True,
                 # Multi-GPU setup
-                nproc_per_node=NUM_GPUS,
+                nproc_per_node=nproc_per_node,
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-osft-{int(time.time())}",
@@ -730,6 +738,7 @@ def run_lora_validation(
     data_path: str,
     output_dir: str,
     use_qlora: bool = False,
+    nproc_per_node: int = NUM_GPUS,
 ) -> dict:
     """
     Run LoRA validation for a model.
@@ -776,7 +785,7 @@ def run_lora_validation(
                 max_seq_len=max_seq,
                 warmup_steps=0,
                 # Multi-GPU setup
-                nproc_per_node=NUM_GPUS,
+                nproc_per_node=nproc_per_node,
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-lora-{int(time.time())}",
@@ -813,6 +822,7 @@ def run_single_validation(
     use_qlora: bool = False,
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
+    nproc_per_node: int = NUM_GPUS,
 ) -> dict:
     """
     Run a single validation test.
@@ -850,11 +860,11 @@ def run_single_validation(
     print_test_header(model_config, mode, use_liger, use_qlora, output_dir)
 
     if mode == "sft":
-        result = run_sft_validation(model_config, data_path, output_dir, use_liger)
+        result = run_sft_validation(model_config, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node)
     elif mode == "osft":
-        result = run_osft_validation(model_config, data_path, output_dir, use_liger)
+        result = run_osft_validation(model_config, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node)
     else:  # lora
-        result = run_lora_validation(model_config, data_path, output_dir, use_qlora)
+        result = run_lora_validation(model_config, data_path, output_dir, use_qlora, nproc_per_node=nproc_per_node)
 
     # Print result summary
     if result["status"] == "success":
@@ -889,6 +899,7 @@ def run_all_validations(
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
     model_keys: list[str] | None = None,
+    nproc_per_node: int = NUM_GPUS,
 ) -> list[dict]:
     """
     Run validation tests for all models.
@@ -960,6 +971,7 @@ def run_all_validations(
                         use_qlora=use_qlora,
                         base_output_dir=base_output_dir,
                         dataset_dir=dataset_dir,
+                        nproc_per_node=nproc_per_node,
                     )
                     results.append(result)
                 except Exception as e:
@@ -1061,6 +1073,10 @@ Available model keys:
         "--dataset-dir", default=DATASET_OUTPUT_DIR, help=f"Dataset directory (default: {DATASET_OUTPUT_DIR})"
     )
     parser.add_argument("--list-models", action="store_true", help="List available models and exit")
+    parser.add_argument(
+        "--nproc-per-node", type=int, default=NUM_GPUS,
+        help=f"Number of GPUs per node (default: {NUM_GPUS})"
+    )
 
     args = parser.parse_args()
 
@@ -1085,6 +1101,7 @@ Available model keys:
             base_output_dir=args.output_dir,
             dataset_dir=args.dataset_dir,
             model_keys=model_keys,
+            nproc_per_node=args.nproc_per_node,
         )
     else:
         parser.print_help()
