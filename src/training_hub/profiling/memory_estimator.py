@@ -584,7 +584,7 @@ class LoRAEstimator(BasicEstimator):
                 print("NOTE: The peak memory allocation of the output tensors is " + ROUNDER(gpu_vram_outputs) + " GB.")
                 print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
                 print("To reduce memory usage, focus on reducing the gradient allocation first.")
-                gpu_vram_outputs = 0
+            gpu_vram_outputs = 0
         else:
             if self.verbose > 0:
                 print("NOTE: The peak memory allocation of the gradient tensors is " + ROUNDER(gpu_vram_grad) + " GB.")
@@ -658,16 +658,13 @@ class QLoRAEstimator(LoRAEstimator):
 class OSFTEstimator(BasicEstimator):
     """
     An estimator for the memory usage of an LLM trained via OSFT. 
-    Subclasses the BasicEstimator class.
-
-    NOTE: This is an experimental implementation of creating a more accurate
-    memory estimator for OSFT. However, it is still under development.
+    Subclasses the BasicEstimator class. Note that OSFT uses Liger Kernels, so use_liger
+    is set to True by default. 
 
     Args (in addition to the BasicEstimator args):
         unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
                                     during OSFT.
     """
-
     @override
     def __init__(
         self,
