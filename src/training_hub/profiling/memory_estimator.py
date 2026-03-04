@@ -701,7 +701,6 @@ class OSFTEstimator(BasicEstimator):
                         verbose=verbose,
                         trust_remote_code=trust_remote_code)
 
-        self.use_liger = True # TODO: Ensure that OSFT enables Liger by default.
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
         if not (0.0 <= self.unfreeze_rank_ratio <= 1.0):
