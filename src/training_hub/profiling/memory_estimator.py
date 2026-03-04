@@ -489,7 +489,6 @@ class LoRAEstimator(BasicEstimator):
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
         batch_size: int | None = None,
         max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
@@ -627,7 +626,6 @@ class QLoRAEstimator(LoRAEstimator):
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
         batch_size: int | None = None,
         max_seq_len: int | None = None,
-        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
@@ -638,7 +636,6 @@ class QLoRAEstimator(LoRAEstimator):
                         model_path=model_path,
                         batch_size=batch_size,
                         max_seq_len=max_seq_len,
-                        max_tokens_per_gpu=max_tokens_per_gpu,
                         use_liger=use_liger,
                         verbose=verbose,
                         trust_remote_code=trust_remote_code,
@@ -781,7 +778,8 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                         max_tokens_per_gpu=max_tokens_per_gpu,
                         use_liger=use_liger,
                         verbose=verbose,
-                        trust_remote_code=trust_remote_code)
+                        trust_remote_code=trust_remote_code,
+                        unfreeze_rank_ratio=unfreeze_rank_ratio)
 
 def estimate(
         training_method: str = "sft",
@@ -861,7 +859,6 @@ def estimate(
                                     model_path=model_path,
                                     batch_size=batch_size,
                                     max_seq_len=max_seq_len,
-                                    max_tokens_per_gpu=max_tokens_per_gpu,
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
@@ -874,7 +871,6 @@ def estimate(
                                     model_path=model_path,
                                     batch_size=batch_size,
                                     max_seq_len=max_seq_len,
-                                    max_tokens_per_gpu=max_tokens_per_gpu,
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
