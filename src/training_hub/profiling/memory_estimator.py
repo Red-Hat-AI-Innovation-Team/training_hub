@@ -377,11 +377,11 @@ class BasicEstimator:
         amount of additional memory. 
         """
 
-        min_message = "Minimum extra memory required (to reach the\nlow bound of memory requirements): " + \
+        min_message = "Minimum extra memory required (to reach the low bound of memory requirements): " + \
             ROUNDER(results[0] - self.gpu_memory) + " GB"
-        mid_message = "Recommended amount of extra memory (to reach the\nlikely estimated memory requirements): " + \
+        mid_message = "Recommended amount of extra memory (to reach the likely estimated memory requirements): " + \
             ROUNDER(results[1] - self.gpu_memory) + " GB"
-        max_message = "Ideal amount of extra memory required (to reach the\nupper bound of memory requirements): " + \
+        max_message = "Ideal amount of extra memory required (to reach the upper bound of memory requirements): " + \
             ROUNDER(results[2] - self.gpu_memory) + " GB"
 
         print("\nDecision:")
@@ -495,9 +495,15 @@ class LoRAEstimator(BasicEstimator):
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
-
-        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
-                            None, use_liger, verbose, trust_remote_code)
+        super().__init__(num_gpus=num_gpus,
+                        gpu_memory=gpu_memory,
+                        model_path=model_path,
+                        batch_size=batch_size,
+                        max_seq_len=max_seq_len,
+                        max_tokens_per_gpu=None,
+                        use_liger=use_liger,
+                        verbose=verbose,
+                        trust_remote_code=trust_remote_code)
 
         # LoRA estimates need a looser lower bound but can afford a tighter upper bound
         self.LOW_MULTIPLIER = 0.95
@@ -583,13 +589,13 @@ class LoRAEstimator(BasicEstimator):
             if self.verbose > 0:
                 print("NOTE: The peak memory allocation of the output tensors is " + ROUNDER(gpu_vram_outputs) + " GB.")
                 print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
-                print("To reduce memory usage, focus on reducing the gradient allocation first.")
+                print("To reduce memory usage, focus on reducing the gradient allocation first.\n")
             gpu_vram_outputs = 0
         else:
             if self.verbose > 0:
                 print("NOTE: The peak memory allocation of the gradient tensors is " + ROUNDER(gpu_vram_grad) + " GB.")
                 print("However, in practice, this allocation does not impact the peak memory usage since the output allocation is higher.")
-                print("To reduce memory usage, focus on reducing the output allocation first.")
+                print("To reduce memory usage, focus on reducing the output allocation first.\n")
             gpu_vram_grad = 0
 
         # Sum up each proposed amount of memory
@@ -603,7 +609,7 @@ class LoRAEstimator(BasicEstimator):
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
         if self.verbose > 0:
             print("NOTE: Due to its memory efficiency, " + \
-                    "LoRA's lower bound estimate is lower than the basic sum of the components.")
+                    "LoRA's lower bound estimate is lower than the basic sum of the components.\n")
         super()._print_results(results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional)
 
@@ -627,8 +633,16 @@ class QLoRAEstimator(LoRAEstimator):
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
-        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len, 
-                        max_tokens_per_gpu, use_liger, verbose, trust_remote_code, lora_r)
+        super().__init__(num_gpus=num_gpus,
+                        gpu_memory=gpu_memory,
+                        model_path=model_path,
+                        batch_size=batch_size,
+                        max_seq_len=max_seq_len,
+                        max_tokens_per_gpu=max_tokens_per_gpu,
+                        use_liger=use_liger,
+                        verbose=verbose,
+                        trust_remote_code=trust_remote_code,
+                        lora_r=lora_r)
         self.HIGH_MULTIPLIER = 1.3 # Use a looser upper bound
         self.model_bytes = FLOAT4_BYTES_N # The model will be stored in Float4
 
@@ -649,7 +663,7 @@ class QLoRAEstimator(LoRAEstimator):
         if subtotal < offload_memory:
             if self.verbose > 0:
                 print("NOTE: The memory needed for this QLoRA training setup is bounded by the pre-quantized size of the model.")
-                print("You can only reduce the memory further by using a smaller model.")
+                print("You can only reduce the memory further by using a smaller model.\n")
             return offload_memory / self.num_gpus, offload_memory / self.num_gpus, 0, 0, 0, 0, 0
         else:
             return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
@@ -680,9 +694,16 @@ class OSFTEstimator(BasicEstimator):
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
     ):
-        super().__init__(num_gpus, gpu_memory, model_path,
-                        batch_size, max_seq_len, max_tokens_per_gpu, 
-                        use_liger, verbose, trust_remote_code)
+        super().__init__(num_gpus=num_gpus,
+                        gpu_memory=gpu_memory,
+                        model_path=model_path,
+                        batch_size=batch_size,
+                        max_seq_len=max_seq_len,
+                        max_tokens_per_gpu=max_tokens_per_gpu,
+                        use_liger=use_liger,
+                        verbose=verbose,
+                        trust_remote_code=trust_remote_code)
+
         self.use_liger = True # TODO: Ensure that OSFT enables Liger by default.
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
@@ -750,9 +771,17 @@ class OSFTEstimatorExperimental(OSFTEstimator):
         reason = "All experimental functionality has been moved into the main OSFTEstimator class, " + \
             "please use that instead.\nIf you are seeing this by using the 'osft-e' option in the " + \
             "estimate function, please use 'osft' instead."
-        warnings.warn(reason, category=warnings.DeprecationWarning)
-        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
-                max_tokens_per_gpu, use_liger, verbose, trust_remote_code, unfreeze_rank_ratio)
+        warnings.warn(reason, category=DeprecationWarning, stacklevel=2)
+        
+        super().__init__(num_gpus=num_gpus,
+                        gpu_memory=gpu_memory,
+                        model_path=model_path,
+                        batch_size=batch_size,
+                        max_seq_len=max_seq_len,
+                        max_tokens_per_gpu=max_tokens_per_gpu,
+                        use_liger=use_liger,
+                        verbose=verbose,
+                        trust_remote_code=trust_remote_code)
 
 def estimate(
         training_method: str = "sft",
@@ -801,33 +830,67 @@ def estimate(
     if training_method.lower() == "osft":
         if use_liger is None:
             use_liger = True
-        estimator = OSFTEstimator(num_gpus, gpu_memory, model_path, batch_size,
-                                    max_seq_len, max_tokens_per_gpu, use_liger, verbose,
-                                    trust_remote_code, unfreeze_rank_ratio)
-
+        estimator = OSFTEstimator(num_gpus=num_gpus,
+                                    gpu_memory=gpu_memory,
+                                    model_path=model_path,
+                                    batch_size=batch_size,
+                                    max_seq_len=max_seq_len,
+                                    max_tokens_per_gpu=max_tokens_per_gpu,
+                                    use_liger=use_liger,
+                                    verbose=verbose,
+                                    trust_remote_code=trust_remote_code,
+                                    unfreeze_rank_ratio=unfreeze_rank_ratio)
     elif training_method.lower() == "osft-e":
         if use_liger is None:
             use_liger = True
-        estimator = OSFTEstimatorExperimental(num_gpus, gpu_memory, model_path, batch_size,
-                                                max_seq_len, max_tokens_per_gpu, use_liger, verbose,
-                                                trust_remote_code, unfreeze_rank_ratio)
-
+        estimator = OSFTEstimatorExperimental(num_gpus=num_gpus,
+                                                gpu_memory=gpu_memory,
+                                                model_path=model_path,
+                                                batch_size=batch_size,
+                                                max_seq_len=max_seq_len,
+                                                max_tokens_per_gpu=max_tokens_per_gpu,
+                                                use_liger=use_liger,
+                                                verbose=verbose,
+                                                trust_remote_code=trust_remote_code,
+                                                unfreeze_rank_ratio=unfreeze_rank_ratio)
     elif training_method.lower() == "lora":
         if use_liger is None:
             use_liger = False
-        estimator = LoRAEstimator(num_gpus, gpu_memory, model_path, batch_size,
-                                max_seq_len, use_liger, verbose, trust_remote_code, lora_r)
-
+        estimator = LoRAEstimator(num_gpus=num_gpus,
+                                    gpu_memory=gpu_memory,
+                                    model_path=model_path,
+                                    batch_size=batch_size,
+                                    max_seq_len=max_seq_len,
+                                    max_tokens_per_gpu=max_tokens_per_gpu,
+                                    use_liger=use_liger,
+                                    verbose=verbose,
+                                    trust_remote_code=trust_remote_code,
+                                    lora_r=lora_r)
     elif training_method.lower() == "qlora":
         if use_liger is None:
             use_liger = False
-        estimator = QLoRAEstimator(num_gpus, gpu_memory, model_path, batch_size,
-                                max_seq_len, use_liger, verbose, trust_remote_code, lora_r)
-
+        estimator = QLoRAEstimator(num_gpus=num_gpus,
+                                    gpu_memory=gpu_memory,
+                                    model_path=model_path,
+                                    batch_size=batch_size,
+                                    max_seq_len=max_seq_len,
+                                    max_tokens_per_gpu=max_tokens_per_gpu,
+                                    use_liger=use_liger,
+                                    verbose=verbose,
+                                    trust_remote_code=trust_remote_code,
+                                    lora_r=lora_r)
     else:
         if use_liger is None:
             use_liger = False
-        estimator = BasicEstimator(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
-                                    max_tokens_per_gpu, use_liger, verbose, trust_remote_code)
+        estimator = BasicEstimator(num_gpus=num_gpus,
+                                    gpu_memory=gpu_memory,
+                                    model_path=model_path,
+                                    batch_size=batch_size,
+                                    max_seq_len=max_seq_len,
+                                    max_tokens_per_gpu=max_tokens_per_gpu,
+                                    use_liger=use_liger,
+                                    verbose=verbose,
+                                    trust_remote_code=trust_remote_code)
+
     
     return estimator.estimate()
