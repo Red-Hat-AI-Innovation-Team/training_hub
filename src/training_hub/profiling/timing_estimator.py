@@ -202,7 +202,6 @@ class OnlineTimingEstimator:
         res_string = "Estimated Training Range In Hours:Minutes:Seconds: "  + \
             sub_hrs + ":" + sub_min + ":" + sub_sec + " — " + \
             tot_hrs + ":" + tot_min + ":" + tot_sec
-
         print(res_string)
 
         low_time = timedelta(hours=float(sub_hrs), minutes=float(sub_min), seconds=float(sub_sec))
