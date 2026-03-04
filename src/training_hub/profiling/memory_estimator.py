@@ -1,6 +1,5 @@
 try: from typing import override
 except ImportError: from typing_extensions import override
-from deprecated import deprecated
 import warnings
 import torch
 from transformers import AutoModel
@@ -479,8 +478,8 @@ class LoRAEstimator(BasicEstimator):
     An estimator for the memory usage of an LLM trained via LoRA.
     Subclasses the BasicEstimator class.
 
-    NOTE: The impact of the batch size and max_seq_len is negligible in practice,
-    so they are not accounted for in the estimation.
+    Args (in addition to the BasicEstimator args):
+        lora_r (int): The rank size of LoRA's approximation matrices
     """
     @override
     def __init__(
@@ -490,6 +489,7 @@ class LoRAEstimator(BasicEstimator):
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
         batch_size: int | None = None,
         max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
@@ -621,13 +621,14 @@ class QLoRAEstimator(LoRAEstimator):
         model_path: str = "ibm-granite/granite-3.3-8b-instruct",
         batch_size: int | None = None,
         max_seq_len: int | None = None,
+        max_tokens_per_gpu: int | None = None,
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
     ):
         super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len, 
-                        use_liger, verbose, trust_remote_code, lora_r)
+                        max_tokens_per_gpu, use_liger, verbose, trust_remote_code, lora_r)
         self.HIGH_MULTIPLIER = 1.3 # Use a looser upper bound
         self.model_bytes = FLOAT4_BYTES_N # The model will be stored in Float4
 
@@ -733,11 +734,25 @@ class OSFTEstimator(BasicEstimator):
         return (self.tokens_per_gpu * self.main_dtype_bytes  * self.num_layers * self.hidden_size)  * self.unfreeze_rank_ratio
 
 
-@deprecated(reason="All experimental functionality has been moved into the main OSFTEstimator class, please use that instead.\n" + \
-                 "If you are seeing this by using the 'osft-e' option in the estimate function, please use 'osft' instead.")
 class OSFTEstimatorExperimental(OSFTEstimator):
-    pass
-
+    def __init__(self,
+                num_gpus: int = 8,
+                gpu_memory: int = 85899345920,
+                model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+                batch_size: int | None = None,
+                max_seq_len: int | None = None,
+                max_tokens_per_gpu: int | None = None,
+                use_liger: bool = True,
+                verbose: int = 1,
+                trust_remote_code: bool = False,
+                unfreeze_rank_ratio: float = 0.25,
+                ):
+        reason = "All experimental functionality has been moved into the main OSFTEstimator class, " + \
+            "please use that instead.\nIf you are seeing this by using the 'osft-e' option in the " + \
+            "estimate function, please use 'osft' instead."
+        warnings.warn(reason, category=warnings.DeprecationWarning)
+        super().__init__(num_gpus, gpu_memory, model_path, batch_size, max_seq_len,
+                max_tokens_per_gpu, use_liger, verbose, trust_remote_code, unfreeze_rank_ratio)
 
 def estimate(
         training_method: str = "sft",
