@@ -25,12 +25,20 @@ Configuration:
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
+
+
+def _get_free_port() -> int:
+    """Get a free TCP port by binding to port 0 and immediately releasing."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 from rich.console import Console
 from rich.panel import Panel
@@ -90,6 +98,13 @@ NUM_SAMPLES = 1000
 
 # Convergence threshold - loss below this indicates successful overfitting (for SFT/OSFT)
 CONVERGENCE_THRESHOLD = 0.1
+
+# Simple mode parameters - tiny random models, smoke test only
+SIMPLE_NUM_SAMPLES = 10
+SIMPLE_EFFECTIVE_BATCH_SIZE = 4
+SIMPLE_MAX_TOKENS_PER_GPU = 512
+SIMPLE_MAX_SEQ_LEN = 256
+SIMPLE_NUM_GPUS = 2
 
 # ============================================================================
 # MODEL REGISTRY
@@ -167,8 +182,7 @@ MODELS = {
     "gemma3n": ModelConfig(
         model_id="google/gemma-3n-E4B-it",
         architecture="Gemma3nForConditionalGeneration",
-        notes="Gemma 3n E4B IT (vision-language, expected to fail)",
-        is_vision_model=True,
+        notes="Gemma 3n E4B IT (VLM, loaded as CausalLM for text-only training)",
     ),
     # MistralForCausalLM
     "mistral": ModelConfig(
@@ -176,20 +190,17 @@ MODELS = {
         architecture="MistralForCausalLM",
         notes="Mistral 7B Instruct v0.3",
     ),
-    # Mistral3ForConditionalGeneration
+    # Ministral3ForCausalLM (extracted from Mistral3ForConditionalGeneration VLM wrapper)
     "ministral": ModelConfig(
         model_id="mistralai/Ministral-3-3B-Instruct-2512",
-        architecture="Mistral3ForConditionalGeneration",
-        notes="Ministral 3 3B Instruct (requires transformers main branch)",
-        requires_dev_transformers=True,
-        requires_trust_remote_code=True,  # Model not natively supported in 4.57.6
+        architecture="Ministral3ForCausalLM",
+        notes="Ministral 3 3B Instruct (VLM wrapper, CausalLM text backbone extracted)",
     ),
     # Qwen3VLForConditionalGeneration
     "qwen3-vl": ModelConfig(
         model_id="Qwen/Qwen3-VL-2B-Instruct",
         architecture="Qwen3VLForConditionalGeneration",
-        notes="Qwen3 VL 2B Instruct (vision-language, expected to fail)",
-        is_vision_model=True,
+        notes="Qwen3 VL 2B Instruct (VLM loaded directly for text-only training)",
     ),
     # Qwen3_5ForCausalLM (Gated DeltaNet + MoE hybrid)
     "qwen3.5": ModelConfig(
@@ -466,6 +477,8 @@ def print_validation_summary(results: list[dict], results_file: str):
         status = r.get("status", "unknown")
         if status == "success":
             status_text = Text("PASS", style="bold green")
+        elif status == "skipped":
+            status_text = Text("SKIP", style="bold yellow")
         elif status in ["failed", "error"]:
             if r.get("is_vision_model") or r.get("requires_dev_transformers"):
                 status_text = Text("EXPECTED", style="bold yellow")
@@ -559,6 +572,201 @@ def create_overfit_dataset(output_path: str, num_samples: int = NUM_SAMPLES) -> 
     return dataset_file
 
 
+def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
+    """
+    Create a tiny randomly-initialized version of a model architecture for smoke testing.
+
+    Loads the real config from HuggingFace, overrides dimensions to be minimal
+    (2 layers, 64 hidden, 2 heads), creates the model from config (random weights),
+    and saves it locally with the tokenizer.
+
+    Args:
+        model_config: Model configuration from the MODELS registry
+        output_dir: Base directory to save tiny models
+
+    Returns:
+        Path to the saved tiny model directory
+    """
+    import torch
+    from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
+
+    model_key = model_config.model_id.split("/")[-1]
+    tiny_dir = os.path.join(output_dir, f"tiny_{model_key}")
+
+    # Return cached version if already created
+    if os.path.exists(os.path.join(tiny_dir, "config.json")):
+        console.print(f"[dim]Using cached tiny model: {tiny_dir}[/dim]")
+        return tiny_dir
+
+    console.print(f"[dim]Creating tiny model for {model_config.model_id}...[/dim]")
+
+    config = AutoConfig.from_pretrained(model_config.model_id, trust_remote_code=True)
+
+    # Determine which config to shrink (top-level or text_config for VLMs)
+    text_cfg = config
+    if hasattr(config, "text_config"):
+        text_cfg = config.text_config
+
+    # Shrink text model dimensions
+    text_cfg.num_hidden_layers = 2
+    text_cfg.hidden_size = 64
+    # intermediate_size can be a list (per-layer) in some models like Gemma3n
+    if isinstance(getattr(text_cfg, "intermediate_size", None), list):
+        text_cfg.intermediate_size = [128] * text_cfg.num_hidden_layers
+    else:
+        text_cfg.intermediate_size = 128
+    text_cfg.num_attention_heads = 2
+    text_cfg.num_key_value_heads = 2
+    if hasattr(text_cfg, "head_dim"):
+        text_cfg.head_dim = 32
+
+    # Handle MoE models
+    if hasattr(text_cfg, "num_local_experts"):
+        text_cfg.num_local_experts = 2
+    if hasattr(text_cfg, "num_experts_per_tok"):
+        text_cfg.num_experts_per_tok = min(text_cfg.num_experts_per_tok, 2)
+
+    # Handle Mamba/SSM hybrid models — ensure dimension divisibility
+    if hasattr(text_cfg, "mamba_n_heads"):
+        # mamba_n_heads must divide mamba_expand * hidden_size
+        mamba_expand = getattr(text_cfg, "mamba_expand", 2)
+        # Set hidden_size to be divisible by mamba_n_heads
+        text_cfg.mamba_n_heads = 2
+        text_cfg.hidden_size = max(64, text_cfg.mamba_n_heads * mamba_expand * 16)
+        text_cfg.intermediate_size = text_cfg.hidden_size * 2
+    if hasattr(text_cfg, "mamba_d_state"):
+        text_cfg.mamba_d_state = min(text_cfg.mamba_d_state, 16)
+
+    # Disable KV sharing for tiny models (avoids index errors with truncated layer lists)
+    if hasattr(text_cfg, "num_kv_shared_layers"):
+        text_cfg.num_kv_shared_layers = 0
+
+    # Truncate rope_scaling factors to match new head_dim
+    head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
+    rope_scaling = getattr(text_cfg, "rope_scaling", None)
+    if rope_scaling and isinstance(rope_scaling, dict):
+        partial = rope_scaling.get("partial_rotary_factor", 1.0)
+        rotary_dim = int(head_dim * partial) // 2
+        for key in ("long_factor", "short_factor"):
+            if key in rope_scaling and isinstance(rope_scaling[key], list):
+                if len(rope_scaling[key]) != rotary_dim:
+                    rope_scaling[key] = [1.0] * rotary_dim
+
+    # Truncate ALL per-layer config lists to match num_hidden_layers.
+    # Some models (Gemma3n, Qwen3.5) have multiple list-valued config fields
+    # sized per layer (layer_types, activation_sparsity_pattern, etc.).
+    n_layers = text_cfg.num_hidden_layers
+    for attr in dir(text_cfg):
+        if attr.startswith("_"):
+            continue
+        val = getattr(text_cfg, attr, None)
+        if isinstance(val, list) and len(val) == getattr(text_cfg, "_original_num_layers", 999):
+            # This looks like a per-layer list that needs truncating
+            pass  # handled below
+    # Explicit list of known per-layer attributes
+    per_layer_attrs = [
+        "layer_types", "sliding_window_pattern", "activation_sparsity_pattern",
+    ]
+    # Also detect any list attribute whose length matches the ORIGINAL num_hidden_layers
+    original_n_layers = len(getattr(text_cfg, "layer_types", []) or [])
+    if original_n_layers == 0:
+        original_n_layers = 999  # no layer_types, skip auto-detection
+    for attr in list(vars(text_cfg).keys()):
+        val = getattr(text_cfg, attr, None)
+        if isinstance(val, list) and len(val) == original_n_layers and attr not in per_layer_attrs:
+            per_layer_attrs.append(attr)
+
+    for attr in per_layer_attrs:
+        if hasattr(text_cfg, attr):
+            val = getattr(text_cfg, attr)
+            if isinstance(val, (list, tuple)) and len(val) > n_layers:
+                unique_types = list(dict.fromkeys(val))  # preserve order, dedupe
+                if attr == "layer_types" and len(unique_types) > 1:
+                    # Ensure all unique layer types are represented
+                    text_cfg.num_hidden_layers = max(n_layers, len(unique_types))
+                    n_layers = text_cfg.num_hidden_layers
+                    # Also re-truncate intermediate_size if it's a list
+                    if isinstance(text_cfg.intermediate_size, list):
+                        text_cfg.intermediate_size = [128] * n_layers
+                    new_val = (unique_types * ((n_layers // len(unique_types)) + 1))[:n_layers]
+                    setattr(text_cfg, attr, new_val)
+                else:
+                    setattr(text_cfg, attr, val[:n_layers])
+
+    # Handle vision config for VLMs - shrink or disable
+    if hasattr(config, "vision_config") and config.vision_config is not None:
+        vc = config.vision_config
+        if hasattr(vc, "num_hidden_layers"):
+            vc.num_hidden_layers = 1
+        if hasattr(vc, "hidden_size"):
+            vc.hidden_size = 32
+        if hasattr(vc, "intermediate_size"):
+            vc.intermediate_size = 64
+        if hasattr(vc, "num_attention_heads"):
+            vc.num_attention_heads = 1
+
+    # Handle audio config for multimodal models
+    if hasattr(config, "audio_config") and config.audio_config is not None:
+        ac = config.audio_config
+        if hasattr(ac, "num_hidden_layers"):
+            ac.num_hidden_layers = 1
+        if hasattr(ac, "hidden_size"):
+            ac.hidden_size = 32
+
+    # Create model from config (random weights, no download)
+    # Try multiple strategies: with auto_map, without it, and VLM fallback
+    import copy
+    model = None
+    for attempt in range(3):
+        try:
+            if attempt == 0:
+                # First try: as-is (works for remote code models like Nemotron)
+                model = AutoModelForCausalLM.from_config(
+                    config, torch_dtype=torch.bfloat16, trust_remote_code=True
+                )
+            elif attempt == 1:
+                # Second try: remove auto_map (works for Phi4 whose remote code
+                # conflicts with the standard transformers class)
+                config_copy = copy.deepcopy(config)
+                if hasattr(config_copy, "auto_map"):
+                    del config_copy.auto_map
+                tc = getattr(config_copy, "text_config", None)
+                if tc and hasattr(tc, "auto_map"):
+                    del tc.auto_map
+                model = AutoModelForCausalLM.from_config(
+                    config_copy, torch_dtype=torch.bfloat16, trust_remote_code=True
+                )
+            else:
+                # Third try: VLM loader
+                from transformers import AutoModelForImageTextToText
+                model = AutoModelForImageTextToText.from_config(
+                    config, torch_dtype=torch.bfloat16, trust_remote_code=True
+                )
+            break
+        except Exception:
+            if attempt == 2:
+                raise
+            continue
+
+    # Save model — some custom models have tied weights bugs, work around them
+    os.makedirs(tiny_dir, exist_ok=True)
+    try:
+        model.save_pretrained(tiny_dir)
+    except (AttributeError, TypeError):
+        # Fallback: save state dict directly + config
+        import safetensors.torch
+        safetensors.torch.save_file(model.state_dict(), os.path.join(tiny_dir, "model.safetensors"))
+        model.config.save_pretrained(tiny_dir)
+    del model
+
+    # Save tokenizer (download from original)
+    tokenizer = AutoTokenizer.from_pretrained(model_config.model_id, trust_remote_code=True)
+    tokenizer.save_pretrained(tiny_dir)
+
+    console.print(f"[dim]Created tiny model at: {tiny_dir}[/dim]")
+    return tiny_dir
+
+
 # ============================================================================
 # TRAINING FUNCTIONS
 # ============================================================================
@@ -570,6 +778,7 @@ def run_sft_validation(
     output_dir: str,
     use_liger: bool = False,
     nproc_per_node: int = NUM_GPUS,
+    simple: bool = False,
 ) -> dict:
     """
     Run SFT validation for a model.
@@ -585,9 +794,16 @@ def run_sft_validation(
     """
     from training_hub import sft
 
-    # Use model-specific overrides or defaults
-    max_tokens = model_config.max_tokens_per_gpu or MAX_TOKENS_PER_GPU
-    max_seq = model_config.max_seq_len or MAX_SEQ_LEN
+    # Use simple mode overrides if applicable
+    if simple:
+        max_tokens = SIMPLE_MAX_TOKENS_PER_GPU
+        max_seq = SIMPLE_MAX_SEQ_LEN
+        batch_size = SIMPLE_EFFECTIVE_BATCH_SIZE
+        nproc_per_node = SIMPLE_NUM_GPUS
+    else:
+        max_tokens = model_config.max_tokens_per_gpu or MAX_TOKENS_PER_GPU
+        max_seq = model_config.max_seq_len or MAX_SEQ_LEN
+        batch_size = EFFECTIVE_BATCH_SIZE
 
     start_time = time.time()
     result = {
@@ -595,6 +811,7 @@ def run_sft_validation(
         "architecture": model_config.architecture,
         "mode": "sft",
         "use_liger": use_liger,
+        "simple": simple,
         "status": "unknown",
         "error": None,
         "duration_seconds": 0,
@@ -610,7 +827,7 @@ def run_sft_validation(
                 ckpt_output_dir=output_dir,
                 # Training parameters
                 num_epochs=NUM_EPOCHS,
-                effective_batch_size=EFFECTIVE_BATCH_SIZE,
+                effective_batch_size=batch_size,
                 learning_rate=LEARNING_RATE,
                 max_seq_len=max_seq,
                 max_tokens_per_gpu=max_tokens,
@@ -626,7 +843,7 @@ def run_sft_validation(
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-sft-{int(time.time())}",
-                rdzv_endpoint="127.0.0.1:42067",
+                rdzv_endpoint=f"127.0.0.1:{_get_free_port()}",
                 # Optimization - passed through kwargs to TrainingArgs
                 use_liger=use_liger,
             )
@@ -636,7 +853,7 @@ def run_sft_validation(
         # Extract final loss
         final_loss = get_final_sft_loss(output_dir)
         result["final_loss"] = final_loss
-        if final_loss is not None:
+        if final_loss is not None and not simple:
             result["converged"] = final_loss < CONVERGENCE_THRESHOLD
 
     except Exception as e:
@@ -653,6 +870,7 @@ def run_osft_validation(
     output_dir: str,
     use_liger: bool = True,
     nproc_per_node: int = NUM_GPUS,
+    simple: bool = False,
 ) -> dict:
     """
     Run OSFT validation for a model.
@@ -668,9 +886,16 @@ def run_osft_validation(
     """
     from training_hub import osft
 
-    # Use model-specific overrides or defaults
-    max_tokens = model_config.max_tokens_per_gpu or MAX_TOKENS_PER_GPU
-    max_seq = model_config.max_seq_len or MAX_SEQ_LEN
+    # Use simple mode overrides if applicable
+    if simple:
+        max_tokens = SIMPLE_MAX_TOKENS_PER_GPU
+        max_seq = SIMPLE_MAX_SEQ_LEN
+        batch_size = SIMPLE_EFFECTIVE_BATCH_SIZE
+        nproc_per_node = SIMPLE_NUM_GPUS
+    else:
+        max_tokens = model_config.max_tokens_per_gpu or MAX_TOKENS_PER_GPU
+        max_seq = model_config.max_seq_len or MAX_SEQ_LEN
+        batch_size = EFFECTIVE_BATCH_SIZE
 
     start_time = time.time()
     result = {
@@ -678,6 +903,7 @@ def run_osft_validation(
         "architecture": model_config.architecture,
         "mode": "osft",
         "use_liger": use_liger,
+        "simple": simple,
         "status": "unknown",
         "error": None,
         "duration_seconds": 0,
@@ -695,7 +921,7 @@ def run_osft_validation(
                 unfreeze_rank_ratio=OSFT_UNFREEZE_RANK_RATIO,
                 # Training parameters
                 num_epochs=NUM_EPOCHS,
-                effective_batch_size=EFFECTIVE_BATCH_SIZE,
+                effective_batch_size=batch_size,
                 learning_rate=LEARNING_RATE,
                 max_seq_len=max_seq,
                 max_tokens_per_gpu=max_tokens,
@@ -714,7 +940,7 @@ def run_osft_validation(
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-osft-{int(time.time())}",
-                rdzv_endpoint="127.0.0.1:29500",
+                rdzv_endpoint=f"127.0.0.1:{_get_free_port()}",
             )
 
         result["status"] = "success"
@@ -722,7 +948,7 @@ def run_osft_validation(
         # Extract final loss
         final_loss = get_final_osft_loss(output_dir)
         result["final_loss"] = final_loss
-        if final_loss is not None:
+        if final_loss is not None and not simple:
             result["converged"] = final_loss < CONVERGENCE_THRESHOLD
 
     except Exception as e:
@@ -739,6 +965,7 @@ def run_lora_validation(
     output_dir: str,
     use_qlora: bool = False,
     nproc_per_node: int = NUM_GPUS,
+    simple: bool = False,
 ) -> dict:
     """
     Run LoRA validation for a model.
@@ -789,7 +1016,7 @@ def run_lora_validation(
                 nnodes=1,
                 node_rank=0,
                 rdzv_id=f"validation-lora-{int(time.time())}",
-                rdzv_endpoint="127.0.0.1:29501",
+                rdzv_endpoint=f"127.0.0.1:{_get_free_port()}",
             )
 
         result["status"] = "success"
@@ -823,6 +1050,7 @@ def run_single_validation(
     base_output_dir: str = BASE_OUTPUT_DIR,
     dataset_dir: str = DATASET_OUTPUT_DIR,
     nproc_per_node: int = NUM_GPUS,
+    simple: bool = False,
 ) -> dict:
     """
     Run a single validation test.
@@ -854,17 +1082,52 @@ def run_single_validation(
     os.makedirs(output_dir, exist_ok=True)
 
     # Create or use existing dataset
-    data_path = create_overfit_dataset(dataset_dir)
+    num_samples = SIMPLE_NUM_SAMPLES if simple else NUM_SAMPLES
+    data_path = create_overfit_dataset(dataset_dir, num_samples=num_samples)
+
+    # In simple mode, create a tiny model and override model_id
+    if simple:
+        tiny_models_dir = os.path.join(base_output_dir, "_tiny_models")
+        try:
+            tiny_model_path = create_tiny_model(model_config, tiny_models_dir)
+        except Exception as e:
+            console.print(f"[yellow]Skipping {model_key} in simple mode: could not create tiny model ({e})[/yellow]")
+            return {
+                "model_id": model_config.model_id,
+                "architecture": model_config.architecture,
+                "mode": mode,
+                "simple": True,
+                "status": "skipped",
+                "error": f"Cannot create tiny model: {e}",
+                "duration_seconds": 0,
+            }
+        # Override model_id for training but keep original for reporting
+        # Models requiring trust_remote_code need it preserved for the local copy
+        model_config_for_training = ModelConfig(
+            model_id=tiny_model_path,
+            architecture=model_config.architecture,
+            notes=model_config.notes,
+            max_tokens_per_gpu=SIMPLE_MAX_TOKENS_PER_GPU,
+            max_seq_len=SIMPLE_MAX_SEQ_LEN,
+            is_vision_model=model_config.is_vision_model,
+            requires_trust_remote_code=model_config.requires_trust_remote_code,
+            requires_dev_transformers=False,
+        )
+    else:
+        model_config_for_training = model_config
 
     # Print header
     print_test_header(model_config, mode, use_liger, use_qlora, output_dir)
 
     if mode == "sft":
-        result = run_sft_validation(model_config, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node)
+        result = run_sft_validation(model_config_for_training, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node, simple=simple)
     elif mode == "osft":
-        result = run_osft_validation(model_config, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node)
+        result = run_osft_validation(model_config_for_training, data_path, output_dir, use_liger, nproc_per_node=nproc_per_node, simple=simple)
     else:  # lora
-        result = run_lora_validation(model_config, data_path, output_dir, use_qlora, nproc_per_node=nproc_per_node)
+        result = run_lora_validation(model_config_for_training, data_path, output_dir, use_qlora, nproc_per_node=nproc_per_node, simple=simple)
+
+    # Restore original model_id for reporting
+    result["model_id"] = model_config.model_id
 
     # Print result summary
     if result["status"] == "success":
@@ -900,6 +1163,7 @@ def run_all_validations(
     dataset_dir: str = DATASET_OUTPUT_DIR,
     model_keys: list[str] | None = None,
     nproc_per_node: int = NUM_GPUS,
+    simple: bool = False,
 ) -> list[dict]:
     """
     Run validation tests for all models.
@@ -972,6 +1236,7 @@ def run_all_validations(
                         base_output_dir=base_output_dir,
                         dataset_dir=dataset_dir,
                         nproc_per_node=nproc_per_node,
+                        simple=simple,
                     )
                     results.append(result)
                 except Exception as e:
@@ -1077,6 +1342,11 @@ Available model keys:
         "--nproc-per-node", type=int, default=NUM_GPUS,
         help=f"Number of GPUs per node (default: {NUM_GPUS})"
     )
+    parser.add_argument(
+        "--simple", action="store_true",
+        help="Smoke test mode: create tiny random models (2 layers, 64 hidden), "
+             "train briefly on 2 GPUs, check only that training runs without errors"
+    )
 
     args = parser.parse_args()
 
@@ -1102,6 +1372,7 @@ Available model keys:
             dataset_dir=args.dataset_dir,
             model_keys=model_keys,
             nproc_per_node=args.nproc_per_node,
+            simple=args.simple,
         )
     else:
         parser.print_help()
