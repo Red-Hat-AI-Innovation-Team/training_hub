@@ -593,14 +593,19 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
     model_key = model_config.model_id.split("/")[-1]
     tiny_dir = os.path.join(output_dir, f"tiny_{model_key}")
 
-    # Return cached version if already created
-    if os.path.exists(os.path.join(tiny_dir, "config.json")):
+    ready_marker = os.path.join(tiny_dir, ".ready")
+
+    # Return cached version if fully created
+    if os.path.exists(ready_marker):
         console.print(f"[dim]Using cached tiny model: {tiny_dir}[/dim]")
         return tiny_dir
 
     console.print(f"[dim]Creating tiny model for {model_config.model_id}...[/dim]")
 
-    config = AutoConfig.from_pretrained(model_config.model_id, trust_remote_code=True)
+    trust_remote_code = model_config.requires_trust_remote_code
+    config = AutoConfig.from_pretrained(
+        model_config.model_id, trust_remote_code=trust_remote_code
+    )
 
     # Determine which config to shrink (top-level or text_config for VLMs)
     text_cfg = config
@@ -722,7 +727,7 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
             if attempt == 0:
                 # First try: as-is (works for remote code models like Nemotron)
                 model = AutoModelForCausalLM.from_config(
-                    config, torch_dtype=torch.bfloat16, trust_remote_code=True
+                    config, torch_dtype=torch.bfloat16, trust_remote_code=trust_remote_code
                 )
             elif attempt == 1:
                 # Second try: remove auto_map (works for Phi4 whose remote code
@@ -734,13 +739,13 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
                 if tc and hasattr(tc, "auto_map"):
                     del tc.auto_map
                 model = AutoModelForCausalLM.from_config(
-                    config_copy, torch_dtype=torch.bfloat16, trust_remote_code=True
+                    config_copy, torch_dtype=torch.bfloat16, trust_remote_code=trust_remote_code
                 )
             else:
                 # Third try: VLM loader
                 from transformers import AutoModelForImageTextToText
                 model = AutoModelForImageTextToText.from_config(
-                    config, torch_dtype=torch.bfloat16, trust_remote_code=True
+                    config, torch_dtype=torch.bfloat16, trust_remote_code=trust_remote_code
                 )
             break
         except Exception:
@@ -760,8 +765,13 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
     del model
 
     # Save tokenizer (download from original)
-    tokenizer = AutoTokenizer.from_pretrained(model_config.model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_config.model_id, trust_remote_code=trust_remote_code
+    )
     tokenizer.save_pretrained(tiny_dir)
+
+    # Mark as fully created so partial writes aren't treated as cache hits
+    open(ready_marker, "w").close()
 
     console.print(f"[dim]Created tiny model at: {tiny_dir}[/dim]")
     return tiny_dir
