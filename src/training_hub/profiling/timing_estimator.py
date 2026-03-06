@@ -218,7 +218,9 @@ class TimingEstimatorExperimental:
                     batch_time_list.append(float(line.split('\x1b')[-2].split('m')[1]))
 
         # Find the average time that passed during each training step.
-        # Specifically, take the difference between the timedeltas and measure how 
+        # Specifically, take the difference between the timestamps and measure how 
+        # they differ between the actual reporting training time to find the
+        # additional overhead time.
         for i in range(1, len(line_list)):
             time_diff = line_list[i] - line_list[i-1]
             raw_second_float = time_diff.seconds + time_diff.microseconds / 1000000
@@ -226,10 +228,9 @@ class TimingEstimatorExperimental:
             diff_list.append(diff)
         avg_batch_len = np.mean(batch_time_list[:-1])
         avg_extra_len = np.mean(diff_list[:-1])
-
         avg_total_len = avg_batch_len + avg_extra_len
 
-        # Get the length 
+        # Get the total length of time that was needed for this fine-tuning subset
         total_timedelta = line_list[-1] - line_list[0]
         total_time = (total_timedelta.seconds + total_timedelta.microseconds / 1000000) + batch_time_list[0] + avg_extra_len
 
