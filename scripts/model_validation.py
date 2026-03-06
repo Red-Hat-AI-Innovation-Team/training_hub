@@ -1338,8 +1338,14 @@ Available model keys:
         "--dataset-dir", default=DATASET_OUTPUT_DIR, help=f"Dataset directory (default: {DATASET_OUTPUT_DIR})"
     )
     parser.add_argument("--list-models", action="store_true", help="List available models and exit")
+    def _positive_int(value: str) -> int:
+        parsed = int(value)
+        if parsed < 1:
+            raise argparse.ArgumentTypeError(f"must be >= 1, got {parsed}")
+        return parsed
+
     parser.add_argument(
-        "--nproc-per-node", type=int, default=NUM_GPUS,
+        "--nproc-per-node", type=_positive_int, default=NUM_GPUS,
         help=f"Number of GPUs per node (default: {NUM_GPUS})"
     )
     parser.add_argument(

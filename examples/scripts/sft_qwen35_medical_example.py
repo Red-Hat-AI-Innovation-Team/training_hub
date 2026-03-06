@@ -18,7 +18,9 @@ Example usage:
 """
 
 import argparse
+import os
 import sys
+import tempfile
 import time
 
 from training_hub import sft
@@ -62,6 +64,11 @@ def main():
         default=8,
         help="Number of GPUs (default: 8)",
     )
+    parser.add_argument(
+        "--data-output-dir",
+        default="/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir(),
+        help="Directory for processed data output (default: /dev/shm or system temp)",
+    )
 
     args = parser.parse_args()
 
@@ -89,7 +96,7 @@ def main():
             max_seq_len=4096,
             max_tokens_per_gpu=args.max_tokens_per_gpu,
             # Data processing
-            data_output_dir="/dev/shm",
+            data_output_dir=args.data_output_dir,
             warmup_steps=0,
             save_samples=0,
             # Checkpointing

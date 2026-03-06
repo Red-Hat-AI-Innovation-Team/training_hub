@@ -26,9 +26,19 @@ import argparse
 import glob
 import os
 import sys
+import tempfile
 import time
 
 from training_hub import osft
+
+
+def _ratio_0_to_1(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"must be between 0.0 and 1.0, got {parsed}"
+        )
+    return parsed
 
 
 def find_most_recent_checkpoint(output_dir):
@@ -73,8 +83,9 @@ def main():
     )
     parser.add_argument(
         "--unfreeze-rank-ratio",
-        type=float,
+        type=_ratio_0_to_1,
         default=0.25,
+        metavar="RATIO",
         help="Unfreeze rank ratio for OSFT (0.0-1.0, default: 0.25)",
     )
     parser.add_argument(
@@ -88,6 +99,11 @@ def main():
         type=int,
         default=8,
         help="Number of GPUs (default: 8)",
+    )
+    parser.add_argument(
+        "--data-output-dir",
+        default="/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir(),
+        help="Directory for processed data output (default: /dev/shm or system temp)",
     )
 
     args = parser.parse_args()
@@ -119,7 +135,7 @@ def main():
             max_seq_len=4096,
             max_tokens_per_gpu=args.max_tokens_per_gpu,
             # Data processing
-            data_output_dir="/dev/shm",
+            data_output_dir=args.data_output_dir,
             warmup_steps=0,
             # Optimization
             use_liger=False,
