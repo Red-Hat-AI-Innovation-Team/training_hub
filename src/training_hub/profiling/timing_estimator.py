@@ -1,5 +1,6 @@
 import warnings
 import os
+import shutil
 import pandas as pd
 import math
 import numpy as np
@@ -186,7 +187,7 @@ class TimingEstimatorExperimental:
     def _osft_log_parse(self, file_path: str):
         # TODO: Handle the date in the timestamp?
         """
-        Parse the OSFT log file
+        Parse the SFT log file
 
         Returns:
             warmup_time (float): The time needed before training begins.
@@ -294,11 +295,11 @@ class TimingEstimatorExperimental:
         """
         Clean out any files generated during training. 
         """
-        os.removedirs(self.training_kwargs['ckpt_output_dir'])
+        shutil.rmtree(self.training_kwargs['ckpt_output_dir'])
         os.remove('temp_data.jsonl')
 
 
-    def _time_strings_from_sec(subtotal_time: int):
+    def _time_strings_from_sec(self,subtotal_time: int):
         """
         Helper function to convert the time in seconds to hrs/min/sec strings
         """
@@ -406,7 +407,6 @@ def time_estimate_from_file(file_path: str, method: str, sample_frac: float=0.05
 
     estimator = TimingEstimatorExperimental(model_path="",
                 sample_frac=sample_frac,
-                num_epochs=num_epochs,
                 verbose=verbose)
 
     low_time, high_time = estimator.estimate_from_file(file_path=file_path, method=method, num_epochs=num_epochs)
