@@ -52,7 +52,7 @@ All logging parameters are optional and consistent across [sft()](/api/functions
 |-----------|------|---------|-------------|
 | `mlflow_tracking_uri` | `str` | `MLFLOW_TRACKING_URI` env | MLflow tracking server URI. **Setting this enables MLflow logging.** |
 | `mlflow_experiment_name` | `str` | `MLFLOW_EXPERIMENT_NAME` env | Experiment name for organizing runs. |
-| `mlflow_run_name` | `str` | `None` | Display name for the run. SFT supports `{time}`, `{utc_time}`, `{rank}` placeholders. |
+| `mlflow_run_name` | `str` | `MLFLOW_RUN_NAME` env | Display name for the run. SFT supports `{time}`, `{utc_time}`, `{rank}` placeholders. |
 
 ### Weights & Biases
 
@@ -60,7 +60,7 @@ All logging parameters are optional and consistent across [sft()](/api/functions
 |-----------|------|---------|-------------|
 | `wandb_project` | `str` | `WANDB_PROJECT` env | W&B project name. **Setting this enables wandb logging.** |
 | `wandb_entity` | `str` | `WANDB_ENTITY` env | W&B team or entity name. |
-| `wandb_run_name` | `str` | `None` | Display name for the run. |
+| `wandb_run_name` | `str` | `WANDB_RUN_NAME` env | Display name for the run. |
 
 ### TensorBoard
 
