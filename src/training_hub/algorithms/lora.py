@@ -71,10 +71,33 @@ class JSONLLoggingCallback(TrainerCallback):
 class UnslothLoRABackend(Backend):
     """Unsloth backend for LoRA algorithm with performance optimizations."""
 
+    @staticmethod
+    def _is_vlm_architecture(model) -> bool:
+        """Detect whether a model uses a VLM (vision-language) architecture.
+
+        VLM models like Mistral3ForConditionalGeneration require different
+        training configuration even when fine-tuned with text-only data.
+
+        Args:
+            model: The loaded model to check.
+
+        Returns:
+            True if the model has a VLM architecture, False otherwise.
+        """
+        config = getattr(model, 'config', None)
+        if config is None:
+            return False
+        architectures = getattr(config, 'architectures', []) or []
+        is_vlm = any(
+            arch.endswith('ForConditionalGeneration') for arch in architectures
+        )
+        is_vlm = is_vlm or hasattr(config, 'vision_config')
+        return is_vlm
+
     def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
         """Execute LoRA training using Unsloth optimizations."""
         try:
-            from unsloth import FastLanguageModel
+            from unsloth import FastModel
             from trl import SFTTrainer, SFTConfig
             from transformers import TrainingArguments
         except ImportError as e:
@@ -106,26 +129,49 @@ class UnslothLoRABackend(Backend):
         # No custom distributed initialization needed - Unsloth works with standard PyTorch DDP
 
         # Load model with Unsloth optimizations
-        model, tokenizer = self._load_unsloth_model(training_params)
+        model, tokenizer_or_processor = self._load_unsloth_model(training_params)
+
+        # Detect VLM architecture (e.g., Mistral3ForConditionalGeneration)
+        is_vlm = self._is_vlm_architecture(model)
 
         # Apply LoRA with Unsloth optimizations
         model = self._apply_lora_config(model, training_params)
 
-        # Prepare dataset
-        train_dataset = self._prepare_dataset(training_params, tokenizer)
+        # Prepare dataset (VLMs skip preprocessing — the data collator handles it)
+        train_dataset = self._prepare_dataset(
+            training_params, tokenizer_or_processor, is_vlm=is_vlm
+        )
 
         # Configure training arguments
-        training_args = self._build_training_args(training_params)
+        training_args = self._build_training_args(training_params, is_vlm=is_vlm)
 
-        # Use the same trainer configuration for all dataset types since we pre-process in _prepare_dataset
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=train_dataset,
-            args=training_args,
-            max_seq_length=training_params.get('max_seq_len', 2048),
-            packing=training_params.get('sample_packing', True),
-        )
+        # Build SFTTrainer with VLM-specific or standard configuration
+        if is_vlm:
+            from unsloth import UnslothVisionDataCollator
+
+            data_collator = UnslothVisionDataCollator(
+                model=model,
+                processor=tokenizer_or_processor,
+                max_seq_length=training_params.get('max_seq_len', 2048),
+            )
+            trainer = SFTTrainer(
+                model=model,
+                processing_class=tokenizer_or_processor,
+                train_dataset=train_dataset,
+                args=training_args,
+                max_seq_length=training_params.get('max_seq_len', 2048),
+                packing=False,
+                data_collator=data_collator,
+            )
+        else:
+            trainer = SFTTrainer(
+                model=model,
+                tokenizer=tokenizer_or_processor,
+                train_dataset=train_dataset,
+                args=training_args,
+                max_seq_length=training_params.get('max_seq_len', 2048),
+                packing=training_params.get('sample_packing', True),
+            )
 
         # Add custom callback for JSONL logging (consistent with SFT/OSFT backends)
         jsonl_callback = JSONLLoggingCallback(training_params['ckpt_output_dir'])
@@ -154,17 +200,25 @@ class UnslothLoRABackend(Backend):
         # Save model
         if training_params.get('save_model', True):
             trainer.save_model(training_params['ckpt_output_dir'])
-            tokenizer.save_pretrained(training_params['ckpt_output_dir'])
+            tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
 
         return {
             'model': model,
-            'tokenizer': tokenizer,
+            'tokenizer': tokenizer_or_processor,
             'trainer': trainer
         }
 
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
-        """Load model with Unsloth optimizations."""
-        from unsloth import FastLanguageModel
+        """Load model with Unsloth optimizations.
+
+        For VLM-architecture models (e.g., Mistral3ForConditionalGeneration),
+        FastModel auto-detects the vision architecture and returns a processor
+        instead of a plain tokenizer.
+
+        Returns:
+            Tuple of (model, tokenizer_or_processor).
+        """
+        from unsloth import FastModel
 
         # Determine quantization settings - only use if explicitly requested by user
         load_in_4bit = params.get('load_in_4bit', False)
@@ -193,7 +247,7 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
-        model, tokenizer = FastLanguageModel.from_pretrained(
+        model, tokenizer_or_processor = FastModel.from_pretrained(
             model_name=params['model_path'],
             max_seq_length=params.get('max_seq_len', 2048),
             dtype=None,  # Auto-detect
@@ -201,22 +255,23 @@ class UnslothLoRABackend(Backend):
             load_in_8bit=load_in_8bit,
             **quantization_kwargs,
             **device_map_config,
-            # Additional Unsloth optimizations
-            # trust_remote_code=params.get('trust_remote_code', False),
         )
 
-        # Use default tokenizer chat template
-
-        return model, tokenizer
+        return model, tokenizer_or_processor
 
     def _apply_lora_config(self, model, params: Dict[str, Any]):
         """Apply LoRA configuration using Unsloth optimizations."""
-        from unsloth import FastLanguageModel
+        from unsloth import FastModel
 
         # Handle target_modules - use default if None or not specified
         target_modules = params.get('target_modules')
         if target_modules is None:
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            if self._is_vlm_architecture(model):
+                # Let Unsloth auto-compute target modules via get_peft_regex()
+                # based on finetune_vision_layers / finetune_language_layers
+                target_modules = None
+            else:
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
         # Build LoRA config parameters
         lora_config = {
@@ -230,6 +285,15 @@ class UnslothLoRABackend(Backend):
             'use_rslora': params.get('use_rslora', False),
         }
 
+        # Add VLM-specific parameters for vision-language model architectures
+        if self._is_vlm_architecture(model):
+            lora_config['finetune_vision_layers'] = params.get(
+                'finetune_vision_layers', False
+            )
+            lora_config['finetune_language_layers'] = params.get(
+                'finetune_language_layers', True
+            )
+
         # Add optional advanced parameters if specified
         if params.get('loftq_config') is not None:
             lora_config['loftq_config'] = params.get('loftq_config')
@@ -242,12 +306,20 @@ class UnslothLoRABackend(Backend):
         if params.get('alpha_pattern') is not None:
             lora_config['alpha_pattern'] = params.get('alpha_pattern')
 
-        model = FastLanguageModel.get_peft_model(model, **lora_config)
+        model = FastModel.get_peft_model(model, **lora_config)
 
         return model
 
-    def _prepare_dataset(self, params: Dict[str, Any], tokenizer) -> Any:
-        """Prepare dataset for training."""
+    def _prepare_dataset(self, params: Dict[str, Any], tokenizer,
+                         is_vlm: bool = False) -> Any:
+        """Prepare dataset for training.
+
+        Args:
+            params: Training parameters including data_path and dataset_type.
+            tokenizer: Tokenizer or processor for the model.
+            is_vlm: If True, skip chat template preprocessing since the
+                UnslothVisionDataCollator handles it.
+        """
         from datasets import load_dataset
 
         # Load dataset
@@ -255,6 +327,11 @@ class UnslothLoRABackend(Backend):
             dataset = load_dataset('json', data_files=params['data_path'], split='train')
         else:
             dataset = load_dataset(params['data_path'], split='train')
+
+        # For VLMs, the UnslothVisionDataCollator handles chat template
+        # application and tokenization, so return the raw dataset
+        if is_vlm:
+            return dataset
 
         # Handle different dataset formats
         dataset_type = params.get('dataset_type', 'chat_template')
@@ -307,7 +384,8 @@ class UnslothLoRABackend(Backend):
         return dataset
 
 
-    def _build_training_args(self, params: Dict[str, Any]):
+    def _build_training_args(self, params: Dict[str, Any],
+                             is_vlm: bool = False):
         """Build training arguments for SFTTrainer using SFTConfig."""
         from trl import SFTConfig
 
@@ -386,8 +464,8 @@ class UnslothLoRABackend(Backend):
             ddp_find_unused_parameters=False,  # Required for Unsloth DDP
 
             # Chat template and conversation handling
-            dataset_text_field="text",  # Use our preprocessed text field
-            assistant_only_loss=True,  # Only train on assistant responses
+            dataset_text_field="" if is_vlm else "text",
+            assistant_only_loss=False if is_vlm else True,
 
             # Logging configuration - use loggers list if provided, otherwise fallback to wandb_project
             report_to=self._get_report_to(params),
@@ -395,6 +473,10 @@ class UnslothLoRABackend(Backend):
             # (used by both wandb and MLflow integrations)
             run_name=params.get('wandb_run_name') or params.get('mlflow_run_name'),
         )
+
+        # VLMs need to skip TRL's dataset preparation (collator handles it)
+        if is_vlm:
+            training_args.dataset_kwargs = {"skip_prepare_dataset": True}
 
         # Set Weights & Biases project and entity via environment variables if provided
         if params.get('wandb_project'):
@@ -522,6 +604,9 @@ class LoRASFTAlgorithm(Algorithm):
               master_port: Optional[int] = None,
               # Multi-GPU model splitting
               enable_model_splitting: Optional[bool] = None,
+              # VLM fine-tuning parameters
+              finetune_vision_layers: Optional[bool] = None,
+              finetune_language_layers: Optional[bool] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -612,6 +697,10 @@ class LoRASFTAlgorithm(Algorithm):
                                    Use for models that don't fit on a single GPU (e.g., Llama 70B)
                                    For smaller models, use standard DDP instead
 
+            VLM Fine-Tuning:
+            finetune_vision_layers: Include vision encoder layers in LoRA targets (default: False for VLMs)
+            finetune_language_layers: Include language layers in LoRA targets (default: True)
+
             Advanced:
             **kwargs: Additional parameters passed to the backend
 
@@ -696,6 +785,9 @@ class LoRASFTAlgorithm(Algorithm):
             'master_port': master_port,
             # Multi-GPU model splitting
             'enable_model_splitting': enable_model_splitting,
+            # VLM fine-tuning parameters
+            'finetune_vision_layers': finetune_vision_layers,
+            'finetune_language_layers': finetune_language_layers,
         }
 
         # Only add non-None parameters
@@ -783,6 +875,9 @@ class LoRASFTAlgorithm(Algorithm):
             'enable_model_splitting': bool,
             # Model saving
             'save_model': bool,
+            # VLM fine-tuning
+            'finetune_vision_layers': bool,
+            'finetune_language_layers': bool,
         }
 
         # Combine all parameter types
@@ -858,6 +953,9 @@ def lora_sft(model_path: str,
          master_port: Optional[int] = None,
          # Multi-GPU model splitting
          enable_model_splitting: Optional[bool] = None,
+         # VLM fine-tuning parameters
+         finetune_vision_layers: Optional[bool] = None,
+         finetune_language_layers: Optional[bool] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -923,6 +1021,10 @@ def lora_sft(model_path: str,
         enable_model_splitting: Enable device_map="balanced" for large models (default: False)
                                Use for models that don't fit on a single GPU (e.g., Llama 70B)
                                For smaller models, use standard DDP with torchrun instead
+
+        VLM Fine-Tuning:
+        finetune_vision_layers: Include vision encoder layers in LoRA targets (default: False for VLMs)
+        finetune_language_layers: Include language layers in LoRA targets (default: True)
 
         Advanced:
         **kwargs: Additional parameters passed to the backend
@@ -1006,5 +1108,7 @@ def lora_sft(model_path: str,
         master_addr=master_addr,
         master_port=master_port,
         enable_model_splitting=enable_model_splitting,
+        finetune_vision_layers=finetune_vision_layers,
+        finetune_language_layers=finetune_language_layers,
         **kwargs
     )
