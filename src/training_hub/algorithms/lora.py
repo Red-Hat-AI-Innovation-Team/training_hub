@@ -263,15 +263,9 @@ class UnslothLoRABackend(Backend):
         """Apply LoRA configuration using Unsloth optimizations."""
         from unsloth import FastModel
 
-        # Handle target_modules - use default if None or not specified
+        # Only pass target_modules if the user explicitly provided them;
+        # otherwise let Unsloth auto-detect the correct modules for the model
         target_modules = params.get('target_modules')
-        if target_modules is None:
-            if self._is_vlm_architecture(model):
-                # Let Unsloth auto-compute target modules via get_peft_regex()
-                # based on finetune_vision_layers / finetune_language_layers
-                target_modules = None
-            else:
-                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
         # Build LoRA config parameters
         lora_config = {
