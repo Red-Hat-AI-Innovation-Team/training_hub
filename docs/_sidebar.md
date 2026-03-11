@@ -37,6 +37,7 @@
   * [Data Formats](/api/data-formats)
 
 * Guides
+  * [Experiment Tracking & Logging](/guides/logging)
   * [Distributed Training](/guides/distributed-training)
   * [Data Preparation](/guides/data-preparation)
   * [Continual Pretraining](/guides/continual-pretraining)
