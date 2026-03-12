@@ -33,12 +33,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-# Disable Unsloth's flex_attention globally — it is incompatible with models
-# that have non-zero attention_dropout (e.g. Granite 3.1 with dropout=0.1).
-# Unsloth's own fast_forward path correctly avoids flex_attention, but the
-# compiled cache path honors the config._attn_implementation that Unsloth sets,
-# causing flex_attention_forward to reject dropout > 0 during training.
-os.environ.setdefault("UNSLOTH_ENABLE_FLEX_ATTENTION", "0")
 
 
 def _get_free_port() -> int:
@@ -184,6 +178,12 @@ MODELS = {
         model_id="microsoft/Phi-4-mini-instruct",
         architecture="Phi3ForCausalLM",
         notes="Phi-4 Mini Instruct",
+    ),
+    # Gemma3ForConditionalGeneration
+    "gemma3": ModelConfig(
+        model_id="google/gemma-3-4b-it",
+        architecture="Gemma3ForConditionalGeneration",
+        notes="Gemma 3 4B IT (VLM, text-only LoRA training)",
     ),
     # Gemma3nForConditionalGeneration
     "gemma3n": ModelConfig(
@@ -1021,6 +1021,22 @@ def run_lora_validation(
     }
 
     try:
+        # Disable flex_attention only for models with non-zero attention_dropout.
+        # Unsloth's compiled cache dispatches through transformers' flex_attention_forward
+        # which rejects dropout > 0 during training (e.g. Granite 3.1 has dropout=0.1).
+        # Models with dropout=0 benefit from flex_attention so we leave it enabled.
+        from transformers import AutoConfig as _AutoConfig
+        _cfg = _AutoConfig.from_pretrained(
+            model_config.model_id,
+            trust_remote_code=model_config.requires_trust_remote_code,
+        )
+        _dropout = getattr(_cfg, "attention_dropout", 0.0) or 0.0
+        _flex_env = "UNSLOTH_ENABLE_FLEX_ATTENTION"
+        _old_flex = os.environ.get(_flex_env)
+        if _dropout > 0:
+            os.environ[_flex_env] = "0"
+            console.print(f"[dim]Disabling flex_attention (attention_dropout={_dropout})[/dim]")
+
         with trust_remote_code_context(model_config.requires_trust_remote_code):
             lora_sft(
                 model_path=model_config.model_id,
@@ -1059,6 +1075,12 @@ def run_lora_validation(
     except Exception as e:
         result["status"] = "failed"
         result["error"] = str(e)
+    finally:
+        # Restore flex_attention env var so subsequent models aren't affected
+        if _old_flex is not None:
+            os.environ[_flex_env] = _old_flex
+        elif _flex_env in os.environ:
+            del os.environ[_flex_env]
 
     result["duration_seconds"] = time.time() - start_time
     return result
