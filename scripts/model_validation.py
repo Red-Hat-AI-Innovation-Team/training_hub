@@ -33,6 +33,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+# Disable Unsloth's flex_attention globally — it is incompatible with models
+# that have non-zero attention_dropout (e.g. Granite 3.1 with dropout=0.1).
+# Unsloth's own fast_forward path correctly avoids flex_attention, but the
+# compiled cache path honors the config._attn_implementation that Unsloth sets,
+# causing flex_attention_forward to reject dropout > 0 during training.
+os.environ.setdefault("UNSLOTH_ENABLE_FLEX_ATTENTION", "0")
+
 
 def _get_free_port() -> int:
     """Get a free TCP port by binding to port 0 and immediately releasing."""
@@ -1021,6 +1028,10 @@ def run_lora_validation(
                 learning_rate=LEARNING_RATE,
                 max_seq_len=max_seq,
                 warmup_steps=0,
+                # Model loading - pass trust_remote_code explicitly since the
+                # HF_HUB_TRUST_REMOTE_CODE env var is not respected by
+                # Unsloth's FastModel.from_pretrained
+                trust_remote_code=model_config.requires_trust_remote_code,
                 # Multi-GPU setup
                 nproc_per_node=nproc_per_node,
                 nnodes=1,
@@ -1076,6 +1087,20 @@ def run_single_validation(
     Returns:
         Validation result dictionary
     """
+    # Reset torch._dynamo compilation caches between model runs to prevent
+    # stale shape guards from prior models contaminating the current model's
+    # @torch.compile-decorated functions (e.g. Ministral3's _get_llama_4_attn_scale
+    # failing with "too many indices" after Mistral 7B populates the cache).
+    import torch._dynamo
+    torch._dynamo.reset()
+
+    # Also clear CUDA cache to free memory from the previous model
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
     if model_key not in MODELS:
         raise ValueError(f"Unknown model key: {model_key}. Available: {list(MODELS.keys())}")
 

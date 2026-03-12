@@ -78,6 +78,15 @@ class UnslothLoRABackend(Backend):
         VLM models like Mistral3ForConditionalGeneration require different
         training configuration even when fine-tuned with text-only data.
 
+        Detection logic:
+        1. If any architecture name ends with 'ForConditionalGeneration', it's a VLM.
+        2. If any architecture name ends with 'ForCausalLM', it's NOT a VLM — even
+           if the config has a vision_config attribute (e.g. Qwen3_5Config always
+           has vision_config as a composite config, but Qwen3_5ForCausalLM is a
+           text-only CausalLM model).
+        3. Fall back to checking for vision_config only when no architecture name
+           provides a clear signal.
+
         Args:
             model: The loaded model to check.
 
@@ -88,11 +97,15 @@ class UnslothLoRABackend(Backend):
         if config is None:
             return False
         architectures = getattr(config, 'architectures', []) or []
-        is_vlm = any(
-            arch.endswith('ForConditionalGeneration') for arch in architectures
-        )
-        is_vlm = is_vlm or hasattr(config, 'vision_config')
-        return is_vlm
+        # Architecture name is the most reliable signal
+        if any(arch.endswith('ForConditionalGeneration') for arch in architectures):
+            return True
+        # If it's explicitly a CausalLM, it's not a VLM — even if the composite
+        # config happens to carry a vision_config attribute
+        if any(arch.endswith('ForCausalLM') for arch in architectures):
+            return False
+        # Fallback: check for vision_config when architecture name is ambiguous
+        return hasattr(config, 'vision_config')
 
     def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
         """Execute LoRA training using Unsloth optimizations."""
@@ -253,6 +266,7 @@ class UnslothLoRABackend(Backend):
             dtype=None,  # Auto-detect
             load_in_4bit=load_in_4bit,
             load_in_8bit=load_in_8bit,
+            trust_remote_code=params.get('trust_remote_code', False),
             **quantization_kwargs,
             **device_map_config,
         )
@@ -601,6 +615,8 @@ class LoRASFTAlgorithm(Algorithm):
               # VLM fine-tuning parameters
               finetune_vision_layers: Optional[bool] = None,
               finetune_language_layers: Optional[bool] = None,
+              # Model loading parameters
+              trust_remote_code: Optional[bool] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -782,6 +798,8 @@ class LoRASFTAlgorithm(Algorithm):
             # VLM fine-tuning parameters
             'finetune_vision_layers': finetune_vision_layers,
             'finetune_language_layers': finetune_language_layers,
+            # Model loading parameters
+            'trust_remote_code': trust_remote_code,
         }
 
         # Only add non-None parameters
@@ -869,6 +887,8 @@ class LoRASFTAlgorithm(Algorithm):
             'enable_model_splitting': bool,
             # Model saving
             'save_model': bool,
+            # Model loading
+            'trust_remote_code': bool,
             # VLM fine-tuning
             'finetune_vision_layers': bool,
             'finetune_language_layers': bool,
@@ -950,6 +970,8 @@ def lora_sft(model_path: str,
          # VLM fine-tuning parameters
          finetune_vision_layers: Optional[bool] = None,
          finetune_language_layers: Optional[bool] = None,
+         # Model loading parameters
+         trust_remote_code: Optional[bool] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -1104,5 +1126,6 @@ def lora_sft(model_path: str,
         enable_model_splitting=enable_model_splitting,
         finetune_vision_layers=finetune_vision_layers,
         finetune_language_layers=finetune_language_layers,
+        trust_remote_code=trust_remote_code,
         **kwargs
     )
