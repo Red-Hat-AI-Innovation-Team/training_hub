@@ -203,6 +203,12 @@ MODELS = {
         architecture="Ministral3ForCausalLM",
         notes="Ministral 3 3B Instruct (VLM wrapper, CausalLM text backbone extracted)",
     ),
+    # Mistral3ForConditionalGeneration (full VLM architecture)
+    "mistral3-vlm": ModelConfig(
+        model_id="mistralai/Ministral-3-3B-Reasoning-2512",
+        architecture="Mistral3ForConditionalGeneration",
+        notes="Ministral 3 3B Reasoning (full Mistral3 VLM architecture, text-only training)",
+    ),
     # Qwen3VLForConditionalGeneration
     "qwen3-vl": ModelConfig(
         model_id="Qwen/Qwen3-VL-2B-Instruct",
