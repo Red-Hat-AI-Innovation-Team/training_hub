@@ -1020,23 +1020,26 @@ def run_lora_validation(
         "requires_dev_transformers": model_config.requires_dev_transformers,
     }
 
+    # Disable flex_attention only for models with non-zero attention_dropout.
+    # Unsloth's compiled cache dispatches through transformers' flex_attention_forward
+    # which rejects dropout > 0 during training (e.g. Granite 3.1 has dropout=0.1).
+    # Models with dropout=0 benefit from flex_attention so we leave it enabled.
+    _flex_env = "UNSLOTH_ENABLE_FLEX_ATTENTION"
+    _old_flex = os.environ.get(_flex_env)
     try:
-        # Disable flex_attention only for models with non-zero attention_dropout.
-        # Unsloth's compiled cache dispatches through transformers' flex_attention_forward
-        # which rejects dropout > 0 during training (e.g. Granite 3.1 has dropout=0.1).
-        # Models with dropout=0 benefit from flex_attention so we leave it enabled.
         from transformers import AutoConfig as _AutoConfig
         _cfg = _AutoConfig.from_pretrained(
             model_config.model_id,
             trust_remote_code=model_config.requires_trust_remote_code,
         )
         _dropout = getattr(_cfg, "attention_dropout", 0.0) or 0.0
-        _flex_env = "UNSLOTH_ENABLE_FLEX_ATTENTION"
-        _old_flex = os.environ.get(_flex_env)
         if _dropout > 0:
             os.environ[_flex_env] = "0"
             console.print(f"[dim]Disabling flex_attention (attention_dropout={_dropout})[/dim]")
+    except (OSError, ValueError):
+        pass
 
+    try:
         with trust_remote_code_context(model_config.requires_trust_remote_code):
             lora_sft(
                 model_path=model_config.model_id,
@@ -1122,12 +1125,13 @@ def run_single_validation(
     import torch._dynamo
     torch._dynamo.reset()
 
-    # Also clear CUDA cache to free memory from the previous model
+    # Free memory from the previous model — gc first to release Python
+    # references to CUDA tensors, then empty_cache to reclaim GPU memory
+    import gc
+    gc.collect()
     import torch
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    import gc
-    gc.collect()
 
     if model_key not in MODELS:
         raise ValueError(f"Unknown model key: {model_key}. Available: {list(MODELS.keys())}")

@@ -72,7 +72,7 @@ class UnslothLoRABackend(Backend):
     """Unsloth backend for LoRA algorithm with performance optimizations."""
 
     @staticmethod
-    def _is_vlm_architecture(model) -> bool:
+    def _is_vlm_architecture(model: Any) -> bool:
         """Detect whether a model uses a VLM (vision-language) architecture.
 
         VLM models like Mistral3ForConditionalGeneration require different
@@ -160,7 +160,13 @@ class UnslothLoRABackend(Backend):
 
         # Build SFTTrainer with VLM-specific or standard configuration
         if is_vlm:
-            from unsloth import UnslothVisionDataCollator
+            try:
+                from unsloth import UnslothVisionDataCollator
+            except ImportError as e:
+                raise ImportError(
+                    "UnslothVisionDataCollator is required for VLM LoRA training.\n"
+                    "Install or upgrade with: pip install 'training-hub[lora]'"
+                ) from e
 
             data_collator = UnslothVisionDataCollator(
                 model=model,
@@ -239,7 +245,7 @@ class UnslothLoRABackend(Backend):
             if any(a.endswith('ForCausalLM') for a in architectures):
                 return False
             return hasattr(config, 'vision_config')
-        except Exception:
+        except (OSError, ValueError, KeyError):
             return False
 
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
@@ -287,36 +293,28 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
-        load_kwargs = {
-            'model_name': params['model_path'],
-            'max_seq_length': params.get('max_seq_len', 2048),
-            'dtype': None,
-            'load_in_4bit': load_in_4bit,
-            'load_in_8bit': load_in_8bit,
+        model, tokenizer_or_processor = _Loader.from_pretrained(
+            model_name=params['model_path'],
+            max_seq_length=params.get('max_seq_len', 2048),
+            dtype=None,
+            load_in_4bit=load_in_4bit,
+            load_in_8bit=load_in_8bit,
+            trust_remote_code=trust_remote_code,
             **quantization_kwargs,
             **device_map_config,
-        }
-        if is_vlm:
-            load_kwargs['trust_remote_code'] = trust_remote_code
-
-        model, tokenizer_or_processor = _Loader.from_pretrained(**load_kwargs)
+        )
 
         return model, tokenizer_or_processor
 
     def _apply_lora_config(self, model, params: Dict[str, Any]):
         """Apply LoRA configuration using Unsloth optimizations."""
-        is_vlm = self._is_vlm_architecture(model)
-        if is_vlm:
-            from unsloth import FastModel as _Loader
-        else:
-            from unsloth import FastLanguageModel as _Loader
+        # Always use FastModel for get_peft_model — it auto-detects target
+        # modules when None is passed, unlike FastLanguageModel which crashes.
+        from unsloth import FastModel
 
-        # For VLMs, let FastModel auto-detect target modules.
-        # For text models, FastLanguageModel needs explicit target_modules.
+        # Only pass target_modules if the user explicitly provided them;
+        # otherwise let Unsloth auto-detect the correct modules for the model
         target_modules = params.get('target_modules')
-        if target_modules is None and not is_vlm:
-            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                              "gate_proj", "up_proj", "down_proj"]
 
         # Build LoRA config parameters
         lora_config = {
@@ -351,7 +349,7 @@ class UnslothLoRABackend(Backend):
         if params.get('alpha_pattern') is not None:
             lora_config['alpha_pattern'] = params.get('alpha_pattern')
 
-        model = _Loader.get_peft_model(model, **lora_config)
+        model = FastModel.get_peft_model(model, **lora_config)
 
         return model
 
