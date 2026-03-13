@@ -110,7 +110,7 @@ class UnslothLoRABackend(Backend):
     def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
         """Execute LoRA training using Unsloth optimizations."""
         try:
-            from unsloth import FastModel
+            from unsloth import FastModel, FastLanguageModel  # noqa: F401
             from trl import SFTTrainer, SFTConfig
             from transformers import TrainingArguments
         except ImportError as e:
@@ -221,17 +221,44 @@ class UnslothLoRABackend(Backend):
             'trainer': trainer
         }
 
+    @staticmethod
+    def _is_vlm_model_id(model_path: str, trust_remote_code: bool = False) -> bool:
+        """Check if a model ID points to a VLM architecture before loading.
+
+        Uses the HuggingFace config to detect architecture without loading
+        the full model weights, so we can choose the right Unsloth loader.
+        """
+        try:
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(
+                model_path, trust_remote_code=trust_remote_code
+            )
+            architectures = getattr(config, 'architectures', []) or []
+            if any(a.endswith('ForConditionalGeneration') for a in architectures):
+                return True
+            if any(a.endswith('ForCausalLM') for a in architectures):
+                return False
+            return hasattr(config, 'vision_config')
+        except Exception:
+            return False
+
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
         """Load model with Unsloth optimizations.
 
-        For VLM-architecture models (e.g., Mistral3ForConditionalGeneration),
-        FastModel auto-detects the vision architecture and returns a processor
-        instead of a plain tokenizer.
+        Uses FastLanguageModel for text-only models (faster monkey-patched
+        forward methods) and FastModel for VLMs (handles vision architectures
+        and returns a processor instead of a plain tokenizer).
 
         Returns:
             Tuple of (model, tokenizer_or_processor).
         """
-        from unsloth import FastModel
+        trust_remote_code = params.get('trust_remote_code', False)
+        is_vlm = self._is_vlm_model_id(params['model_path'], trust_remote_code)
+
+        if is_vlm:
+            from unsloth import FastModel as _Loader
+        else:
+            from unsloth import FastLanguageModel as _Loader
 
         # Determine quantization settings - only use if explicitly requested by user
         load_in_4bit = params.get('load_in_4bit', False)
@@ -260,26 +287,36 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
-        model, tokenizer_or_processor = FastModel.from_pretrained(
-            model_name=params['model_path'],
-            max_seq_length=params.get('max_seq_len', 2048),
-            dtype=None,  # Auto-detect
-            load_in_4bit=load_in_4bit,
-            load_in_8bit=load_in_8bit,
-            trust_remote_code=params.get('trust_remote_code', False),
+        load_kwargs = {
+            'model_name': params['model_path'],
+            'max_seq_length': params.get('max_seq_len', 2048),
+            'dtype': None,
+            'load_in_4bit': load_in_4bit,
+            'load_in_8bit': load_in_8bit,
             **quantization_kwargs,
             **device_map_config,
-        )
+        }
+        if is_vlm:
+            load_kwargs['trust_remote_code'] = trust_remote_code
+
+        model, tokenizer_or_processor = _Loader.from_pretrained(**load_kwargs)
 
         return model, tokenizer_or_processor
 
     def _apply_lora_config(self, model, params: Dict[str, Any]):
         """Apply LoRA configuration using Unsloth optimizations."""
-        from unsloth import FastModel
+        is_vlm = self._is_vlm_architecture(model)
+        if is_vlm:
+            from unsloth import FastModel as _Loader
+        else:
+            from unsloth import FastLanguageModel as _Loader
 
-        # Only pass target_modules if the user explicitly provided them;
-        # otherwise let Unsloth auto-detect the correct modules for the model
+        # For VLMs, let FastModel auto-detect target modules.
+        # For text models, FastLanguageModel needs explicit target_modules.
         target_modules = params.get('target_modules')
+        if target_modules is None and not is_vlm:
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                              "gate_proj", "up_proj", "down_proj"]
 
         # Build LoRA config parameters
         lora_config = {
@@ -314,7 +351,7 @@ class UnslothLoRABackend(Backend):
         if params.get('alpha_pattern') is not None:
             lora_config['alpha_pattern'] = params.get('alpha_pattern')
 
-        model = FastModel.get_peft_model(model, **lora_config)
+        model = _Loader.get_peft_model(model, **lora_config)
 
         return model
 
