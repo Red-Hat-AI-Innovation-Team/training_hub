@@ -21,6 +21,7 @@ The SFT algorithm supports training language models on supervised datasets with 
 **Tutorials:**
 - [LAB Multi-Phase Training Tutorial](notebooks/lab_multiphase_training_tutorial.ipynb) - Interactive notebook demonstrating LAB multi-phase training workflow
 - [SFT Comprehensive Tutorial](notebooks/sft_comprehensive_tutorial.ipynb) - Interactive notebook covering all SFT parameters with popular model examples
+- [SFT Continued Pretraining on Spreadsheets](notebooks/sft_cpt_spreadsheet.ipynb) - Interactive notebook demonstrating continued pretraining on Excel spreadsheet data
 
 **Scripts:**
 - [LAB Multi-Phase Training Script](scripts/lab_multiphase_training.py) - Example script for LAB multi-phase training with full command-line interface
@@ -30,6 +31,7 @@ The SFT algorithm supports training language models on supervised datasets with 
 - [SFT with GPT-OSS 20B](scripts/sft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
 - [SFT with Granite 3.3 8B](scripts/sft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 - [SFT with Granite 4.0](scripts/sft_granite4_example.py) - Single-node multi-GPU training example with Granite 4.0 models
+- [SFT Continued Pretraining on Spreadsheets](scripts/sft_cpt_spreadsheet_example.py) - End-to-end continued pretraining example using SpreadsheetBench Excel data
 
 **Quick Example:**
 ```python
@@ -56,6 +58,7 @@ The OSFT algorithm supports continual training of pre-trained or instruction-tun
 - [OSFT Comprehensive Tutorial](notebooks/osft_comprehensive_tutorial.ipynb) - Interactive notebook covering all OSFT parameters with popular model examples
 - [OSFT Continual Learning](notebooks/osft_continual_learning.ipynb) - Interactive notebook demonstrating continual learning capabilities
 - [OSFT Multi-Phase Training Tutorial](notebooks/osft_multiphase_training_tutorial.ipynb) - Interactive notebook demonstrating OSFT multi-phase training workflow
+- [OSFT Continued Pretraining on Spreadsheets](notebooks/osft_cpt_spreadsheet.ipynb) - Interactive notebook demonstrating OSFT continued pretraining on Excel spreadsheet data
 
 **Scripts:**
 - [OSFT Multi-Phase Training Script](scripts/osft_multiphase_training.py) - Example script for OSFT multi-phase training with full command-line interface
@@ -65,6 +68,7 @@ The OSFT algorithm supports continual training of pre-trained or instruction-tun
 - [OSFT with GPT-OSS 20B](scripts/osft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
 - [OSFT with Granite 3.3 8B](scripts/osft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 - [OSFT Continual Learning Example](scripts/osft_continual_learning_example.py) - Example script demonstrating continual learning without catastrophic forgetting
+- [OSFT Continued Pretraining on Spreadsheets](scripts/osft_cpt_spreadsheet_example.py) - End-to-end OSFT continued pretraining example using SpreadsheetBench Excel data
 
 **Quick Example:**
 ```python
