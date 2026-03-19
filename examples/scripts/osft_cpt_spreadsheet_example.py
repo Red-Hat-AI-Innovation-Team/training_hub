@@ -1,35 +1,38 @@
 #!/usr/bin/env python3
 """
-Continued Pretraining Example: Excel Spreadsheets with Granite 3.3 8B Instruct
+Continued Pretraining Example: Excel Spreadsheets with OSFT
 
-This script demonstrates how to use Training Hub's pretraining mode to do
-continued pretraining (CPT) on an instruct model using parsed Excel spreadsheet
-data. It downloads the SpreadsheetBench dataset (real-world .xlsx files),
-converts them to markdown text using Microsoft's markitdown library, and
-trains using SFT in pretraining mode.
+This script demonstrates how to use Training Hub's OSFT algorithm in
+pretraining mode to do continued pretraining (CPT) on an instruct model
+using parsed Excel spreadsheet data.
+
+OSFT (Orthogonal Subspace Fine-Tuning) is particularly well-suited for
+continued pretraining because it constrains weight updates to an orthogonal
+subspace, preventing catastrophic forgetting of the original model's
+capabilities while injecting new knowledge.
 
 The pipeline:
     1. Download SpreadsheetBench dataset from Hugging Face
     2. Extract .xlsx files from the archive
     3. Convert each spreadsheet to markdown text via markitdown
     4. Write a JSONL file with {"document": "..."} entries
-    5. Run SFT with is_pretraining=True for continued pretraining
+    5. Run osft() with is_pretraining=True for continued pretraining
 
 Prerequisites:
     pip install 'markitdown[xlsx]' huggingface_hub
 
 Example usage:
     # Prepare data and train in one step
-    python sft_cpt_spreadsheet_example.py \\
+    python osft_cpt_spreadsheet_example.py \\
         --ckpt-output-dir /path/to/checkpoints
 
     # Use pre-prepared data (skip download/conversion)
-    python sft_cpt_spreadsheet_example.py \\
+    python osft_cpt_spreadsheet_example.py \\
         --data-path /path/to/spreadsheets.jsonl \\
         --ckpt-output-dir /path/to/checkpoints
 
     # Prepare data only (no training)
-    python sft_cpt_spreadsheet_example.py --prepare-only
+    python osft_cpt_spreadsheet_example.py --prepare-only
 """
 
 import os
@@ -44,7 +47,7 @@ from pathlib import Path
 
 import torch
 
-from training_hub import sft
+from training_hub import osft
 
 
 # =============================================================================
@@ -56,11 +59,11 @@ DEFAULT_NUM_EPOCHS = 3
 DEFAULT_BLOCK_SIZE = 2048
 DEFAULT_NPROC_PER_NODE = max(torch.cuda.device_count(), 1) if torch.cuda.is_available() else 1
 
-# Pretraining hyperparameters — lower learning rate than instruction tuning
-# since we are injecting new knowledge into an already-trained model
-DEFAULT_LEARNING_RATE = 2e-6
+# OSFT hyperparameters
+DEFAULT_UNFREEZE_RANK_RATIO = 0.3  # Balanced preservation vs adaptation
+DEFAULT_LEARNING_RATE = 5e-6       # OSFT can use a slightly higher LR than vanilla CPT
 DEFAULT_BATCH_SIZE = 64
-DEFAULT_MAX_TOKENS_PER_GPU = 25000
+DEFAULT_MAX_TOKENS_PER_GPU = 10000
 DEFAULT_MAX_SEQ_LEN = 4096
 
 
@@ -223,9 +226,9 @@ def prepare_data(
 # =============================================================================
 
 def main() -> None:
-    """Run the spreadsheet continued pretraining CLI workflow."""
+    """Run the OSFT spreadsheet continued pretraining CLI workflow."""
     parser = argparse.ArgumentParser(
-        description="Continued Pretraining on Excel Spreadsheets with Training Hub",
+        description="Continued Pretraining on Excel Spreadsheets with OSFT",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -257,6 +260,12 @@ def main() -> None:
     parser.add_argument(
         "--model-path", default=DEFAULT_MODEL_PATH,
         help=f"Model path or HuggingFace name (default: {DEFAULT_MODEL_PATH})",
+    )
+
+    # OSFT-specific arguments
+    parser.add_argument(
+        "--unfreeze-rank-ratio", type=float, default=DEFAULT_UNFREEZE_RANK_RATIO,
+        help=f"OSFT unfreeze rank ratio, 0.0-1.0 (default: {DEFAULT_UNFREEZE_RANK_RATIO})",
     )
 
     # Training arguments
@@ -310,23 +319,24 @@ def main() -> None:
         return
 
     # -------------------------------------------------------------------------
-    # Step 2: Train
+    # Step 2: Train with OSFT
     # -------------------------------------------------------------------------
     if not args.ckpt_output_dir:
         parser.error("--ckpt-output-dir is required for training")
 
-    experiment_name = "cpt_spreadsheet"
+    experiment_name = "osft_cpt_spreadsheet"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     data_output_dir = f"data/{experiment_name}_{timestamp}"
 
     print()
     print("=" * 60)
-    print("Continued Pretraining: Excel Spreadsheets")
+    print("OSFT Continued Pretraining: Excel Spreadsheets")
     print("=" * 60)
     print(f"  Model:              {args.model_path}")
     print(f"  Data:               {data_path}")
     print(f"  Output:             {args.ckpt_output_dir}")
     print(f"  GPUs:               {args.nproc_per_node}")
+    print(f"  Unfreeze ratio:     {args.unfreeze_rank_ratio}")
     print(f"  Epochs:             {args.num_epochs}")
     print(f"  Block size:         {args.block_size}")
     print(f"  Batch size:         {args.batch_size}")
@@ -338,18 +348,21 @@ def main() -> None:
     start_time = time.time()
 
     try:
-        sft(
+        osft(
             # Model and data
             model_path=args.model_path,
             data_path=data_path,
             ckpt_output_dir=args.ckpt_output_dir,
+
+            # OSFT-specific
+            unfreeze_rank_ratio=args.unfreeze_rank_ratio,
 
             # Pretraining mode
             is_pretraining=True,
             block_size=args.block_size,
             document_column_name="document",
 
-            # Training parameters — conservative for CPT on instruct models
+            # Training parameters
             num_epochs=args.num_epochs,
             effective_batch_size=args.batch_size,
             learning_rate=args.learning_rate,
@@ -359,11 +372,15 @@ def main() -> None:
             # Data processing
             data_output_dir=data_output_dir,
             warmup_steps=50,
-            save_samples=0,
+
+            # Optimization
+            use_liger=True,
+            seed=42,
+            lr_scheduler="cosine",
 
             # Checkpointing
             checkpoint_at_epoch=True,
-            accelerate_full_state_at_epoch=False,
+            save_final_checkpoint=True,
 
             # Distributed setup
             nproc_per_node=args.nproc_per_node,
