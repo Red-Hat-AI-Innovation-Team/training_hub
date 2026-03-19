@@ -139,8 +139,6 @@ def main():
             # Optimization
             bf16=True,
             sample_packing=True,
-            # Ministral 3 is loaded by Unsloth as a VLM — disable assistant_only_loss
-            assistant_only_loss=False,
             # Logging and saving
             logging_steps=10,
             save_steps=200,
