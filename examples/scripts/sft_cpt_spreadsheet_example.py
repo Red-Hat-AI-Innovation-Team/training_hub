@@ -106,7 +106,14 @@ def extract_dataset(tar_path: str, extract_dir: str) -> str:
     """
     print(f"Extracting {tar_path}...")
     with tarfile.open(tar_path, "r:gz") as tar:
-        tar.extractall(path=extract_dir)
+        base_dir = Path(extract_dir).resolve()
+        safe_members: list[tarfile.TarInfo] = []
+        for member in tar.getmembers():
+            target_path = (base_dir / member.name).resolve()
+            if os.path.commonpath([str(base_dir), str(target_path)]) != str(base_dir):
+                raise ValueError(f"Unsafe tar member path: {member.name}")
+            safe_members.append(member)
+        tar.extractall(path=extract_dir, members=safe_members)
     print(f"  Extracted to: {extract_dir}")
     return extract_dir
 
