@@ -21,6 +21,7 @@ The SFT algorithm supports training language models on supervised datasets with 
 **Tutorials:**
 - [LAB Multi-Phase Training Tutorial](notebooks/lab_multiphase_training_tutorial.ipynb) - Interactive notebook demonstrating LAB multi-phase training workflow
 - [SFT Comprehensive Tutorial](notebooks/sft_comprehensive_tutorial.ipynb) - Interactive notebook covering all SFT parameters with popular model examples
+- [SFT with Ministral 3 3B (Medical)](notebooks/runnable_ministral_sft.ipynb) - End-to-end SFT notebook: medical flashcards dataset, training, and inference verification
 - [SFT Continued Pretraining on Spreadsheets](notebooks/sft_cpt_spreadsheet.ipynb) - Interactive notebook demonstrating continued pretraining on Excel spreadsheet data
 
 **Scripts:**
@@ -31,6 +32,7 @@ The SFT algorithm supports training language models on supervised datasets with 
 - [SFT with GPT-OSS 20B](scripts/sft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
 - [SFT with Granite 3.3 8B](scripts/sft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 - [SFT with Granite 4.0](scripts/sft_granite4_example.py) - Single-node multi-GPU training example with Granite 4.0 models
+- [SFT with Ministral 3 3B (Medical)](scripts/sft_ministral_medical_example.py) - Medical domain fine-tuning with Ministral 3 3B Instruct
 - [SFT Continued Pretraining on Spreadsheets](scripts/sft_cpt_spreadsheet_example.py) - End-to-end continued pretraining example using SpreadsheetBench Excel data
 
 **Quick Example:**
@@ -58,6 +60,7 @@ The OSFT algorithm supports continual training of pre-trained or instruction-tun
 - [OSFT Comprehensive Tutorial](notebooks/osft_comprehensive_tutorial.ipynb) - Interactive notebook covering all OSFT parameters with popular model examples
 - [OSFT Continual Learning](notebooks/osft_continual_learning.ipynb) - Interactive notebook demonstrating continual learning capabilities
 - [OSFT Multi-Phase Training Tutorial](notebooks/osft_multiphase_training_tutorial.ipynb) - Interactive notebook demonstrating OSFT multi-phase training workflow
+- [OSFT with Ministral 3 3B (Medical)](notebooks/runnable_ministral_osft.ipynb) - End-to-end OSFT notebook: medical flashcards, training, inference, and knowledge retention test
 - [OSFT Continued Pretraining on Spreadsheets](notebooks/osft_cpt_spreadsheet.ipynb) - Interactive notebook demonstrating OSFT continued pretraining on Excel spreadsheet data
 
 **Scripts:**
@@ -68,6 +71,7 @@ The OSFT algorithm supports continual training of pre-trained or instruction-tun
 - [OSFT with GPT-OSS 20B](scripts/osft_gpt_oss_example.py) - Single-node multi-GPU training example with GPT-OSS 20B
 - [OSFT with Granite 3.3 8B](scripts/osft_granite_example.py) - Single-node multi-GPU training example with Granite 3.3 8B Instruct
 - [OSFT Continual Learning Example](scripts/osft_continual_learning_example.py) - Example script demonstrating continual learning without catastrophic forgetting
+- [OSFT with Ministral 3 3B (Medical)](scripts/osft_ministral_medical_example.py) - Medical domain OSFT with Ministral 3 3B Instruct
 - [OSFT Continued Pretraining on Spreadsheets](scripts/osft_cpt_spreadsheet_example.py) - End-to-end OSFT continued pretraining example using SpreadsheetBench Excel data
 
 **Quick Example:**
@@ -93,8 +97,12 @@ LoRA provides parameter-efficient fine-tuning with significantly reduced memory 
 **Documentation:**
 - [LoRA Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/lora) - Comprehensive usage documentation with parameter reference and examples
 
+**Tutorials:**
+- [LoRA with Ministral 3 3B (Medical)](notebooks/runnable_ministral_lora.ipynb) - End-to-end LoRA notebook: medical flashcards, training, and inference verification
+
 **Scripts:**
 - [LoRA Example](scripts/lora_example.py) - Basic LoRA training examples with different configurations and dataset formats
+- [LoRA with Ministral 3 3B (Medical)](scripts/lora_ministral_medical_example.py) - Medical domain LoRA fine-tuning with Ministral 3 3B Instruct
 
 **Launch Requirements:**
 - **Single-GPU**: Standard Python launch: `python my_script.py`
