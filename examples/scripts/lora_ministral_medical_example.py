@@ -30,8 +30,8 @@ Example usage:
         --ckpt-output-dir /path/to/checkpoints \\
         --qlora
 
-    # Multi-GPU training
-    python lora_ministral_medical_example.py \\
+    # Multi-GPU training (requires torchrun)
+    torchrun --nproc-per-node=8 lora_ministral_medical_example.py \\
         --data-path /path/to/medical_flashcards.jsonl \\
         --ckpt-output-dir /path/to/checkpoints \\
         --nproc-per-node 8
@@ -105,7 +105,7 @@ def main():
 
     quant_mode = "QLoRA (4-bit)" if args.qlora else "LoRA (full precision)"
 
-    print(f"LoRA Training: Ministral 3 3B on Medical Flashcards Dataset")
+    print("LoRA Training: Ministral 3 3B on Medical Flashcards Dataset")
     print("=" * 60)
     print(f"Model: {args.model_path}")
     print(f"Data: {args.data_path}")
@@ -115,6 +115,16 @@ def main():
     print(f"GPUs: {args.nproc_per_node}")
     print(f"Max sequence length: {args.max_seq_len:,}")
     print()
+
+    # Warn if multi-GPU is requested but torchrun is not being used
+    if args.nproc_per_node > 1 and "RANK" not in os.environ:
+        print(
+            f"WARNING: --nproc-per-node={args.nproc_per_node} was specified, but "
+            "this script is not running under torchrun. Multi-GPU training "
+            "requires torchrun. Run with:\n"
+            f"  torchrun --nproc-per-node={args.nproc_per_node} "
+            f"{os.path.basename(__file__)} ...\n"
+        )
 
     start_time = time.time()
 
