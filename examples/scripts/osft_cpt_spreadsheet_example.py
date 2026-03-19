@@ -300,6 +300,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if not 0.0 <= args.unfreeze_rank_ratio <= 1.0:
+        parser.error("--unfreeze-rank-ratio must be between 0.0 and 1.0")
+
+    if args.nproc_per_node < 1:
+        parser.error("--nproc-per-node must be >= 1")
+
     # -------------------------------------------------------------------------
     # Step 1: Prepare data if needed
     # -------------------------------------------------------------------------

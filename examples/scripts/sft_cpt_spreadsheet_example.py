@@ -291,6 +291,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.nproc_per_node < 1:
+        parser.error("--nproc-per-node must be >= 1")
+
     # -------------------------------------------------------------------------
     # Step 1: Prepare data if needed
     # -------------------------------------------------------------------------
