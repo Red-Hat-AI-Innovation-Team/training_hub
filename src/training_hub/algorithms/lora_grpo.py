@@ -152,32 +152,171 @@ def _load_tool_call_dataset(
 
 
 def _load_local_dataset(data_path: str, n_train: int, n_val: int) -> tuple[list[dict], list[dict]]:
-    """Load dataset from local JSON/JSONL file."""
+    """Load dataset from local JSON/JSONL file.
+
+    Auto-detects format:
+    - Single-turn: each sample has {question, tools, target_tool_name, target_arguments}
+    - Multi-turn: each sample has {messages} with multiple assistant/function turn pairs.
+      Multi-turn traces are decomposed into per-turn samples, each with GT context prefix.
+    """
     logger.info("Loading local dataset from %s", data_path)
 
     if data_path.endswith(".jsonl"):
-        samples = []
+        raw_samples = []
         with open(data_path) as f:
             for line in f:
                 if line.strip():
-                    samples.append(json.loads(line))
+                    raw_samples.append(json.loads(line))
     else:
         with open(data_path) as f:
-            samples = json.load(f)
+            raw_samples = json.load(f)
 
-    required_fields = {"question", "tools", "target_tool_name", "target_arguments"}
-    valid_samples = [s for s in samples if required_fields.issubset(s.keys())]
+    # Auto-detect format from first sample
+    if not raw_samples:
+        return [], []
 
-    if len(valid_samples) < len(samples):
-        logger.warning(
-            "Filtered %d samples missing required fields (%s)",
-            len(samples) - len(valid_samples),
-            required_fields,
+    first = raw_samples[0]
+    single_turn_fields = {"question", "tools", "target_tool_name", "target_arguments"}
+
+    if single_turn_fields.issubset(first.keys()):
+        # Single-turn format
+        valid = [s for s in raw_samples if single_turn_fields.issubset(s.keys())]
+        if len(valid) < len(raw_samples):
+            logger.warning(
+                "Filtered %d samples missing required fields",
+                len(raw_samples) - len(valid),
+            )
+        train = valid[:n_train]
+        val = valid[n_train:n_train + n_val]
+        return train, val
+
+    if "messages" in first:
+        # Multi-turn format — decompose into per-turn samples
+        all_samples = _decompose_multiturn_traces(raw_samples)
+        logger.info(
+            "Decomposed %d multi-turn traces into %d per-turn samples",
+            len(raw_samples), len(all_samples),
         )
+        train = all_samples[:n_train]
+        val = all_samples[n_train:n_train + n_val]
+        return train, val
 
-    train = valid_samples[:n_train]
-    val = valid_samples[n_train:n_train + n_val]
-    return train, val
+    logger.warning("Unrecognized dataset format — no valid samples loaded")
+    return [], []
+
+
+def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
+    """Decompose multi-turn traces into per-turn single-call samples.
+
+    Each multi-turn trace with N tool calls becomes N samples. Sample k
+    contains the full GT context up to turn k as the prompt prefix, and
+    the expected tool call at turn k as the target.
+
+    Input format (per trace):
+        messages: [system, user, assistant+function_call, function_result,
+                   assistant+function_call, function_result, ..., assistant_final]
+        (messages can be a JSON string or list)
+
+    Output format (per sample):
+        system_prompt: system message content
+        question: user message content
+        context_messages: list of GT messages between user and this turn
+        tools: extracted from system prompt or empty (tools passed via system prompt)
+        target_tool_name: expected tool name at this turn
+        target_arguments: expected tool arguments at this turn
+    """
+    samples = []
+
+    for trace_idx, trace in enumerate(traces):
+        messages = trace.get("messages", [])
+        if isinstance(messages, str):
+            try:
+                messages = json.loads(messages)
+            except json.JSONDecodeError:
+                continue
+
+        if len(messages) < 3:
+            continue
+
+        # Extract system and user messages
+        system_msg = messages[0] if messages[0].get("role") == "system" else {"role": "system", "content": ""}
+        user_msg = None
+        user_idx = None
+        for i, m in enumerate(messages):
+            if m.get("role") == "user":
+                user_msg = m
+                user_idx = i
+                break
+
+        if user_msg is None:
+            continue
+
+        # Walk through the conversation and find each assistant tool-call turn
+        # Everything between user and current turn is GT context
+        context_prefix = []  # GT messages between user and current turn
+        turn_messages = messages[user_idx + 1:]  # everything after user
+
+        i = 0
+        while i < len(turn_messages):
+            msg = turn_messages[i]
+
+            if msg.get("role") != "assistant":
+                # Non-assistant message (shouldn't happen at turn boundary, skip)
+                context_prefix.append(msg)
+                i += 1
+                continue
+
+            # Check if this assistant message has a tool call
+            fc = msg.get("function_call")
+            tcs = msg.get("tool_calls")
+
+            if fc:
+                target_name = fc.get("name", "")
+                target_args_str = fc.get("arguments", "{}")
+                if isinstance(target_args_str, str):
+                    try:
+                        target_args = json.loads(target_args_str)
+                    except json.JSONDecodeError:
+                        target_args = {}
+                else:
+                    target_args = target_args_str
+            elif tcs and len(tcs) > 0:
+                tc = tcs[0]
+                target_name = tc.get("function", {}).get("name", "")
+                target_args_str = tc.get("function", {}).get("arguments", "{}")
+                if isinstance(target_args_str, str):
+                    try:
+                        target_args = json.loads(target_args_str)
+                    except json.JSONDecodeError:
+                        target_args = {}
+                else:
+                    target_args = target_args_str
+            else:
+                # Final assistant message (no tool call) — skip, not a training turn
+                break
+
+            # Create a sample for this turn
+            sample = {
+                "id": f"{trace.get('id', trace_idx)}_turn{len(samples)}",
+                "question": user_msg.get("content", ""),
+                "system_prompt": system_msg.get("content", ""),
+                "tools": [],  # tools are embedded in system prompt for this format
+                "context_messages": list(context_prefix),  # GT context up to this turn
+                "target_tool_name": target_name,
+                "target_arguments": target_args,
+            }
+            samples.append(sample)
+
+            # Add this assistant message + its tool result to context for next turn
+            context_prefix.append(msg)
+            i += 1
+
+            # Consume the following function/tool result message
+            if i < len(turn_messages) and turn_messages[i].get("role") in ("function", "tool"):
+                context_prefix.append(turn_messages[i])
+                i += 1
+
+    return samples
 
 
 def _process_hf_row(row: dict) -> Optional[dict]:
@@ -534,24 +673,37 @@ class ARTLoRAGRPOBackend(Backend):
         max_tokens: int = 512,
         reward_fn: Callable = tool_call_reward,
     ):
-        """Built-in single-turn rollout for tool-call verification."""
+        """Built-in rollout for tool-call verification (single-turn and multi-turn).
+
+        For single-turn samples: messages = [system, user] → model generates tool call.
+        For multi-turn samples: messages = [system, user, ...gt_context] → model generates
+        the next tool call given ground-truth prefix context.
+        """
         async with sem:
             client = model.openai_client()
             model_name = model.get_inference_name()
 
+            # Build message list: system + user + optional GT context prefix
             messages = [
                 {"role": "system", "content": sample.get("system_prompt", "")},
                 {"role": "user", "content": sample["question"]},
             ]
+            context_messages = sample.get("context_messages", [])
+            messages.extend(context_messages)
+
+            # Tools may be a list (single-turn) or empty (multi-turn, embedded in system prompt)
+            tools = sample.get("tools") or None
+            create_kwargs = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if tools:
+                create_kwargs["tools"] = tools
 
             try:
-                response = await client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    tools=sample["tools"],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                response = await client.chat.completions.create(**create_kwargs)
 
                 choice = response.choices[0]
 
@@ -561,13 +713,15 @@ class ARTLoRAGRPOBackend(Backend):
                     expected_args=sample["target_arguments"],
                 )
 
-                trajectory = art.Trajectory(
-                    messages_and_choices=[
-                        messages[0],  # system (context, not trainable)
-                        messages[1],  # user (context, not trainable)
-                        choice,       # model output (trainable, carries logprobs)
-                    ]
-                )
+                # Trajectory: all context messages as dicts (not trainable),
+                # then the model's Choice (trainable, carries logprobs)
+                messages_and_choices = []
+                messages_and_choices.append(messages[0])  # system
+                messages_and_choices.append(messages[1])  # user
+                messages_and_choices.extend(context_messages)  # GT context (dicts, not trainable)
+                messages_and_choices.append(choice)  # model output (trainable)
+
+                trajectory = art.Trajectory(messages_and_choices=messages_and_choices)
                 trajectory.reward = reward
                 return trajectory
 
