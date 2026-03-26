@@ -57,6 +57,25 @@ from .rewards import tool_call_reward
 logger = logging.getLogger(__name__)
 
 
+def _force_cleanup():
+    """Kill all child processes (vLLM engine, etc.) and force-exit.
+
+    ART/vLLM spawns subprocesses and threads that don't shut down cleanly
+    via backend.close(). This kills child processes and calls os._exit()
+    to avoid hanging on orphaned threads.
+    """
+    import psutil
+    current = psutil.Process()
+    children = current.children(recursive=True)
+    for child in children:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(children, timeout=5)
+    os._exit(0)
+
+
 # ---------------------------------------------------------------------------
 # Built-in dataset loading (Toucan-style tool-call data)
 # ---------------------------------------------------------------------------
@@ -469,20 +488,73 @@ class ARTLoRAGRPOBackend(Backend):
     """
 
     def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
-        """Execute LoRA GRPO training using ART."""
-        # ART requires VLLM_USE_V1=0 for compatibility
+        """Execute LoRA GRPO training using ART.
+
+        Runs training in a forked subprocess to ensure clean GPU/thread cleanup.
+        ART/vLLM spawns threads and processes that don't shut down cleanly,
+        so subprocess isolation prevents resource leaks in the caller.
+        """
+        import multiprocessing as mp
+
+        ckpt_output_dir = algorithm_params["ckpt_output_dir"]
+        os.makedirs(ckpt_output_dir, exist_ok=True)
+        results_path = os.path.join(ckpt_output_dir, "training_results.json")
+        error_path = os.path.join(ckpt_output_dir, ".training_error")
+
+        # Remove stale error file
+        if os.path.exists(error_path):
+            os.remove(error_path)
+
+        ctx = mp.get_context("spawn")
+        proc = ctx.Process(
+            target=self._subprocess_entry,
+            args=(algorithm_params, results_path, error_path),
+        )
+        proc.start()
+        proc.join()
+
+        # Check for errors
+        if os.path.exists(error_path):
+            with open(error_path) as f:
+                error_msg = f.read()
+            os.remove(error_path)
+            raise RuntimeError(f"GRPO training failed: {error_msg}")
+
+        if proc.exitcode != 0 and not os.path.exists(results_path):
+            raise RuntimeError(f"GRPO training subprocess exited with code {proc.exitcode}")
+
+        # Read results
+        with open(results_path) as f:
+            return json.load(f)
+
+    @staticmethod
+    def _subprocess_entry(algorithm_params, results_path, error_path):
+        """Entry point for the training subprocess."""
         os.environ["VLLM_USE_V1"] = "0"
 
         try:
             import art
             from art.local.backend import LocalBackend
         except ImportError:
-            raise ImportError(
-                "The 'openpipe-art' package is required for GRPO training. "
-                "Install with: pip install openpipe-art"
-            )
+            with open(error_path, "w") as f:
+                f.write("openpipe-art is not installed. Install with: pip install openpipe-art")
+            os._exit(1)
 
-        return asyncio.run(self._run_training(algorithm_params, art, LocalBackend))
+        async def _run_and_cleanup():
+            try:
+                result = await ARTLoRAGRPOBackend()._run_training(
+                    algorithm_params, art, LocalBackend
+                )
+                with open(results_path, "w") as f:
+                    json.dump(result, f, indent=2)
+            except Exception as e:
+                with open(error_path, "w") as f:
+                    f.write(str(e))
+            # Force cleanup before asyncio.run() tries to shut down the event loop
+            # (which hangs on vLLM's dangling threads)
+            _force_cleanup()
+
+        asyncio.run(_run_and_cleanup())
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
