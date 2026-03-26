@@ -205,6 +205,65 @@ def _load_local_dataset(data_path: str, n_train: int, n_val: int) -> tuple[list[
     return [], []
 
 
+def _extract_tools_from_system_prompt(system_content: str) -> list[dict]:
+    """Extract tool definitions from a system prompt that may embed them.
+
+    Handles formats like Qwen chat template markers or raw JSON tool arrays
+    embedded in the system prompt text.
+    """
+    if not system_content:
+        return []
+
+    # Look for a JSON array of tool definitions in the content
+    start = system_content.find('[{"type"')
+    if start < 0:
+        start = system_content.find('[{\"type\"')
+    if start < 0:
+        return []
+
+    # Find matching closing bracket
+    depth = 0
+    for i in range(start, len(system_content)):
+        if system_content[i] == '[':
+            depth += 1
+        elif system_content[i] == ']':
+            depth -= 1
+            if depth == 0:
+                try:
+                    tools = json.loads(system_content[start:i + 1])
+                    if isinstance(tools, list) and tools:
+                        return tools
+                except json.JSONDecodeError:
+                    pass
+                break
+
+    return []
+
+
+def _clean_system_prompt(system_content: str) -> str:
+    """Remove chat template markers and embedded tool JSON from system prompt.
+
+    Returns a clean system prompt suitable for passing as message content
+    (tools will be passed separately via the tools= API parameter).
+    """
+    import re
+
+    # Remove Qwen-style tool_declare blocks: <|im_system|>tool_declare<|im_middle|>[...]<|im_end|>
+    cleaned = re.sub(
+        r'<\|im_system\|>tool_declare<\|im_middle\|>.*?<\|im_end\|>',
+        '',
+        system_content,
+        flags=re.DOTALL,
+    )
+
+    # If the entire content was just the tool declaration, provide a minimal system prompt
+    cleaned = cleaned.strip()
+    if not cleaned:
+        cleaned = "You are a helpful assistant."
+
+    return cleaned
+
+
 def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
     """Decompose multi-turn traces into per-turn single-call samples.
 
@@ -250,6 +309,13 @@ def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
 
         if user_msg is None:
             continue
+
+        # Try to extract tools from system prompt (may be embedded as JSON in chat template)
+        tools = _extract_tools_from_system_prompt(system_msg.get("content", ""))
+        # Clean system prompt of chat template markers if tools were extracted
+        system_content = system_msg.get("content", "")
+        if tools:
+            system_content = _clean_system_prompt(system_content)
 
         # Walk through the conversation and find each assistant tool-call turn
         # Everything between user and current turn is GT context
@@ -299,8 +365,8 @@ def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
             sample = {
                 "id": f"{trace.get('id', trace_idx)}_turn{len(samples)}",
                 "question": user_msg.get("content", ""),
-                "system_prompt": system_msg.get("content", ""),
-                "tools": [],  # tools are embedded in system prompt for this format
+                "system_prompt": system_content,
+                "tools": tools,
                 "context_messages": list(context_prefix),  # GT context up to this turn
                 "target_tool_name": target_name,
                 "target_arguments": target_args,
