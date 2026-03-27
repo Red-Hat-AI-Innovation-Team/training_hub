@@ -317,16 +317,27 @@ class UnslothLoRABackend(Backend):
         target_modules = params.get('target_modules')
 
         # Build LoRA config parameters
+        # Check if model supports gradient checkpointing
+        supports_grad_ckpt = True
+        try:
+            model.gradient_checkpointing_enable()
+            model.gradient_checkpointing_disable()
+        except (ValueError, AttributeError):
+            supports_grad_ckpt = False
+
         lora_config = {
             'r': params.get('lora_r', 16),
             'target_modules': target_modules,
             'lora_alpha': params.get('lora_alpha', 32),
             'lora_dropout': params.get('lora_dropout', 0.0),  # 0.0 is optimized for Unsloth
             'bias': "none",
-            'use_gradient_checkpointing': "unsloth",  # Unsloth's optimized gradient checkpointing
             'random_state': params.get('seed', 3407),
             'use_rslora': params.get('use_rslora', False),
         }
+
+        # Only enable gradient checkpointing if the model supports it
+        if supports_grad_ckpt:
+            lora_config['use_gradient_checkpointing'] = "unsloth"
 
         # Add VLM-specific parameters for vision-language model architectures
         if self._is_vlm_architecture(model):
