@@ -374,14 +374,14 @@ class UnslothLoRABackend(Backend):
 
                 # Write patched config.json without quantization_config
                 config_src = os.path.join(source_dir, 'config.json')
-                with open(config_src, 'r') as f:
+                with open(config_src, 'r', encoding='utf-8') as f:
                     raw_config = json.load(f)
 
                 raw_config.pop('quantization_config', None)
                 if 'text_config' in raw_config and isinstance(raw_config['text_config'], dict):
                     raw_config['text_config'].pop('quantization_config', None)
 
-                with open(os.path.join(_tmp_model_dir, 'config.json'), 'w') as f:
+                with open(os.path.join(_tmp_model_dir, 'config.json'), 'w', encoding='utf-8') as f:
                     json.dump(raw_config, f, indent=2)
 
                 model_path = _tmp_model_dir
@@ -389,9 +389,17 @@ class UnslothLoRABackend(Backend):
                     "Using patched model directory (FP8 removed) at %s",
                     _tmp_model_dir,
                 )
-            except (OSError, ValueError, KeyError) as e:
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                # Catch HuggingFace-specific exceptions too
                 logging.debug("Could not create patched model dir for FP8 removal: %s", e)
                 model_path = params['model_path']
+            except Exception as e:
+                # Catch any HuggingFace hub exceptions (HfHubHTTPError, etc.)
+                if 'huggingface_hub' in str(type(e).__module__):
+                    logging.debug("HuggingFace Hub error during FP8 patch: %s", e)
+                    model_path = params['model_path']
+                else:
+                    raise
 
         # Prepare loading kwargs
         loader_kwargs = {
@@ -427,7 +435,7 @@ class UnslothLoRABackend(Backend):
 
         # Auto-configure target_modules for models where Unsloth auto-detection fails
         if target_modules is None:
-            model_type = getattr(model.config, 'model_type', '')
+            model_type = getattr(model.config, 'model_type', '').lower()
 
             # GraniteMoeHybrid: Unsloth auto-detection picks up unsupported layers
             # (RMSNorm, ParallelExperts). Only target standard Linear layers.
@@ -445,7 +453,12 @@ class UnslothLoRABackend(Backend):
         supports_grad_ckpt = True
         try:
             model.gradient_checkpointing_enable()
-            model.gradient_checkpointing_disable()
+            try:
+                model.gradient_checkpointing_disable()
+            except (ValueError, AttributeError):
+                # If disable fails, still mark as unsupported and leave enabled
+                # (Unsloth will handle this during get_peft_model)
+                supports_grad_ckpt = False
         except (ValueError, AttributeError):
             supports_grad_ckpt = False
 
