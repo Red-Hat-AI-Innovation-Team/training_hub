@@ -23,8 +23,10 @@ Configuration:
 """
 
 import argparse
+import glob
 import json
 import os
+import shutil
 import socket
 import sys
 import time
@@ -711,6 +713,12 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
                 else:
                     setattr(text_cfg, attr, val[:n_layers])
 
+    # Handle hybrid_override_pattern (NemotronH) — it's a string not a list,
+    # where each character represents a layer type. Truncate to n_layers.
+    hop = getattr(text_cfg, "hybrid_override_pattern", None)
+    if hop and isinstance(hop, str) and len(hop) > n_layers:
+        text_cfg.hybrid_override_pattern = hop[:n_layers]
+
     # Handle vision config for VLMs - shrink or disable
     if hasattr(config, "vision_config") and config.vision_config is not None:
         vc = config.vision_config
@@ -782,6 +790,33 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
         model_config.model_id, trust_remote_code=trust_remote_code
     )
     tokenizer.save_pretrained(tiny_dir)
+
+    # Copy remote code files if model uses trust_remote_code
+    # save_pretrained doesn't always copy all remote code files, so we do it manually
+    if trust_remote_code:
+        from transformers.utils import cached_file
+        try:
+            # Find the cached model directory
+            for filename in ["config.json", "modeling_*.py", "configuration_*.py", "processing_*.py"]:
+                try:
+                    cached_path = cached_file(
+                        model_config.model_id,
+                        filename,
+                        _raise_exceptions_for_missing_entries=False,
+                        _raise_exceptions_for_connection_errors=False,
+                    )
+                    if cached_path and os.path.exists(cached_path):
+                        src_dir = os.path.dirname(cached_path)
+                        # Copy all .py files from source to tiny model dir
+                        for py_file in glob.glob(os.path.join(src_dir, "*.py")):
+                            dest = os.path.join(tiny_dir, os.path.basename(py_file))
+                            if not os.path.exists(dest):
+                                shutil.copy2(py_file, dest)
+                        break  # Found the dir, no need to try other files
+                except Exception:
+                    continue
+        except Exception:
+            pass  # Not critical if remote code files aren't copied
 
     # Mark as fully created so partial writes aren't treated as cache hits
     open(ready_marker, "w").close()
