@@ -316,6 +316,19 @@ class UnslothLoRABackend(Backend):
         # otherwise let Unsloth auto-detect the correct modules for the model
         target_modules = params.get('target_modules')
 
+        # Auto-configure target_modules for models where Unsloth auto-detection fails
+        if target_modules is None:
+            model_type = getattr(model.config, 'model_type', '')
+
+            # GraniteMoeHybrid: Unsloth auto-detection picks up unsupported layers
+            # (RMSNorm, ParallelExperts). Only target standard Linear layers.
+            # Skip Mamba layers to avoid causal_conv1d_cuda dependency issues.
+            if 'granite' in model_type and 'moe' in model_type:
+                target_modules = [
+                    "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
+                    "shared_mlp.input_linear", "shared_mlp.output_linear",  # Shared MLP
+                ]
+
         # Build LoRA config parameters
         # Check if model supports gradient checkpointing
         supports_grad_ckpt = True
