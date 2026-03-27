@@ -76,6 +76,8 @@ class OSFTAlgorithm(Algorithm):
         mlflow_tracking_uri: str | None = None,
         mlflow_experiment_name: str | None = None,
         mlflow_run_name: str | None = None,
+        # Model loading
+        trust_remote_code: bool | None = None,
         **kwargs,
     ) -> any:
         """
@@ -237,6 +239,8 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': mlflow_tracking_uri,
             'mlflow_experiment_name': mlflow_experiment_name,
             'mlflow_run_name': mlflow_run_name,
+            # model loading
+            'trust_remote_code': trust_remote_code,
         }
 
         # now do validation now that we've set everything up
@@ -609,6 +613,8 @@ def osft(
     mlflow_tracking_uri: str | None = None,
     mlflow_experiment_name: str | None = None,
     mlflow_run_name: str | None = None,
+    # Model loading
+    trust_remote_code: bool | None = None,
     **kwargs,
 ) -> any:
     from . import create_algorithm
@@ -656,5 +662,6 @@ def osft(
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
+        trust_remote_code=trust_remote_code,
         **kwargs,
     )
