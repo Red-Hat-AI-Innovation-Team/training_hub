@@ -713,10 +713,10 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
                 else:
                     setattr(text_cfg, attr, val[:n_layers])
 
-    # Handle hybrid_override_pattern (NemotronH) — it's a string not a list,
-    # where each character represents a layer type. Truncate to n_layers.
+    # Handle hybrid_override_pattern (NemotronH) — truncate to match num_hidden_layers
+    # The remote config needs this for the layers_block_type property
     hop = getattr(text_cfg, "hybrid_override_pattern", None)
-    if hop and isinstance(hop, str) and len(hop) > n_layers:
+    if hop and isinstance(hop, str) and len(hop) != n_layers:
         text_cfg.hybrid_override_pattern = hop[:n_layers]
 
     # Handle vision config for VLMs - shrink or disable
@@ -791,32 +791,26 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
     )
     tokenizer.save_pretrained(tiny_dir)
 
-    # Copy remote code files if model uses trust_remote_code
-    # save_pretrained doesn't always copy all remote code files, so we do it manually
-    if trust_remote_code:
-        from transformers.utils import cached_file
-        try:
-            # Find the cached model directory
-            for filename in ["config.json", "modeling_*.py", "configuration_*.py", "processing_*.py"]:
-                try:
-                    cached_path = cached_file(
-                        model_config.model_id,
-                        filename,
-                        _raise_exceptions_for_missing_entries=False,
-                        _raise_exceptions_for_connection_errors=False,
-                    )
-                    if cached_path and os.path.exists(cached_path):
-                        src_dir = os.path.dirname(cached_path)
-                        # Copy all .py files from source to tiny model dir
-                        for py_file in glob.glob(os.path.join(src_dir, "*.py")):
-                            dest = os.path.join(tiny_dir, os.path.basename(py_file))
-                            if not os.path.exists(dest):
-                                shutil.copy2(py_file, dest)
-                        break  # Found the dir, no need to try other files
-                except Exception:
-                    continue
-        except Exception:
-            pass  # Not critical if remote code files aren't copied
+    # Note: We intentionally do NOT copy remote code .py files to tiny models.
+    # Tiny models should use built-in transformers classes for simplicity.
+
+    # Clean up the saved config.json - remove auto_map and hybrid_override_pattern
+    # to avoid issues when loading with built-in transformers classes
+    config_path = os.path.join(tiny_dir, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            saved_config = json.load(f)
+
+        # Remove auto_map and hybrid_override_pattern so tiny models use
+        # built-in transformers classes without issues
+        saved_config.pop("auto_map", None)
+        saved_config.pop("hybrid_override_pattern", None)
+        if "text_config" in saved_config and isinstance(saved_config["text_config"], dict):
+            saved_config["text_config"].pop("auto_map", None)
+            saved_config["text_config"].pop("hybrid_override_pattern", None)
+
+        with open(config_path, 'w') as f:
+            json.dump(saved_config, f, indent=2)
 
     # Mark as fully created so partial writes aren't treated as cache hits
     open(ready_marker, "w").close()
