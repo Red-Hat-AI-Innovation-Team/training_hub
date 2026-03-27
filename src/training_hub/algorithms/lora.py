@@ -99,9 +99,9 @@ class UnslothLoRABackend(Backend):
         model_type = getattr(config, 'model_type', '')
         architectures = getattr(config, 'architectures', []) or []
 
-        # Qwen3.5 has ForConditionalGeneration + vision_config but can be used
+        # Some models have ForConditionalGeneration + vision_config but can be used
         # for text-only training. Treat as text-only (not VLM) for LoRA.
-        if 'qwen3_5' in model_type.lower():
+        if 'qwen3_5' in model_type.lower() or 'mistral3' in model_type.lower():
             return False
 
         # Architecture name is the most reliable signal
@@ -249,9 +249,9 @@ class UnslothLoRABackend(Backend):
             model_type = getattr(config, 'model_type', '')
             architectures = getattr(config, 'architectures', []) or []
 
-            # Qwen3.5 has ForConditionalGeneration + vision_config but can be used
+            # Some models have ForConditionalGeneration + vision_config but can be used
             # for text-only training. Treat as text-only (not VLM) for LoRA.
-            if 'qwen3_5' in model_type.lower():
+            if 'qwen3_5' in model_type.lower() or 'mistral3' in model_type.lower():
                 return False
 
             if any(a.endswith('ForConditionalGeneration') for a in architectures):
@@ -280,6 +280,29 @@ class UnslothLoRABackend(Backend):
         else:
             from unsloth import FastLanguageModel as _Loader
 
+        # Check if model has baked-in FP8 quantization that needs to be disabled
+        # (e.g., Ministral-3 has FP8 in config but requires L4+ GPU, not A100)
+        from transformers import AutoConfig
+        try:
+            model_config = AutoConfig.from_pretrained(
+                params['model_path'], trust_remote_code=trust_remote_code
+            )
+            quant_config = getattr(model_config, 'quantization_config', None)
+            if quant_config and isinstance(quant_config, dict):
+                if quant_config.get('quant_method') == 'fp8':
+                    # Disable FP8 quantization by setting quantization_config=None
+                    # User can still explicitly request 4bit/8bit quantization via params
+                    import logging
+                    logging.warning(
+                        f"Model {params['model_path']} has FP8 quantization in config, "
+                        f"but FP8 requires compute capability 8.9+ (L4+ GPUs). "
+                        f"Disabling FP8 quantization for compatibility."
+                    )
+                    # We'll pass None to override the config's quantization
+                    params['_disable_fp8'] = True
+        except Exception:
+            pass  # If config loading fails, proceed normally
+
         # Determine quantization settings - only use if explicitly requested by user
         load_in_4bit = params.get('load_in_4bit', False)
         load_in_8bit = params.get('load_in_8bit', False)
@@ -307,16 +330,24 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
-        model, tokenizer_or_processor = _Loader.from_pretrained(
-            model_name=params['model_path'],
-            max_seq_length=params.get('max_seq_len', 2048),
-            dtype=None,
-            load_in_4bit=load_in_4bit,
-            load_in_8bit=load_in_8bit,
-            trust_remote_code=trust_remote_code,
+        # Prepare loading kwargs
+        loader_kwargs = {
+            'model_name': params['model_path'],
+            'max_seq_length': params.get('max_seq_len', 2048),
+            'dtype': None,
+            'load_in_4bit': load_in_4bit,
+            'load_in_8bit': load_in_8bit,
+            'trust_remote_code': trust_remote_code,
             **quantization_kwargs,
             **device_map_config,
-        )
+        }
+
+        # Override FP8 quantization if detected
+        if params.get('_disable_fp8', False):
+            # Pass an empty/None quantization_config to override the model's FP8 config
+            loader_kwargs['quantization_config'] = None
+
+        model, tokenizer_or_processor = _Loader.from_pretrained(**loader_kwargs)
 
         return model, tokenizer_or_processor
 

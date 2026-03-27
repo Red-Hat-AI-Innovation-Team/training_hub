@@ -805,9 +805,15 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
         # built-in transformers classes without issues
         saved_config.pop("auto_map", None)
         saved_config.pop("hybrid_override_pattern", None)
+
+        # Remove quantization_config (e.g., FP8 in Ministral-3) to avoid issues
+        # on unsupported hardware (FP8 requires L4+ GPUs, not A100)
+        saved_config.pop("quantization_config", None)
+
         if "text_config" in saved_config and isinstance(saved_config["text_config"], dict):
             saved_config["text_config"].pop("auto_map", None)
             saved_config["text_config"].pop("hybrid_override_pattern", None)
+            saved_config["text_config"].pop("quantization_config", None)
 
         with open(config_path, 'w') as f:
             json.dump(saved_config, f, indent=2)
