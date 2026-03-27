@@ -1,12 +1,10 @@
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional, Type, Union
-from pathlib import Path
 
 from . import Algorithm, Backend, AlgorithmRegistry
-from .sft import SFTAlgorithm
-from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
-from training_hub import utils
+from .peft_extender import LoRAPEFTExtender
 
 # TrainerCallback import - transformers is required for LoRA functionality
 from transformers import TrainerCallback
@@ -72,6 +70,25 @@ class UnslothLoRABackend(Backend):
     """Unsloth backend for LoRA algorithm with performance optimizations."""
 
     @staticmethod
+    def _is_text_only_model_type(model_type: str) -> bool:
+        """Check if model_type should be treated as text-only for LoRA.
+
+        Some models have ForConditionalGeneration + vision_config but can
+        be used for text-only fine-tuning. This centralises the whitelist
+        so that both _is_vlm_architecture and _is_vlm_model_id stay in
+        sync.
+
+        Args:
+            model_type: The model_type string from the model config.
+
+        Returns:
+            True if the model type is known to be text-only despite VLM
+            architecture markers.
+        """
+        mt = model_type.lower()
+        return 'qwen3_5' in mt or 'mistral3' in mt
+
+    @staticmethod
     def _is_vlm_architecture(model: Any) -> bool:
         """Detect whether a model uses a VLM (vision-language) architecture.
 
@@ -101,7 +118,7 @@ class UnslothLoRABackend(Backend):
 
         # Some models have ForConditionalGeneration + vision_config but can be used
         # for text-only training. Treat as text-only (not VLM) for LoRA.
-        if 'qwen3_5' in model_type.lower() or 'mistral3' in model_type.lower():
+        if UnslothLoRABackend._is_text_only_model_type(model_type):
             return False
 
         # Architecture name is the most reliable signal
@@ -118,8 +135,7 @@ class UnslothLoRABackend(Backend):
         """Execute LoRA training using Unsloth optimizations."""
         try:
             from unsloth import FastModel, FastLanguageModel  # noqa: F401
-            from trl import SFTTrainer, SFTConfig
-            from transformers import TrainingArguments
+            from trl import SFTTrainer  # noqa: F401
         except ImportError as e:
             # Handle common import issues with specific guidance
             error_msg = str(e).lower()
@@ -251,7 +267,7 @@ class UnslothLoRABackend(Backend):
 
             # Some models have ForConditionalGeneration + vision_config but can be used
             # for text-only training. Treat as text-only (not VLM) for LoRA.
-            if 'qwen3_5' in model_type.lower() or 'mistral3' in model_type.lower():
+            if UnslothLoRABackend._is_text_only_model_type(model_type):
                 return False
 
             if any(a.endswith('ForConditionalGeneration') for a in architectures):
@@ -290,18 +306,17 @@ class UnslothLoRABackend(Backend):
             quant_config = getattr(model_config, 'quantization_config', None)
             if quant_config and isinstance(quant_config, dict):
                 if quant_config.get('quant_method') == 'fp8':
-                    # Disable FP8 quantization by setting quantization_config=None
-                    # User can still explicitly request 4bit/8bit quantization via params
-                    import logging
+                    # Disable FP8 quantization -- FP8 requires compute capability 8.9+
+                    # (L4+ GPUs). User can still request 4bit/8bit quantization via params.
                     logging.warning(
-                        f"Model {params['model_path']} has FP8 quantization in config, "
-                        f"but FP8 requires compute capability 8.9+ (L4+ GPUs). "
-                        f"Disabling FP8 quantization for compatibility."
+                        "Model %s has FP8 quantization in config, "
+                        "but FP8 requires compute capability 8.9+ (L4+ GPUs). "
+                        "Disabling FP8 quantization for compatibility.",
+                        params['model_path'],
                     )
-                    # We'll pass None to override the config's quantization
                     params['_disable_fp8'] = True
-        except Exception:
-            pass  # If config loading fails, proceed normally
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logging.debug("Could not inspect model config for FP8: %s", e)
 
         # Determine quantization settings - only use if explicitly requested by user
         load_in_4bit = params.get('load_in_4bit', False)
@@ -330,9 +345,57 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
+        # If FP8 was detected, create a patched model directory before Unsloth
+        # loads it.  Unsloth's from_pretrained does NOT accept a
+        # ``quantization_config`` kwarg -- it reads config.json directly.
+        # We resolve the model to a local directory, symlink all files
+        # except config.json (which we patch to strip FP8), and point
+        # the loader at the patched copy.
+        model_path = params['model_path']
+        _tmp_model_dir = None
+        if params.get('_disable_fp8', False):
+            import tempfile
+            try:
+                # Resolve remote model IDs to a local snapshot directory
+                if os.path.isdir(model_path):
+                    source_dir = model_path
+                else:
+                    from huggingface_hub import snapshot_download
+                    source_dir = snapshot_download(repo_id=model_path)
+
+                _tmp_model_dir = tempfile.mkdtemp(prefix='training_hub_fp8_')
+                # Symlink every file except config.json
+                for entry in os.listdir(source_dir):
+                    src = os.path.join(source_dir, entry)
+                    dst = os.path.join(_tmp_model_dir, entry)
+                    if entry == 'config.json':
+                        continue
+                    os.symlink(src, dst)
+
+                # Write patched config.json without quantization_config
+                config_src = os.path.join(source_dir, 'config.json')
+                with open(config_src, 'r') as f:
+                    raw_config = json.load(f)
+
+                raw_config.pop('quantization_config', None)
+                if 'text_config' in raw_config and isinstance(raw_config['text_config'], dict):
+                    raw_config['text_config'].pop('quantization_config', None)
+
+                with open(os.path.join(_tmp_model_dir, 'config.json'), 'w') as f:
+                    json.dump(raw_config, f, indent=2)
+
+                model_path = _tmp_model_dir
+                logging.info(
+                    "Using patched model directory (FP8 removed) at %s",
+                    _tmp_model_dir,
+                )
+            except (OSError, ValueError, KeyError) as e:
+                logging.debug("Could not create patched model dir for FP8 removal: %s", e)
+                model_path = params['model_path']
+
         # Prepare loading kwargs
         loader_kwargs = {
-            'model_name': params['model_path'],
+            'model_name': model_path,
             'max_seq_length': params.get('max_seq_len', 2048),
             'dtype': None,
             'load_in_4bit': load_in_4bit,
@@ -342,12 +405,13 @@ class UnslothLoRABackend(Backend):
             **device_map_config,
         }
 
-        # Override FP8 quantization if detected
-        if params.get('_disable_fp8', False):
-            # Pass an empty/None quantization_config to override the model's FP8 config
-            loader_kwargs['quantization_config'] = None
-
-        model, tokenizer_or_processor = _Loader.from_pretrained(**loader_kwargs)
+        try:
+            model, tokenizer_or_processor = _Loader.from_pretrained(**loader_kwargs)
+        finally:
+            # Clean up the temporary model directory (symlinks + patched config)
+            if _tmp_model_dir is not None:
+                import shutil
+                shutil.rmtree(_tmp_model_dir, ignore_errors=True)
 
         return model, tokenizer_or_processor
 

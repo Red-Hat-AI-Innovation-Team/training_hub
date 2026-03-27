@@ -23,10 +23,8 @@ Configuration:
 """
 
 import argparse
-import glob
 import json
 import os
-import shutil
 import socket
 import sys
 import time
@@ -35,6 +33,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 
 def _get_free_port() -> int:
@@ -43,11 +46,6 @@ def _get_free_port() -> int:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich.text import Text
-from rich import box
 
 # Rich console for formatted output
 console = Console()
