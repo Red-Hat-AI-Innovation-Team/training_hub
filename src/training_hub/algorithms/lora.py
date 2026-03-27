@@ -96,7 +96,14 @@ class UnslothLoRABackend(Backend):
         config = getattr(model, 'config', None)
         if config is None:
             return False
+        model_type = getattr(config, 'model_type', '')
         architectures = getattr(config, 'architectures', []) or []
+
+        # Qwen3.5 has ForConditionalGeneration + vision_config but can be used
+        # for text-only training. Treat as text-only (not VLM) for LoRA.
+        if 'qwen3_5' in model_type.lower():
+            return False
+
         # Architecture name is the most reliable signal
         if any(arch.endswith('ForConditionalGeneration') for arch in architectures):
             return True
@@ -239,7 +246,14 @@ class UnslothLoRABackend(Backend):
             config = AutoConfig.from_pretrained(
                 model_path, trust_remote_code=trust_remote_code
             )
+            model_type = getattr(config, 'model_type', '')
             architectures = getattr(config, 'architectures', []) or []
+
+            # Qwen3.5 has ForConditionalGeneration + vision_config but can be used
+            # for text-only training. Treat as text-only (not VLM) for LoRA.
+            if 'qwen3_5' in model_type.lower():
+                return False
+
             if any(a.endswith('ForConditionalGeneration') for a in architectures):
                 return True
             if any(a.endswith('ForCausalLM') for a in architectures):
