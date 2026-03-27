@@ -173,7 +173,7 @@ MODELS = {
     "granite-moe": ModelConfig(
         model_id="ibm-granite/granite-4.0-h-tiny",
         architecture="GraniteMoeHybridForCausalLM",
-        notes="Granite 4.0 Hybrid Tiny (MoE)",
+        notes="Granite 4.0 Hybrid Tiny (MoE) - LoRA requires causal_conv1d_cuda (Unsloth limitation)",
     ),
     # Phi3ForCausalLM
     "phi4": ModelConfig(

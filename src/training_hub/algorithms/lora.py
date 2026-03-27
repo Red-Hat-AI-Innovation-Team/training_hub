@@ -367,7 +367,9 @@ class UnslothLoRABackend(Backend):
 
             # GraniteMoeHybrid: Unsloth auto-detection picks up unsupported layers
             # (RMSNorm, ParallelExperts). Only target standard Linear layers.
-            # Skip Mamba layers to avoid causal_conv1d_cuda dependency issues.
+            # Skip Mamba layers due to known Unsloth issue: causal_conv1d CUDA kernels
+            # don't load correctly in Unsloth's subprocesses, even though the package
+            # is installed and works in the main process. OSFT/SFT modes work fine.
             if 'granite' in model_type and 'moe' in model_type:
                 target_modules = [
                     "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
