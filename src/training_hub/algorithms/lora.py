@@ -146,9 +146,10 @@ class UnslothLoRABackend(Backend):
 
         # Detect VLM architecture (e.g., Mistral3ForConditionalGeneration)
         is_vlm = self._is_vlm_architecture(model)
+        supports_grad_ckpt = getattr(model, 'supports_gradient_checkpointing', False)
 
         # Apply LoRA with Unsloth optimizations
-        model = self._apply_lora_config(model, training_params)
+        model = self._apply_lora_config(model, training_params, supports_grad_ckpt)
 
         # Prepare dataset (VLMs skip preprocessing — the data collator handles it)
         train_dataset = self._prepare_dataset(
@@ -156,7 +157,9 @@ class UnslothLoRABackend(Backend):
         )
 
         # Configure training arguments
-        training_args = self._build_training_args(training_params, is_vlm=is_vlm)
+        training_args = self._build_training_args(
+            training_params, is_vlm=is_vlm, supports_grad_ckpt=supports_grad_ckpt
+        )
 
         # Build SFTTrainer with VLM-specific or standard configuration
         if is_vlm:
@@ -248,6 +251,38 @@ class UnslothLoRABackend(Backend):
         except (OSError, ValueError, KeyError):
             return False
 
+    _mamba_kernels_initialized = False
+
+    @classmethod
+    def _use_local_mamba_kernels(cls):
+        """Pre-populate transformers Hub kernel cache with local packages.
+
+        Without this, transformers downloads pre-built hub kernels for
+        mamba-ssm and causal-conv1d. The hub builds lack cpp_functions,
+        causing 'causal_conv1d_cuda is not available' errors at runtime.
+        """
+        if cls._mamba_kernels_initialized:
+            return
+        try:
+            import causal_conv1d
+            import mamba_ssm
+            from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+            from mamba_ssm.ops.triton.ssd_combined import (
+                mamba_chunk_scan_combined,
+                mamba_split_conv1d_scan_combined,
+            )
+            from transformers.integrations.hub_kernels import _KERNEL_MODULE_MAPPING
+
+            mamba_ssm.selective_state_update = selective_state_update
+            mamba_ssm.mamba_chunk_scan_combined = mamba_chunk_scan_combined
+            mamba_ssm.mamba_split_conv1d_scan_combined = mamba_split_conv1d_scan_combined
+
+            _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
+            _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
+            cls._mamba_kernels_initialized = True
+        except (ImportError, AttributeError):
+            pass
+
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
         """Load model with Unsloth optimizations.
 
@@ -259,6 +294,7 @@ class UnslothLoRABackend(Backend):
             Tuple of (model, tokenizer_or_processor).
         """
         trust_remote_code = params.get('trust_remote_code', False)
+        self._use_local_mamba_kernels()
         is_vlm = self._is_vlm_model_id(params['model_path'], trust_remote_code)
 
         if is_vlm:
@@ -293,6 +329,20 @@ class UnslothLoRABackend(Backend):
             if 'bnb_4bit_use_double_quant' in params:
                 quantization_kwargs['bnb_4bit_use_double_quant'] = params['bnb_4bit_use_double_quant']
 
+        # Check if model supports gradient checkpointing before loading.
+        # Unsloth's from_pretrained enables it by default, which crashes
+        # models that don't support it (e.g. NemotronH).
+        from transformers import AutoConfig, AutoModelForCausalLM
+        _supports_gc = False
+        try:
+            _cfg = AutoConfig.from_pretrained(
+                params['model_path'], trust_remote_code=trust_remote_code
+            )
+            _model_cls = AutoModelForCausalLM._model_mapping[type(_cfg)]
+            _supports_gc = getattr(_model_cls, 'supports_gradient_checkpointing', True)
+        except Exception:
+            pass
+
         model, tokenizer_or_processor = _Loader.from_pretrained(
             model_name=params['model_path'],
             max_seq_length=params.get('max_seq_len', 2048),
@@ -300,30 +350,27 @@ class UnslothLoRABackend(Backend):
             load_in_4bit=load_in_4bit,
             load_in_8bit=load_in_8bit,
             trust_remote_code=trust_remote_code,
+            use_gradient_checkpointing="unsloth" if _supports_gc else False,
             **quantization_kwargs,
             **device_map_config,
         )
 
         return model, tokenizer_or_processor
 
-    def _apply_lora_config(self, model, params: Dict[str, Any]):
+    def _apply_lora_config(self, model, params: Dict[str, Any],
+                           supports_grad_ckpt: bool = True):
         """Apply LoRA configuration using Unsloth optimizations."""
-        # Always use FastModel for get_peft_model — it auto-detects target
-        # modules when None is passed, unlike FastLanguageModel which crashes.
         from unsloth import FastModel
 
-        # Only pass target_modules if the user explicitly provided them;
-        # otherwise let Unsloth auto-detect the correct modules for the model
         target_modules = params.get('target_modules')
 
-        # Build LoRA config parameters
         lora_config = {
             'r': params.get('lora_r', 16),
             'target_modules': target_modules,
             'lora_alpha': params.get('lora_alpha', 32),
-            'lora_dropout': params.get('lora_dropout', 0.0),  # 0.0 is optimized for Unsloth
+            'lora_dropout': params.get('lora_dropout', 0.0),
             'bias': "none",
-            'use_gradient_checkpointing': "unsloth",  # Unsloth's optimized gradient checkpointing
+            'use_gradient_checkpointing': "unsloth" if supports_grad_ckpt else False,
             'random_state': params.get('seed', 3407),
             'use_rslora': params.get('use_rslora', False),
         }
@@ -428,7 +475,8 @@ class UnslothLoRABackend(Backend):
 
 
     def _build_training_args(self, params: Dict[str, Any],
-                             is_vlm: bool = False):
+                             is_vlm: bool = False,
+                             supports_grad_ckpt: bool = True):
         """Build training arguments for SFTTrainer using SFTConfig."""
         from trl import SFTConfig
 
@@ -484,6 +532,7 @@ class UnslothLoRABackend(Backend):
             num_train_epochs=num_epochs,
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
+            gradient_checkpointing=supports_grad_ckpt,
             learning_rate=params.get('learning_rate', 2e-4),
             weight_decay=params.get('weight_decay', 0.01),
             fp16=params.get('fp16', False),

@@ -56,26 +56,29 @@ def trust_remote_code_context(enabled: bool):
     """
     Context manager to temporarily enable/disable trust_remote_code via environment variable.
 
-    When enabled=True, sets HF_HUB_TRUST_REMOTE_CODE=1 which tells Hugging Face
-    to trust remote code without requiring the explicit parameter.
+    Sets both HF_HUB_TRUST_REMOTE_CODE (for HuggingFace Hub) and
+    TRUST_REMOTE_CODE (for instructlab-training) when enabled.
     """
-    env_var = "HF_HUB_TRUST_REMOTE_CODE"
-    old_value = os.environ.get(env_var)
+    env_vars = ["HF_HUB_TRUST_REMOTE_CODE", "TRUST_REMOTE_CODE"]
+    old_values = {v: os.environ.get(v) for v in env_vars}
 
     if enabled:
-        os.environ[env_var] = "1"
-        console.print(f"[dim]🔓 Enabling trust_remote_code via {env_var}[/dim]")
-    elif env_var in os.environ:
-        del os.environ[env_var]
+        for v in env_vars:
+            os.environ[v] = "1"
+        console.print("[dim]🔓 Enabling trust_remote_code[/dim]")
+    else:
+        for v in env_vars:
+            if v in os.environ:
+                del os.environ[v]
 
     try:
         yield
     finally:
-        # Restore original state
-        if old_value is not None:
-            os.environ[env_var] = old_value
-        elif env_var in os.environ:
-            del os.environ[env_var]
+        for v in env_vars:
+            if old_values[v] is not None:
+                os.environ[v] = old_values[v]
+            elif v in os.environ:
+                del os.environ[v]
 
 # ============================================================================
 # CONFIGURATION - Edit these settings as needed
@@ -126,6 +129,10 @@ class ModelConfig:
     is_vision_model: bool = False  # Vision models expected to fail with text-only training
     requires_trust_remote_code: bool = False  # Models with custom code
     requires_dev_transformers: bool = False  # Requires transformers from main branch
+    # LoRA target modules override (when Unsloth auto-detection doesn't work)
+    lora_target_modules: list[str] | None = None
+    # OSFT target patterns override (when auto-detection doesn't find targets)
+    osft_target_patterns: list[str] | None = None
 
 
 # Models to validate - organized by architecture class
@@ -142,6 +149,8 @@ MODELS = {
         architecture="NemotronHForCausalLM",
         notes="NVIDIA Nemotron Nano 9B v2",
         requires_trust_remote_code=True,
+        lora_target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        osft_target_patterns=["q_proj", "k_proj", "v_proj", "o_proj"],
     ),
     # Qwen3ForCausalLM
     "qwen3": ModelConfig(
@@ -172,6 +181,10 @@ MODELS = {
         model_id="ibm-granite/granite-4.0-h-tiny",
         architecture="GraniteMoeHybridForCausalLM",
         notes="Granite 4.0 Hybrid Tiny (MoE)",
+        lora_target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "shared_mlp.input_linear", "shared_mlp.output_linear",
+        ],
     ),
     # Phi3ForCausalLM
     "phi4": ModelConfig(
@@ -585,6 +598,33 @@ def create_overfit_dataset(output_path: str, num_samples: int = NUM_SAMPLES) -> 
     return dataset_file
 
 
+def _sanitize_tiny_model_config(tiny_dir: str):
+    """Remove config fields that cause issues when loading tiny models.
+
+    Strips auto_map (points to missing remote code files),
+    hybrid_override_pattern (NemotronH-specific), and
+    quantization_config (e.g. Ministral's FP8 requires L4+ GPUs).
+    """
+    _cleanup_keys = ("auto_map", "hybrid_override_pattern", "quantization_config")
+    config_path = os.path.join(tiny_dir, "config.json")
+    with open(config_path, 'r', encoding='utf-8') as f:
+        saved_config = json.load(f)
+    changed = False
+    for key in _cleanup_keys:
+        if key in saved_config:
+            saved_config.pop(key)
+            changed = True
+    text_config = saved_config.get("text_config")
+    if isinstance(text_config, dict):
+        for key in _cleanup_keys:
+            if key in text_config:
+                text_config.pop(key)
+                changed = True
+    if changed:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(saved_config, f, indent=2)
+
+
 def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
     """
     Create a tiny randomly-initialized version of a model architecture for smoke testing.
@@ -608,8 +648,9 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
 
     ready_marker = os.path.join(tiny_dir, ".ready")
 
-    # Return cached version if fully created
+    # Return cached version if fully created (re-sanitize in case cleanup was added later)
     if os.path.exists(ready_marker):
+        _sanitize_tiny_model_config(tiny_dir)
         console.print(f"[dim]Using cached tiny model: {tiny_dir}[/dim]")
         return tiny_dir
 
@@ -693,6 +734,11 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
         val = getattr(text_cfg, attr, None)
         if isinstance(val, list) and len(val) == original_n_layers and attr not in per_layer_attrs:
             per_layer_attrs.append(attr)
+
+    # Truncate hybrid_override_pattern (string, not list) to match n_layers
+    hop = getattr(text_cfg, "hybrid_override_pattern", None)
+    if hop and isinstance(hop, str) and len(hop) > n_layers:
+        text_cfg.hybrid_override_pattern = hop[:n_layers]
 
     for attr in per_layer_attrs:
         if hasattr(text_cfg, attr):
@@ -782,6 +828,8 @@ def create_tiny_model(model_config: ModelConfig, output_dir: str) -> str:
         model_config.model_id, trust_remote_code=trust_remote_code
     )
     tokenizer.save_pretrained(tiny_dir)
+
+    _sanitize_tiny_model_config(tiny_dir)
 
     # Mark as fully created so partial writes aren't treated as cache hits
     open(ready_marker, "w").close()
@@ -942,6 +990,7 @@ def run_osft_validation(
                 ckpt_output_dir=output_dir,
                 # OSFT-specific parameters
                 unfreeze_rank_ratio=OSFT_UNFREEZE_RANK_RATIO,
+                target_patterns=model_config.osft_target_patterns,
                 # Training parameters
                 num_epochs=NUM_EPOCHS,
                 effective_batch_size=batch_size,
@@ -958,6 +1007,8 @@ def run_osft_validation(
                 # Checkpointing
                 checkpoint_at_epoch=True,
                 save_final_checkpoint=True,
+                # Model loading
+                trust_remote_code=model_config.requires_trust_remote_code,
                 # Multi-GPU setup
                 nproc_per_node=nproc_per_node,
                 nnodes=1,
@@ -1053,10 +1104,8 @@ def run_lora_validation(
                 learning_rate=LEARNING_RATE,
                 max_seq_len=max_seq,
                 warmup_steps=0,
-                # Model loading - pass trust_remote_code explicitly since the
-                # HF_HUB_TRUST_REMOTE_CODE env var is not respected by
-                # Unsloth's FastModel.from_pretrained
                 trust_remote_code=model_config.requires_trust_remote_code,
+                target_modules=model_config.lora_target_modules,
                 # Multi-GPU setup
                 nproc_per_node=nproc_per_node,
                 nnodes=1,
@@ -1179,6 +1228,8 @@ def run_single_validation(
             is_vision_model=model_config.is_vision_model,
             requires_trust_remote_code=model_config.requires_trust_remote_code,
             requires_dev_transformers=False,
+            lora_target_modules=model_config.lora_target_modules,
+            osft_target_patterns=model_config.osft_target_patterns,
         )
     else:
         model_config_for_training = model_config
