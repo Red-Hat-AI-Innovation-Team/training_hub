@@ -361,12 +361,13 @@ def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
         if user_msg is None:
             continue
 
-        # Try to extract tools from system prompt (may be embedded as JSON in chat template)
-        tools = _extract_tools_from_system_prompt(system_msg.get("content", ""))
-        # Clean system prompt of chat template markers if tools were extracted
+        # Get tools: prefer top-level field, fall back to extracting from system prompt
+        tools = trace.get("tools", [])
         system_content = system_msg.get("content", "")
-        if tools:
-            system_content = _clean_system_prompt(system_content)
+        if not tools:
+            tools = _extract_tools_from_system_prompt(system_content)
+            if tools:
+                system_content = _clean_system_prompt(system_content)
 
         # Walk through the conversation and find each assistant tool-call turn
         # Everything between user and current turn is GT context
@@ -409,8 +410,11 @@ def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
                 else:
                     target_args = target_args_str
             else:
-                # Final assistant message (no tool call) — skip, not a training turn
-                break
+                # Assistant message without tool call (text response, e.g., greeting
+                # or clarification). Add to context and continue looking for tool calls.
+                context_prefix.append(msg)
+                i += 1
+                continue
 
             # Create a sample for this turn
             sample = {
