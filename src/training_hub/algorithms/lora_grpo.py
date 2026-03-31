@@ -57,23 +57,55 @@ from .rewards import tool_call_reward
 logger = logging.getLogger(__name__)
 
 
-def _force_cleanup():
-    """Kill all child processes (vLLM engine, etc.) and force-exit.
+async def _shutdown_art_backend(backend) -> None:
+    """Shut down the ART LocalBackend and its vLLM engine cleanly.
 
-    ART/vLLM spawns subprocesses and threads that don't shut down cleanly
-    via backend.close(). This kills child processes and calls os._exit()
-    to avoid hanging on orphaned threads.
+    ART's backend.close() is a no-op in shared/in-process mode because it only
+    handles the dedicated vLLM subprocess. In shared mode, vLLM runs as an
+    AsyncLLM engine with a spawned EngineCore process. We need to explicitly
+    call engine.shutdown() to terminate it.
     """
-    import psutil
-    current = psutil.Process()
-    children = current.children(recursive=True)
-    for child in children:
-        try:
-            child.kill()
-        except psutil.NoSuchProcess:
-            pass
-    psutil.wait_procs(children, timeout=5)
-    os._exit(0)
+    for _, service in backend._services.items():
+        # Shut down the vLLM engine if it exists (shared/in-process mode)
+        llm_task = getattr(service, "__dict__", {}).get("llm")
+        if llm_task is not None and hasattr(llm_task, "result"):
+            try:
+                engine = llm_task.result() if llm_task.done() else None
+                if engine is not None and hasattr(engine, "shutdown"):
+                    engine.shutdown()
+            except Exception as e:
+                logger.warning("Error shutting down vLLM engine: %s", e)
+
+        # Also call the service's own close (handles dedicated mode subprocess)
+        close_fn = getattr(service, "close", None)
+        if close_fn is not None:
+            try:
+                close_fn()
+            except Exception as e:
+                logger.warning("Error closing service: %s", e)
+
+    # Release GPU memory and clean up remaining threads.
+    # asyncio.run() can hang on non-daemon threads left by torch/vLLM.
+    # Since results are already saved to disk by the training loop,
+    # force exit to avoid blocking indefinitely.
+    try:
+        import torch
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+    import threading
+    non_daemon = [t for t in threading.enumerate()
+                  if t.is_alive() and not t.daemon and t != threading.main_thread()]
+    if non_daemon:
+        logger.info(
+            "Force-exiting to clean up %d non-daemon threads (torch/vLLM)",
+            len(non_daemon),
+        )
+        os._exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -490,9 +522,10 @@ class ARTLoRAGRPOBackend(Backend):
     def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
         """Execute LoRA GRPO training using ART.
 
-        Runs training in a forked subprocess to ensure clean GPU/thread cleanup.
-        ART/vLLM spawns threads and processes that don't shut down cleanly,
-        so subprocess isolation prevents resource leaks in the caller.
+        Runs in a subprocess to isolate the caller from ART/vLLM's non-daemon
+        threads that prevent clean Python exit. The subprocess performs proper
+        engine shutdown (freeing GPU), saves results to disk, then force-exits.
+        The parent reads results from disk.
         """
         import multiprocessing as mp
 
@@ -501,7 +534,6 @@ class ARTLoRAGRPOBackend(Backend):
         results_path = os.path.join(ckpt_output_dir, "training_results.json")
         error_path = os.path.join(ckpt_output_dir, ".training_error")
 
-        # Remove stale error file
         if os.path.exists(error_path):
             os.remove(error_path)
 
@@ -513,48 +545,35 @@ class ARTLoRAGRPOBackend(Backend):
         proc.start()
         proc.join()
 
-        # Check for errors
         if os.path.exists(error_path):
             with open(error_path) as f:
                 error_msg = f.read()
             os.remove(error_path)
             raise RuntimeError(f"GRPO training failed: {error_msg}")
 
-        if proc.exitcode != 0 and not os.path.exists(results_path):
+        if not os.path.exists(results_path):
             raise RuntimeError(f"GRPO training subprocess exited with code {proc.exitcode}")
 
-        # Read results
         with open(results_path) as f:
             return json.load(f)
 
     @staticmethod
     def _subprocess_entry(algorithm_params, results_path, error_path):
-        """Entry point for the training subprocess."""
+        """Subprocess entry point for training."""
         os.environ["VLLM_USE_V1"] = "0"
-
         try:
             import art
             from art.local.backend import LocalBackend
-        except ImportError:
+            result = asyncio.run(
+                ARTLoRAGRPOBackend()._run_training(algorithm_params, art, LocalBackend)
+            )
+            with open(results_path, "w") as f:
+                json.dump(result, f, indent=2)
+        except SystemExit:
+            pass  # os._exit from shutdown — results already on disk
+        except Exception as e:
             with open(error_path, "w") as f:
-                f.write("openpipe-art is not installed. Install with: pip install openpipe-art")
-            os._exit(1)
-
-        async def _run_and_cleanup():
-            try:
-                result = await ARTLoRAGRPOBackend()._run_training(
-                    algorithm_params, art, LocalBackend
-                )
-                with open(results_path, "w") as f:
-                    json.dump(result, f, indent=2)
-            except Exception as e:
-                with open(error_path, "w") as f:
-                    f.write(str(e))
-            # Force cleanup before asyncio.run() tries to shut down the event loop
-            # (which hangs on vLLM's dangling threads)
-            _force_cleanup()
-
-        asyncio.run(_run_and_cleanup())
+                f.write(str(e))
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
@@ -663,6 +682,40 @@ class ARTLoRAGRPOBackend(Backend):
         await model.register(backend)
         logger.info("Model registered with ART backend at %s", art_path)
 
+        try:
+            return await self._run_training_loop(
+                model, backend, art, train_data,
+                mode=mode,
+                rollout_fn=rollout_fn,
+                reward_fn=reward_fn,
+                num_iterations=num_iterations,
+                group_size=group_size,
+                tasks_per_iteration=tasks_per_iteration,
+                learning_rate=learning_rate,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                concurrency=concurrency,
+                ckpt_output_dir=ckpt_output_dir,
+                art_path=art_path,
+                model_path=model_path,
+                lora_r=lora_r,
+                lora_alpha=lora_alpha,
+                iteration_callback=iteration_callback,
+            )
+        finally:
+            logger.info("Shutting down ART backend...")
+            await _shutdown_art_backend(backend)
+            logger.info("ART backend shut down")
+
+    async def _run_training_loop(
+        self, model, backend, art, train_data, *,
+        mode, rollout_fn, reward_fn,
+        num_iterations, group_size, tasks_per_iteration,
+        learning_rate, temperature, max_tokens, concurrency,
+        ckpt_output_dir, art_path, model_path, lora_r, lora_alpha,
+        iteration_callback,
+    ) -> Dict[str, Any]:
+        """Inner training loop."""
         # Build the rollout function for built-in tool-call mode
         sem = asyncio.Semaphore(concurrency)
         actual_reward_fn = reward_fn or tool_call_reward
