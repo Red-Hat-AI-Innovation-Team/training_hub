@@ -1015,6 +1015,8 @@ class LoRAGRPOAlgorithm(Algorithm):
             Custom Rollout Mode:
                 rollout_fn: Async function (model, task) -> art.Trajectory.
                     The returned trajectory must have .reward set.
+                    Must be a top-level function (not a lambda or closure),
+                    as it is serialized to a subprocess via pickle.
                 tasks: List of task objects passed to rollout_fn.
                 reward_fn: Optional reward function to override the default
                     tool_call_reward. Signature: (response, expected_name, expected_args) -> float.
