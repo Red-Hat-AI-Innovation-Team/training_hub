@@ -36,7 +36,7 @@ class JSONLLoggingCallback(TrainerCallback):
         Called when trainer logs metrics.
 
         Writes entries in the same format as SFT/OSFT:
-        {"step": 1, "loss": 4.2727, "epoch": 0.015625, "learning_rate": 2e-6}
+        {"step": 1, "loss": 4.2727, "epoch": 0.015625, "learning_rate": 2e-6, "max_steps": 1000}
         """
         if logs is None:
             return
@@ -49,6 +49,7 @@ class JSONLLoggingCallback(TrainerCallback):
         entry = {
             "step": state.global_step,
             "epoch": state.epoch,
+            "max_steps": state.max_steps,
         }
 
         # Add metrics from logs (loss, learning_rate, etc.)
