@@ -260,6 +260,41 @@ def _normalize(args):
     return reward_path
 
 
+def _write_agent_loop(output_dir: str) -> tuple[str, str]:
+    """Write a single-turn tool-calling agent loop for verl.
+
+    verl's default SingleTurnAgentLoop doesn't pass tools to the chat template.
+    This custom agent loop passes tools from the dataset's tools_kwargs field,
+    enabling models like Qwen3 to generate structured tool calls.
+
+    Returns:
+        (agent_module_path, agent_config_path)
+    """
+    import shutil
+
+    # Copy the agent loop module to the output dir
+    src = os.path.join(os.path.dirname(__file__), "verl_tool_agent.py")
+    dst = os.path.join(output_dir, "verl_tool_agent.py")
+    shutil.copy2(src, dst)
+
+    # Also install it into verl's agent_loop directory so Ray workers can import it
+    import verl.experimental.agent_loop as agent_loop_pkg
+    agent_loop_dir = os.path.dirname(agent_loop_pkg.__file__)
+    installed_path = os.path.join(agent_loop_dir, "verl_tool_agent.py")
+    shutil.copy2(src, installed_path)
+
+    # Patch the __init__.py to import it
+    init_path = os.path.join(agent_loop_dir, "__init__.py")
+    with open(init_path, "r") as f:
+        init_content = f.read()
+    if "verl_tool_agent" not in init_content:
+        with open(init_path, "a") as f:
+            f.write("\nfrom .verl_tool_agent import SingleTurnToolAgentLoop\n")
+            f.write("_ = [*_, SingleTurnToolAgentLoop]\n")
+
+    return dst, installed_path
+
+
 class VeRLLoRAGRPOBackend(Backend):
     """verl backend for distributed multi-GPU LoRA + GRPO training.
 
@@ -286,8 +321,9 @@ class VeRLLoRAGRPOBackend(Backend):
             data_config=algorithm_params.get("data_config", "Qwen3"),
         )
 
-        # Write reward function
+        # Write reward function and install custom agent loop
         reward_path = _write_reward_function(ckpt_output_dir)
+        _write_agent_loop(ckpt_output_dir)
 
         # Extract parameters
         model_path = algorithm_params["model_path"]
@@ -320,7 +356,6 @@ class VeRLLoRAGRPOBackend(Backend):
             f"data.max_response_length={max_tokens}",
             "data.filter_overlong_prompts=True",
             "data.truncation=error",
-            "data.need_tools_kwargs=True",
             # Model + LoRA
             f"actor_rollout_ref.model.path={model_path}",
             f"actor_rollout_ref.model.lora_rank={lora_r}",
@@ -381,6 +416,8 @@ class VeRLLoRAGRPOBackend(Backend):
         env["NCCL_DEBUG"] = "WARN"
         env["VLLM_LOGGING_LEVEL"] = "WARN"
         env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "true"
+        # Add output dir to PYTHONPATH so verl can import the custom agent loop
+        env["PYTHONPATH"] = ckpt_output_dir + ":" + env.get("PYTHONPATH", "")
 
         result = subprocess.run(
             cmd,
