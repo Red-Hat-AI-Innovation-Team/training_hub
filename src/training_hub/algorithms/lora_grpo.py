@@ -978,6 +978,9 @@ class LoRAGRPOAlgorithm(Algorithm):
         gpu_memory_utilization: Optional[float] = None,
         max_lora_rank: Optional[int] = None,
         vllm_base_url: Optional[str] = None,
+        # Multi-GPU configuration (verl backend)
+        n_gpus: Optional[int] = None,
+        tensor_parallel_size: Optional[int] = None,
         # ART configuration
         art_model_name: Optional[str] = None,
         art_project: Optional[str] = None,
@@ -1083,6 +1086,8 @@ class LoRAGRPOAlgorithm(Algorithm):
             "gpu_memory_utilization": gpu_memory_utilization,
             "max_lora_rank": max_lora_rank,
             "vllm_base_url": vllm_base_url,
+            "n_gpus": n_gpus,
+            "tensor_parallel_size": tensor_parallel_size,
             "art_model_name": art_model_name,
             "art_project": art_project,
             "art_path": art_path,
@@ -1137,6 +1142,8 @@ class LoRAGRPOAlgorithm(Algorithm):
             "gpu_memory_utilization": float,
             "max_lora_rank": int,
             "vllm_base_url": str,
+            "n_gpus": int,
+            "tensor_parallel_size": int,
             # ART
             "art_model_name": str,
             "art_project": str,
@@ -1191,6 +1198,9 @@ def lora_grpo(
     gpu_memory_utilization: float = 0.45,
     max_lora_rank: Optional[int] = None,
     vllm_base_url: Optional[str] = None,
+    # Multi-GPU configuration (verl backend)
+    n_gpus: int = 1,
+    tensor_parallel_size: int = 1,
     # ART configuration
     art_model_name: Optional[str] = None,
     art_project: Optional[str] = None,
@@ -1351,6 +1361,8 @@ def lora_grpo(
         gpu_memory_utilization=gpu_memory_utilization,
         max_lora_rank=max_lora_rank,
         vllm_base_url=vllm_base_url,
+        n_gpus=n_gpus,
+        tensor_parallel_size=tensor_parallel_size,
         art_model_name=art_model_name,
         art_project=art_project,
         art_path=art_path,
