@@ -79,6 +79,7 @@ def _prepare_verl_data(
             for ctx_msg in s.get("context_messages", []):
                 prompt.append(ctx_msg)
 
+            tools = s.get("tools", [])
             row = {
                 "prompt": prompt,
                 "reward_model": {
@@ -87,7 +88,11 @@ def _prepare_verl_data(
                         "tool_args": s["target_arguments"],
                     }),
                 },
-                "tools": json.dumps(s.get("tools", [])),
+                "extra_info": {
+                    "index": len(rows),
+                    "tools_kwargs": {"tools": tools} if tools else {},
+                    "need_tools_kwargs": bool(tools),
+                },
                 "data_source": "tool_call",
             }
             rows.append(row)
@@ -161,42 +166,45 @@ def tool_call_compute_score(data_source, solution_str, ground_truth, **kwargs):
 def _extract_tool_call_from_text(text):
     """Extract tool call from model-generated text.
 
-    Handles multiple formats:
-    - JSON function call: {"name": "...", "arguments": {...}}
-    - Tool call tags: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    Handles Qwen3 format: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    Also handles thinking blocks and various JSON formats.
     """
     if not text:
         return None, {}
 
     import re
 
-    # Try to find JSON with name/arguments pattern
-    patterns = [
-        r'<tool_call>\\s*(\\{.*?\\})\\s*</tool_call>',
-        r'\\{"name":\\s*"([^"]+)".*?"arguments":\\s*(\\{.*?\\})\\s*\\}',
-    ]
+    # Strip thinking blocks first
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-    for pattern in patterns:
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            try:
-                if match.lastindex == 1:
-                    obj = json.loads(match.group(1))
-                    return obj.get("name"), obj.get("arguments", {})
-                else:
-                    name = match.group(1)
-                    args = json.loads(match.group(2))
-                    return name, args
-            except json.JSONDecodeError:
-                continue
+    # Try <tool_call> tags (Qwen3 format) - use greedy match for nested braces
+    tc_match = re.search(r'<tool_call>\\s*(.+?)\\s*</tool_call>', text, re.DOTALL)
+    if tc_match:
+        try:
+            obj = json.loads(tc_match.group(1))
+            if isinstance(obj, dict):
+                return obj.get("name"), obj.get("arguments", {})
+        except json.JSONDecodeError:
+            pass
 
-    # Try parsing the entire text as JSON
-    try:
-        obj = json.loads(text.strip())
-        if isinstance(obj, dict) and "name" in obj:
-            return obj["name"], obj.get("arguments", {})
-    except json.JSONDecodeError:
-        pass
+    # Try to find any JSON object with name+arguments
+    # Find all { } balanced blocks
+    for match in re.finditer(r'\\{', text):
+        start = match.start()
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start:i+1])
+                        if isinstance(obj, dict) and "name" in obj:
+                            return obj["name"], obj.get("arguments", {})
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
     return None, {}
 
@@ -312,6 +320,7 @@ class VeRLLoRAGRPOBackend(Backend):
             f"data.max_response_length={max_tokens}",
             "data.filter_overlong_prompts=True",
             "data.truncation=error",
+            "data.need_tools_kwargs=True",
             # Model + LoRA
             f"actor_rollout_ref.model.path={model_path}",
             f"actor_rollout_ref.model.lora_rank={lora_r}",
