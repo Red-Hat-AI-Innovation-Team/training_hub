@@ -80,6 +80,26 @@ def _prepare_verl_data(
                 prompt.append(ctx_msg)
 
             tools = s.get("tools", [])
+
+            # Embed tools in the system prompt so the model sees tool definitions
+            # during generation. This is simpler than configuring verl's tool agent
+            # loop and works with the default SingleTurnAgentLoop.
+            if tools:
+                tools_text = json.dumps(tools, indent=2)
+                tools_instruction = (
+                    "\n\nYou have access to the following tools. To call a tool, "
+                    "respond with a JSON object in this format: "
+                    '{"name": "tool_name", "arguments": {"arg1": "value1"}}\n\n'
+                    f"Tools:\n{tools_text}"
+                )
+                if prompt and prompt[0]["role"] == "system":
+                    prompt[0] = {
+                        "role": "system",
+                        "content": prompt[0]["content"] + tools_instruction,
+                    }
+                else:
+                    prompt.insert(0, {"role": "system", "content": tools_instruction})
+
             row = {
                 "prompt": prompt,
                 "reward_model": {
@@ -90,8 +110,6 @@ def _prepare_verl_data(
                 },
                 "extra_info": {
                     "index": len(rows),
-                    "tools_kwargs": {"tools": tools} if tools else {},
-                    "need_tools_kwargs": bool(tools),
                 },
                 "data_source": "tool_call",
             }
@@ -352,7 +370,7 @@ class VeRLLoRAGRPOBackend(Backend):
             f"data.train_files={train_path}",
             f"data.val_files={val_path}",
             f"data.train_batch_size={train_batch_size}",
-            f"data.max_prompt_length=4096",
+            f"data.max_prompt_length=8192",
             f"data.max_response_length={max_tokens}",
             "data.filter_overlong_prompts=True",
             "data.truncation=error",
@@ -365,7 +383,7 @@ class VeRLLoRAGRPOBackend(Backend):
             # Actor (training)
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
             f"actor_rollout_ref.actor.ppo_mini_batch_size={min(train_batch_size, 256)}",
-            f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 4)}",
+            f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
             "actor_rollout_ref.actor.use_kl_loss=False",
             "actor_rollout_ref.actor.entropy_coeff=0",
             "actor_rollout_ref.actor.fsdp_config.param_offload=False",
@@ -376,10 +394,10 @@ class VeRLLoRAGRPOBackend(Backend):
             f"actor_rollout_ref.rollout.n={group_size}",
             f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_memory_utilization}",
             "actor_rollout_ref.rollout.load_format=safetensors",
-            f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 4)}",
+            f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
             # Reference model
             "actor_rollout_ref.ref.fsdp_config.param_offload=True",
-            f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 4)}",
+            f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
             # Reward
             f"reward.custom_reward_function.path={reward_path}",
             "reward.custom_reward_function.name=tool_call_compute_score",
