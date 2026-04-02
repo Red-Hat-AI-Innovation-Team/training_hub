@@ -70,9 +70,15 @@ lora = [
 ]
 
 grpo = [
+    # Single-GPU GRPO via ART backend. Do not combine with [grpo-verl] (vLLM version conflict).
     "openpipe-art",
     "litellm>=1.82.0,<1.82.7",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24)
     "transformers>=4.51.3,<5.0",  # trl<=0.24 (capped by unsloth) breaks with transformers 5.x
+]
+
+grpo-verl = [
+    # Multi-GPU GRPO via verl backend. Do not combine with [grpo] (vLLM version conflict).
+    "verl[vllm]>=0.7",
 ]
 
 dev = [
