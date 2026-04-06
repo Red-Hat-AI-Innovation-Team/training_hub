@@ -351,6 +351,7 @@ class VeRLLoRAGRPOBackend(Backend):
         lora_r = algorithm_params.get("lora_r", 16)
         lora_alpha = algorithm_params.get("lora_alpha", 8)
         max_tokens = algorithm_params.get("max_tokens", 512)
+        max_prompt_length = algorithm_params.get("max_prompt_length", 16384)
         temperature = algorithm_params.get("temperature", 0.7)
         gpu_memory_utilization = algorithm_params.get("gpu_memory_utilization", 0.35)
         n_gpus = algorithm_params.get("n_gpus", 1)
@@ -369,7 +370,7 @@ class VeRLLoRAGRPOBackend(Backend):
             f"data.train_files={train_path}",
             f"data.val_files={val_path}",
             f"data.train_batch_size={train_batch_size}",
-            f"data.max_prompt_length=8192",
+            f"data.max_prompt_length={max_prompt_length}",
             f"data.max_response_length={max_tokens}",
             "data.filter_overlong_prompts=True",
             "data.truncation=error",
