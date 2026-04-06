@@ -357,8 +357,10 @@ class VeRLLoRAGRPOBackend(Backend):
         n_gpus = algorithm_params.get("n_gpus", 1)
         tp_size = algorithm_params.get("tensor_parallel_size", 1)
 
-        # Effective batch size: tasks_per_iteration * group_size
-        train_batch_size = tasks_per_iteration * group_size
+        # train_batch_size = number of prompts per batch. verl's rollout.n
+        # (set from group_size) controls how many rollouts per prompt, so
+        # batch size should NOT be multiplied by group_size.
+        train_batch_size = tasks_per_iteration
 
         # Build verl command
         cmd = [
