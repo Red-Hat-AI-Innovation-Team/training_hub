@@ -68,6 +68,42 @@ Features:
 
 **Learn more:** [Unsloth Backend Documentation](/api/backends/unsloth)
 
+### ART (OpenPipe)
+
+**Class:** [`ARTLoRAGRPOBackend`](/api/backends/art-grpo)
+
+**Algorithm Support:** LoRA + GRPO
+
+**Package:** `openpipe-art`
+
+**Use Case:** Single-GPU LoRA + GRPO training for tool-calling agents
+
+Features:
+- Co-located vLLM inference + Unsloth LoRA training on a single GPU
+- Structured tool-call generation via OpenAI-compatible API
+- Built-in tool-call reward verification
+- Fast iteration for small models (4B-8B)
+
+**Learn more:** [ART Backend Documentation](/api/backends/art-grpo)
+
+### verl (Volcano Engine RL)
+
+**Class:** [`VeRLLoRAGRPOBackend`](/api/backends/verl)
+
+**Algorithm Support:** LoRA + GRPO
+
+**Package:** `verl`
+
+**Use Case:** Multi-GPU distributed LoRA + GRPO training, scales to 70B+ models
+
+Features:
+- FSDP for distributed LoRA training across multiple GPUs
+- vLLM rollout generation with co-located weight sharing
+- Ray-based orchestration for scalable training
+- Supports GRPO, Dr.GRPO, DAPO and other RL algorithms
+
+**Learn more:** [verl Backend Documentation](/api/backends/verl)
+
 ## Backend Architecture
 
 ```mermaid

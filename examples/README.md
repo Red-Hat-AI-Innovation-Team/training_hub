@@ -124,6 +124,41 @@ result = lora_sft(
 )
 ```
 
+### LoRA + GRPO (Agentic RLVR)
+
+LoRA + GRPO trains LoRA adapters on tool-calling agents using reinforcement learning from verifiable rewards. It supports both single-turn and multi-turn tool-call data, with automatic per-turn decomposition of multi-turn traces. Two backends are available: ART for single-GPU and verl for multi-GPU training.
+
+**Documentation:**
+- [LoRA + GRPO Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/lora_grpo) - Comprehensive usage documentation with parameter reference and examples
+
+**Scripts:**
+- [LoRA GRPO Example](scripts/lora_grpo_example.py) - Tool-call GRPO training with ART backend, supports HuggingFace datasets and local JSONL
+
+**Quick Example:**
+```python
+from training_hub import lora_grpo
+
+# Single GPU (ART backend)
+result = lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./tool_call_traces.jsonl",
+    ckpt_output_dir="./grpo_output",
+    backend="art",
+    lora_r=32,
+    lora_alpha=64,
+    num_iterations=15,
+)
+
+# Multi GPU (verl backend)
+result = lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./tool_call_traces.jsonl",
+    ckpt_output_dir="./grpo_output",
+    backend="verl",
+    n_gpus=4,
+)
+```
+
 ### Memory Estimation (Experimental / In-Development)
 
 training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during the fine-tuning of a given model using SFT or OSFT. The calculations are built off of formulas presented in the blog post [How To Calculate GPU VRAM Requirements for an Large-Language Model](https://apxml.com/posts/how-to-calculate-vram-requirements-for-an-llm).
