@@ -315,6 +315,47 @@ def _clean_system_prompt(system_content: str) -> str:
     return cleaned
 
 
+def _normalize_message(msg: dict) -> dict:
+    """Normalize a message from deprecated function_call/function format to tool_calls/tool.
+
+    Converts:
+    - assistant messages with function_call → assistant with tool_calls
+    - function role messages → tool role messages
+    This ensures compatibility with modern OpenAI API and vLLM servers.
+    """
+    role = msg.get("role")
+
+    if role == "assistant" and "function_call" in msg:
+        fc = msg["function_call"]
+        import uuid
+        tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
+        normalized = {
+            "role": "assistant",
+            "content": msg.get("content") or None,
+            "tool_calls": [{
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": fc["name"],
+                    "arguments": fc.get("arguments", "{}"),
+                },
+            }],
+        }
+        # Store tool_call_id so the paired function message can reference it
+        normalized["_tool_call_id"] = tool_call_id
+        return normalized
+
+    if role == "function":
+        return {
+            "role": "tool",
+            "content": msg.get("content", ""),
+            "tool_call_id": msg.get("_tool_call_id", "call_unknown"),
+            "name": msg.get("name", ""),
+        }
+
+    return msg
+
+
 def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
     """Decompose multi-turn traces into per-turn single-call samples.
 
@@ -417,24 +458,37 @@ def _decompose_multiturn_traces(traces: list[dict]) -> list[dict]:
                 continue
 
             # Create a sample for this turn
+            # Strip internal _tool_call_id fields from context messages
+            clean_context = [
+                {k: v for k, v in m.items() if k != "_tool_call_id"}
+                for m in context_prefix
+            ]
             sample = {
                 "id": f"{trace.get('id', trace_idx)}_turn{len(samples)}",
                 "question": user_msg.get("content", ""),
                 "system_prompt": system_content,
                 "tools": tools,
-                "context_messages": list(context_prefix),  # GT context up to this turn
+                "context_messages": clean_context,
                 "target_tool_name": target_name,
                 "target_arguments": target_args,
             }
             samples.append(sample)
 
             # Add this assistant message + its tool result to context for next turn
-            context_prefix.append(msg)
+            # Normalize deprecated function_call format to tool_calls format
+            normalized_assistant = _normalize_message(msg)
+            context_prefix.append(normalized_assistant)
             i += 1
 
             # Consume the following function/tool result message
             if i < len(turn_messages) and turn_messages[i].get("role") in ("function", "tool"):
-                context_prefix.append(turn_messages[i])
+                result_msg = turn_messages[i]
+                # Link tool_call_id from the assistant message
+                if result_msg.get("role") == "function":
+                    result_msg = dict(result_msg)
+                    result_msg["_tool_call_id"] = normalized_assistant.get("_tool_call_id", "call_unknown")
+                normalized_result = _normalize_message(result_msg)
+                context_prefix.append(normalized_result)
                 i += 1
 
     return samples
@@ -975,6 +1029,7 @@ class LoRAGRPOAlgorithm(Algorithm):
         learning_rate: Optional[float] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        max_prompt_length: Optional[int] = None,
         concurrency: Optional[int] = None,
         # LoRA configuration
         lora_r: Optional[int] = None,
@@ -1041,6 +1096,8 @@ class LoRAGRPOAlgorithm(Algorithm):
                 learning_rate: Learning rate (default: 1e-5).
                 temperature: Sampling temperature for rollouts (default: 0.7).
                 max_tokens: Max tokens per rollout response (default: 512).
+                max_prompt_length: Max prompt length in tokens; prompts exceeding
+                    this are filtered (verl backend only, default: 16384).
                 concurrency: Max concurrent rollouts (default: 32).
 
             LoRA Configuration:
@@ -1090,6 +1147,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "learning_rate": learning_rate,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "max_prompt_length": max_prompt_length,
             "concurrency": concurrency,
             "lora_r": lora_r,
             "lora_alpha": lora_alpha,
@@ -1143,6 +1201,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "learning_rate": float,
             "temperature": float,
             "max_tokens": int,
+            "max_prompt_length": int,
             "concurrency": int,
             # LoRA
             "lora_r": int,
@@ -1198,6 +1257,7 @@ def lora_grpo(
     learning_rate: float = 1e-5,
     temperature: float = 0.7,
     max_tokens: int = 512,
+    max_prompt_length: int = 16384,
     concurrency: int = 32,
     # LoRA configuration
     lora_r: int = 16,
@@ -1261,6 +1321,7 @@ def lora_grpo(
         learning_rate: Learning rate (default: 1e-5).
         temperature: Sampling temperature (default: 0.7).
         max_tokens: Max response tokens per rollout (default: 512).
+        max_prompt_length: Max prompt length in tokens (verl backend, default: 16384).
         concurrency: Max concurrent rollouts (default: 32).
 
         lora_r: LoRA rank (default: 16).
@@ -1360,6 +1421,7 @@ def lora_grpo(
         learning_rate=learning_rate,
         temperature=temperature,
         max_tokens=max_tokens,
+        max_prompt_length=max_prompt_length,
         concurrency=concurrency,
         lora_r=lora_r,
         lora_alpha=lora_alpha,
