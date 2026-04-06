@@ -1,4 +1,4 @@
-# LoRA + GRPO (Agentic RLVR)
+# LoRA + GRPO (Adapter-Based RLVR)
 
 > **Conceptual Overview** - For complete API reference, see [`lora_grpo()` Function Reference](/api/functions/lora_grpo)
 
@@ -7,8 +7,8 @@
 LoRA + GRPO trains LoRA adapters on tool-calling agents using Group Relative Policy Optimization (GRPO) with reinforcement learning from verifiable rewards (RLVR). Instead of supervised fine-tuning on demonstrations, the model learns by generating tool calls and receiving reward signals based on correctness.
 
 Training Hub provides two backends for this algorithm:
-- **ART** (`backend="art"`) — Single-GPU training using OpenPipe's ART framework with co-located vLLM + Unsloth
-- **verl** (`backend="verl"`) — Multi-GPU distributed training using verl with FSDP + vLLM via Ray
+- **ART** (`backend="art"`) — Single-GPU training using [OpenPipe ART](https://github.com/OpenPipe/ART) with co-located vLLM + [Unsloth](https://github.com/unslothai/unsloth) GRPO
+- **verl** (`backend="verl"`) — Multi-GPU distributed training using [verl](https://github.com/volcengine/verl) with FSDP + vLLM via Ray
 
 Both backends support single-turn and multi-turn tool-call data. Multi-turn traces are automatically decomposed into per-turn training samples, where each sample contains the ground-truth conversation prefix and the expected tool call at that turn.
 
@@ -46,19 +46,48 @@ result = lora_grpo(
 
 ### Data Format
 
-The data should be a JSONL file where each line is a multi-turn conversation trace:
+Two data formats are supported: **multi-turn traces** (recommended) and **pre-processed single-turn samples**.
+
+#### Multi-Turn Traces (Recommended)
+
+A JSONL file where each line is a full tool-calling conversation. Multi-turn traces are automatically decomposed into per-turn training samples (see [Per-Turn Decomposition](#per-turn-decomposition) below).
 
 ```json
 {
-  "messages": "[{\"role\": \"system\", ...}, {\"role\": \"user\", ...}, {\"role\": \"assistant\", \"tool_calls\": [...], ...}, {\"role\": \"tool\", ...}, ...]",
-  "tools": [{"type": "function", "function": {"name": "...", "parameters": {...}}}],
-  "question": "User's initial query"
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Check weather alerts for California"},
+    {"role": "assistant", "content": null, "tool_calls": [
+      {"id": "call_abc123", "type": "function", "function": {"name": "get_alerts", "arguments": "{\"state\": \"CA\"}"}}
+    ]},
+    {"role": "tool", "tool_call_id": "call_abc123", "name": "get_alerts", "content": "{\"alerts\": [...]}"},
+    {"role": "assistant", "content": "Here are the current weather alerts..."}
+  ],
+  "question": "Check weather alerts for California"
 }
 ```
 
-Single-turn data is also supported with `{question, tools, target_tool_name, target_arguments, system_prompt}` fields.
+Tool definitions can be provided either as a top-level `tools` field or embedded in the system message (e.g., using Qwen's `<|im_system|>tool_declare<|im_middle|>...<|im_end|>` format — both are auto-detected).
 
-Multi-turn traces are automatically decomposed: a conversation with N tool calls becomes N independent training samples, each with the ground-truth prefix as context.
+Messages must use the **modern `tool_calls`/`tool` format** (not the deprecated `function_call`/`function` format). The `messages` field can be either a JSON array or a JSON-encoded string.
+
+#### Pre-Processed Single-Turn Samples
+
+Alternatively, provide pre-processed samples where each line is one training example:
+
+```json
+{
+  "question": "Check weather alerts for California",
+  "tools": [{"type": "function", "function": {"name": "get_alerts", "parameters": {...}}}],
+  "target_tool_name": "get_alerts",
+  "target_arguments": {"state": "CA"},
+  "system_prompt": "You are a helpful assistant."
+}
+```
+
+#### HuggingFace Datasets
+
+HuggingFace datasets like `Agent-Ark/Toucan-1.5M` are also supported. Specify the dataset ID as `data_path` and the config as `data_config` (default: `"Qwen3"`).
 
 ## Backends
 
@@ -81,7 +110,7 @@ result = lora_grpo(
 )
 ```
 
-ART uses co-located vLLM + Unsloth on the same GPU with time-sharing: vLLM generates rollouts, then sleeps while Unsloth trains the LoRA adapter, then wakes for the next rollout.
+ART uses co-located vLLM + Unsloth GRPO on the same GPU with time-sharing: vLLM generates rollouts, then sleeps while Unsloth trains the LoRA adapter using its optimized GRPO implementation, then wakes for the next rollout.
 
 ### verl Backend (Multi GPU)
 
@@ -169,7 +198,7 @@ result = lora_grpo(
 pip install training-hub[grpo,lora]
 ```
 
-This installs both ART and verl backends along with LoRA dependencies (Unsloth, TRL, vLLM).
+This installs both ART and verl backends along with LoRA dependencies ([Unsloth](https://github.com/unslothai/unsloth), TRL, vLLM).
 
 ## Next Steps
 

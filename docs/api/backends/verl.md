@@ -1,6 +1,6 @@
 # verl Backend (GRPO)
 
-> Multi-GPU distributed LoRA + GRPO training using verl (Volcano Engine RL).
+> Multi-GPU distributed LoRA + GRPO training using [verl](https://github.com/volcengine/verl) (Volcano Engine Reinforcement Learning for LLMs).
 
 ## Overview
 
