@@ -27,7 +27,6 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -409,17 +408,37 @@ class VeRLLoRAGRPOBackend(Backend):
             "trainer.save_freq=5",
             "trainer.test_freq=-1",
             "trainer.val_before_train=False",
-            'trainer.logger=["console"]',
             "trainer.project_name=training-hub-grpo",
-            f"trainer.experiment_name=lora_grpo",
+            "trainer.experiment_name=lora_grpo",
             f"trainer.default_local_dir={ckpt_output_dir}/checkpoints",
             "trainer.resume_mode=auto",
         ]
 
-        # Add wandb/mlflow logging if configured
-        if algorithm_params.get("wandb_project"):
-            cmd.append(f'trainer.logger=["console","wandb"]')
-            cmd.append(f"trainer.project_name={algorithm_params['wandb_project']}")
+        # Experiment tracking (with env var fallbacks, matching other algorithms)
+        loggers = ["console"]
+        wandb_project = algorithm_params.get("wandb_project") or os.environ.get("WANDB_PROJECT")
+        mlflow_tracking_uri = algorithm_params.get("mlflow_tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
+
+        if wandb_project:
+            loggers.append("wandb")
+            cmd.append(f"trainer.project_name={wandb_project}")
+        if mlflow_tracking_uri:
+            loggers.append("mlflow")
+            mlflow_experiment_name = (
+                algorithm_params.get("mlflow_experiment_name")
+                or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+            )
+            if mlflow_experiment_name and not wandb_project:
+                # verl maps project_name → MLflow experiment
+                cmd.append(f"trainer.project_name={mlflow_experiment_name}")
+
+        wandb_run_name = algorithm_params.get("wandb_run_name") or os.environ.get("WANDB_RUN_NAME")
+        mlflow_run_name = algorithm_params.get("mlflow_run_name") or os.environ.get("MLFLOW_RUN_NAME")
+        if wandb_run_name or mlflow_run_name:
+            experiment_name = wandb_run_name or mlflow_run_name
+            cmd.append(f"trainer.experiment_name={experiment_name}")
+
+        cmd.append(f'trainer.logger={json.dumps(loggers)}')
 
         logger.info(
             "Starting verl GRPO training: model=%s, n_gpus=%d, "
@@ -434,6 +453,13 @@ class VeRLLoRAGRPOBackend(Backend):
         env["NCCL_DEBUG"] = "WARN"
         env["VLLM_LOGGING_LEVEL"] = "WARN"
         env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "true"
+
+        # Pass tracking env vars to subprocess
+        wandb_entity = algorithm_params.get("wandb_entity") or os.environ.get("WANDB_ENTITY")
+        if wandb_entity:
+            env["WANDB_ENTITY"] = wandb_entity
+        if mlflow_tracking_uri:
+            env["MLFLOW_TRACKING_URI"] = mlflow_tracking_uri
         # Add output dir to PYTHONPATH so verl can import the custom agent loop
         env["PYTHONPATH"] = ckpt_output_dir + ":" + env.get("PYTHONPATH", "")
 

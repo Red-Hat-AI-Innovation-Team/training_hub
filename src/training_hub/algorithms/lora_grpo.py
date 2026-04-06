@@ -49,7 +49,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from . import Algorithm, Backend, AlgorithmRegistry
 from .rewards import tool_call_reward
@@ -603,8 +603,6 @@ class ARTLoRAGRPOBackend(Backend):
         # vLLM configuration
         gpu_memory_utilization = params.get("gpu_memory_utilization", 0.45)
         max_lora_rank = params.get("max_lora_rank", None)
-        vllm_base_url = params.get("vllm_base_url", None)
-
         # Custom rollout/reward
         rollout_fn = params.get("rollout_fn")
         tasks = params.get("tasks")
@@ -619,10 +617,26 @@ class ARTLoRAGRPOBackend(Backend):
         # Callbacks
         iteration_callback = params.get("iteration_callback")
 
-        # Model name for ART registration
+        # Experiment tracking (with env var fallbacks, matching other algorithms)
+        wandb_project = params.get("wandb_project") or os.environ.get("WANDB_PROJECT")
+        wandb_entity = params.get("wandb_entity") or os.environ.get("WANDB_ENTITY")
+        wandb_run_name = params.get("wandb_run_name") or os.environ.get("WANDB_RUN_NAME")
+        mlflow_tracking_uri = params.get("mlflow_tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
+
+        if mlflow_tracking_uri:
+            logger.warning(
+                "MLflow is not supported by the ART backend. "
+                "Use the verl backend for MLflow experiment tracking."
+            )
+
+        # Set W&B env vars so ART picks them up automatically
+        if wandb_entity:
+            os.environ["WANDB_ENTITY"] = wandb_entity
+
+        # Model name for ART registration (also used as W&B run name)
         model_name_slug = model_path.split("/")[-1].lower().replace(".", "-")
-        art_model_name = params.get("art_model_name", f"{model_name_slug}-grpo")
-        art_project = params.get("art_project", "training-hub-grpo")
+        art_model_name = wandb_run_name or params.get("art_model_name", f"{model_name_slug}-grpo")
+        art_project = wandb_project or params.get("art_project", "training-hub-grpo")
         art_path = params.get("art_path", os.path.join(ckpt_output_dir, ".art"))
 
         # Resolve mode: built-in tool-call vs custom rollout
@@ -675,13 +689,6 @@ class ARTLoRAGRPOBackend(Backend):
         )
 
         # Register with backend
-        # TODO: Support standalone vLLM via vllm_base_url parameter
-        if vllm_base_url is not None:
-            logger.warning(
-                "Standalone vLLM (vllm_base_url) is not yet supported. "
-                "Falling back to co-located vLLM via ART LocalBackend."
-            )
-
         backend = LocalBackend(in_process=True, path=art_path)
         await model.register(backend)
         logger.info("Model registered with ART backend at %s", art_path)
@@ -977,7 +984,6 @@ class LoRAGRPOAlgorithm(Algorithm):
         # vLLM configuration
         gpu_memory_utilization: Optional[float] = None,
         max_lora_rank: Optional[int] = None,
-        vllm_base_url: Optional[str] = None,
         # Multi-GPU configuration (verl backend)
         n_gpus: Optional[int] = None,
         tensor_parallel_size: Optional[int] = None,
@@ -987,13 +993,13 @@ class LoRAGRPOAlgorithm(Algorithm):
         art_path: Optional[str] = None,
         # Callbacks
         iteration_callback: Optional[Callable] = None,
-        # Logging
-        mlflow_tracking_uri: Optional[str] = None,
-        mlflow_experiment_name: Optional[str] = None,
-        mlflow_run_name: Optional[str] = None,
+        # Logging / experiment tracking
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_name: Optional[str] = None,
+        mlflow_tracking_uri: Optional[str] = None,
+        mlflow_experiment_name: Optional[str] = None,
+        mlflow_run_name: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """Execute LoRA + GRPO training.
@@ -1046,8 +1052,6 @@ class LoRAGRPOAlgorithm(Algorithm):
             vLLM Configuration:
                 gpu_memory_utilization: GPU memory fraction for vLLM (default: 0.45).
                 max_lora_rank: Max LoRA rank for vLLM engine (default: matches lora_r).
-                vllm_base_url: URL for standalone vLLM server (planned, not yet supported).
-
             ART Configuration:
                 art_model_name: Model name for ART registration.
                 art_project: ART project name.
@@ -1055,6 +1059,14 @@ class LoRAGRPOAlgorithm(Algorithm):
 
             Callbacks:
                 iteration_callback: Called after each iteration with (iteration, results_dict).
+
+            Experiment Tracking:
+                wandb_project: Weights & Biases project name.
+                wandb_entity: Weights & Biases team/entity name.
+                wandb_run_name: Weights & Biases run name.
+                mlflow_tracking_uri: MLflow tracking server URI.
+                mlflow_experiment_name: MLflow experiment name.
+                mlflow_run_name: MLflow run name.
 
         Returns:
             Dict with training results including reward_history, timing, and checkpoint path.
@@ -1085,19 +1097,18 @@ class LoRAGRPOAlgorithm(Algorithm):
             "max_grad_norm": max_grad_norm,
             "gpu_memory_utilization": gpu_memory_utilization,
             "max_lora_rank": max_lora_rank,
-            "vllm_base_url": vllm_base_url,
             "n_gpus": n_gpus,
             "tensor_parallel_size": tensor_parallel_size,
             "art_model_name": art_model_name,
             "art_project": art_project,
             "art_path": art_path,
             "iteration_callback": iteration_callback,
-            "mlflow_tracking_uri": mlflow_tracking_uri,
-            "mlflow_experiment_name": mlflow_experiment_name,
-            "mlflow_run_name": mlflow_run_name,
             "wandb_project": wandb_project,
             "wandb_entity": wandb_entity,
             "wandb_run_name": wandb_run_name,
+            "mlflow_tracking_uri": mlflow_tracking_uri,
+            "mlflow_experiment_name": mlflow_experiment_name,
+            "mlflow_run_name": mlflow_run_name,
         }
 
         for key, value in optional_params.items():
@@ -1141,7 +1152,6 @@ class LoRAGRPOAlgorithm(Algorithm):
             # vLLM
             "gpu_memory_utilization": float,
             "max_lora_rank": int,
-            "vllm_base_url": str,
             "n_gpus": int,
             "tensor_parallel_size": int,
             # ART
@@ -1150,13 +1160,13 @@ class LoRAGRPOAlgorithm(Algorithm):
             "art_path": str,
             # Callbacks
             "iteration_callback": Callable,
-            # Logging
-            "mlflow_tracking_uri": str,
-            "mlflow_experiment_name": str,
-            "mlflow_run_name": str,
+            # Logging / experiment tracking
             "wandb_project": str,
             "wandb_entity": str,
             "wandb_run_name": str,
+            "mlflow_tracking_uri": str,
+            "mlflow_experiment_name": str,
+            "mlflow_run_name": str,
         }
 
 
@@ -1197,7 +1207,6 @@ def lora_grpo(
     # vLLM configuration
     gpu_memory_utilization: float = 0.45,
     max_lora_rank: Optional[int] = None,
-    vllm_base_url: Optional[str] = None,
     # Multi-GPU configuration (verl backend)
     n_gpus: int = 1,
     tensor_parallel_size: int = 1,
@@ -1209,13 +1218,13 @@ def lora_grpo(
     backend: str = "art",
     # Callbacks
     iteration_callback: Optional[Callable] = None,
-    # Logging
-    mlflow_tracking_uri: Optional[str] = None,
-    mlflow_experiment_name: Optional[str] = None,
-    mlflow_run_name: Optional[str] = None,
+    # Logging / experiment tracking
     wandb_project: Optional[str] = None,
     wandb_entity: Optional[str] = None,
     wandb_run_name: Optional[str] = None,
+    mlflow_tracking_uri: Optional[str] = None,
+    mlflow_experiment_name: Optional[str] = None,
+    mlflow_run_name: Optional[str] = None,
     **kwargs,
 ) -> Any:
     """Run LoRA + GRPO training for reinforcement learning from verifiable rewards.
@@ -1261,8 +1270,6 @@ def lora_grpo(
 
         gpu_memory_utilization: vLLM GPU memory fraction (default: 0.45).
         max_lora_rank: Max LoRA rank for vLLM engine (default: matches lora_r).
-        vllm_base_url: Standalone vLLM server URL (planned, not yet supported).
-
         art_model_name: Custom name for ART model registration.
         art_project: ART project name (default: 'training-hub-grpo').
         art_path: Path for ART backend storage.
@@ -1270,12 +1277,12 @@ def lora_grpo(
         backend: Backend to use (default: 'art').
         iteration_callback: Callback after each iteration: (iteration_num, results_dict).
 
-        mlflow_tracking_uri: MLflow tracking URI.
+        wandb_project: Weights & Biases project name.
+        wandb_entity: Weights & Biases team/entity name.
+        wandb_run_name: Weights & Biases run name.
+        mlflow_tracking_uri: MLflow tracking server URI.
         mlflow_experiment_name: MLflow experiment name.
         mlflow_run_name: MLflow run name.
-        wandb_project: Weights & Biases project name.
-        wandb_entity: Weights & Biases entity.
-        wandb_run_name: Weights & Biases run name.
 
     Returns:
         Dict with keys: status, checkpoint_path, reward_history,
@@ -1360,18 +1367,17 @@ def lora_grpo(
         max_grad_norm=max_grad_norm,
         gpu_memory_utilization=gpu_memory_utilization,
         max_lora_rank=max_lora_rank,
-        vllm_base_url=vllm_base_url,
         n_gpus=n_gpus,
         tensor_parallel_size=tensor_parallel_size,
         art_model_name=art_model_name,
         art_project=art_project,
         art_path=art_path,
         iteration_callback=iteration_callback,
-        mlflow_tracking_uri=mlflow_tracking_uri,
-        mlflow_experiment_name=mlflow_experiment_name,
-        mlflow_run_name=mlflow_run_name,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_name=wandb_run_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+        mlflow_run_name=mlflow_run_name,
         **kwargs,
     )

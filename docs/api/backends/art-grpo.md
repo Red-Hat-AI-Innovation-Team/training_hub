@@ -21,6 +21,7 @@ The ART backend runs LoRA + GRPO training on a single GPU using co-located vLLM 
 - Built-in tool-call reward verification (`tool_call_reward`)
 - Automatic checkpoint saving and resume
 - Support for custom rollout functions and reward functions
+- Weights & Biases experiment tracking (auto-detects `WANDB_API_KEY`)
 
 ## Usage
 

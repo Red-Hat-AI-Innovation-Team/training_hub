@@ -39,6 +39,13 @@ def lora_grpo(
     tensor_parallel_size: int = 1,
     # Backend
     backend: str = "art",
+    # Experiment tracking
+    wandb_project: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
+    mlflow_tracking_uri: Optional[str] = None,
+    mlflow_experiment_name: Optional[str] = None,
+    mlflow_run_name: Optional[str] = None,
     **kwargs,
 ) -> dict
 ```
@@ -119,6 +126,19 @@ result = lora_grpo(
 |-----------|------|---------|-------------|
 | `backend` | `str` | `"art"` | Backend to use: `"art"` (single-GPU) or `"verl"` (multi-GPU) |
 
+### Experiment Tracking
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `wandb_project` | `str` | `None` | Weights & Biases project name. Enables W&B logging. |
+| `wandb_entity` | `str` | `None` | Weights & Biases team/entity name. |
+| `wandb_run_name` | `str` | `None` | Weights & Biases run name. |
+| `mlflow_tracking_uri` | `str` | `None` | MLflow tracking server URI. Enables MLflow logging (verl backend only). |
+| `mlflow_experiment_name` | `str` | `None` | MLflow experiment name (verl backend only). |
+| `mlflow_run_name` | `str` | `None` | MLflow run name (verl backend only). |
+
+> **Note:** The ART backend supports W&B natively (auto-detects `WANDB_API_KEY`). MLflow is only supported with the verl backend.
+
 ## Returns
 
 `dict` with keys:
@@ -175,6 +195,32 @@ result = lora_grpo(
     group_size=4,
     lora_r=32,
     lora_alpha=64,
+)
+```
+
+### With Experiment Tracking
+
+```python
+# W&B tracking (both backends)
+result = lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./traces.jsonl",
+    ckpt_output_dir="./output",
+    wandb_project="my-grpo-project",
+    wandb_entity="my-team",
+    wandb_run_name="qwen3-grpo-run",
+)
+
+# MLflow tracking (verl backend only)
+result = lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./traces.jsonl",
+    ckpt_output_dir="./output",
+    backend="verl",
+    n_gpus=4,
+    mlflow_tracking_uri="http://localhost:5000",
+    mlflow_experiment_name="grpo-experiments",
+    mlflow_run_name="qwen3-grpo-run",
 )
 ```
 
