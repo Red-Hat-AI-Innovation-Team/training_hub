@@ -1,6 +1,6 @@
 # `lora_grpo()` - LoRA + GRPO Training
 
-> Convenience function for LoRA + GRPO training on tool-calling agents using reinforcement learning from verifiable rewards.
+> Convenience function for adapter-based RLVR — LoRA + GRPO training on tool-calling agents using reinforcement learning from verifiable rewards.
 
 ?> **New to LoRA + GRPO?** See the [Algorithm Guide](../../algorithms/lora_grpo.md) for overview and quick start.
 

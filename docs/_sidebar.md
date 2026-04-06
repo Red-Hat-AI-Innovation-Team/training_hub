@@ -12,7 +12,7 @@
   * [SFT - Supervised Fine-Tuning](/algorithms/sft)
   * [OSFT - Orthogonal Subspace Fine-Tuning](/algorithms/osft)
   * [LoRA - Low-Rank Adaptation](/algorithms/lora)
-  * [LoRA + GRPO - Agentic RLVR](/algorithms/lora_grpo)
+  * [LoRA + GRPO - Adapter RLVR](/algorithms/lora_grpo)
 
 * API Reference
   * [API Overview](/api/)

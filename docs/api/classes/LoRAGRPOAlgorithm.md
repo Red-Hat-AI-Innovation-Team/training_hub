@@ -1,6 +1,6 @@
 # `LoRAGRPOAlgorithm` - LoRA + GRPO Algorithm
 
-> Reinforcement learning from verifiable rewards for tool-calling agents using LoRA adapters and Group Relative Policy Optimization.
+> Adapter-based reinforcement learning from verifiable rewards for tool-calling agents using LoRA and Group Relative Policy Optimization.
 
 ## Class Signature
 
@@ -23,7 +23,7 @@ class LoRAGRPOAlgorithm(Algorithm):
 
 | Backend | Class | Use Case |
 |---------|-------|----------|
-| `art` | [`ARTLoRAGRPOBackend`](/api/backends/art-grpo) | Single-GPU with co-located vLLM + Unsloth |
+| `art` | [`ARTLoRAGRPOBackend`](/api/backends/art-grpo) | Single-GPU with OpenPipe ART + Unsloth GRPO |
 | `verl` | [`VeRLLoRAGRPOBackend`](/api/backends/verl) | Multi-GPU with FSDP + vLLM via Ray |
 
 ## Usage

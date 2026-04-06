@@ -124,9 +124,9 @@ result = lora_sft(
 )
 ```
 
-### LoRA + GRPO (Agentic RLVR)
+### LoRA + GRPO (Adapter-Based RLVR)
 
-LoRA + GRPO trains LoRA adapters on tool-calling agents using reinforcement learning from verifiable rewards. It supports both single-turn and multi-turn tool-call data, with automatic per-turn decomposition of multi-turn traces. Two backends are available: ART for single-GPU and verl for multi-GPU training.
+LoRA + GRPO trains LoRA adapters on tool-calling agents using reinforcement learning from verifiable rewards. It supports both single-turn and multi-turn tool-call data, with automatic per-turn decomposition of multi-turn traces. Two backends are available: OpenPipe ART + Unsloth GRPO for single-GPU and verl for multi-GPU training.
 
 **Documentation:**
 - [LoRA + GRPO Usage Guide](https://ai-innovation.team/training_hub/#/algorithms/lora_grpo) - Comprehensive usage documentation with parameter reference and examples

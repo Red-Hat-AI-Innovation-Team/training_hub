@@ -18,12 +18,12 @@
 
 ## Support Matrix
 
-| Algorithm | InstructLab-Training | RHAI Innovation Mini-Trainer | PEFT | Unsloth | VERL | Status |
+| Algorithm | InstructLab-Training | RHAI Innovation Mini-Trainer | PEFT | Unsloth | verl | Status |
 |-----------|----------------------|------------------------------|------|---------|------|--------|
 | **Supervised Fine-tuning (SFT)** | ✅ | - | - | - | - | Implemented |
 | Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | - | Implemented |
 | **Low-Rank Adaptation (LoRA) + SFT** | - | - | - | ✅ | - | Implemented |
-| **LoRA + GRPO (Agentic RLVR)** | - | - | - | ✅ | ✅ | Implemented |
+| **LoRA + GRPO (Adapter-Based RLVR)** | - | - | - | ✅ | ✅ | Implemented |
 | Direct Preference Optimization (DPO) | - | - | - | - | 🔄 | Planned |
 
 **Legend:**
@@ -106,11 +106,11 @@ result = lora_sft(
 ```
 
 
-### [LoRA + GRPO (Agentic RLVR)](./algorithms/lora_grpo)
+### [LoRA + GRPO (Adapter-Based RLVR)](./algorithms/lora_grpo)
 
 Train LoRA adapters on tool-calling agents using Group Relative Policy Optimization with reinforcement learning from verifiable rewards. Features:
 - Single-turn and multi-turn tool-call verification with automatic per-turn decomposition
-- Two backends: ART (single-GPU, fast iteration) and verl (multi-GPU, scales to 70B+)
+- Two backends: OpenPipe ART + Unsloth GRPO (single-GPU, fast iteration) and verl (multi-GPU, scales to 70B+)
 - Built-in reward functions for tool-call correctness, or bring your own
 - Zero API cost training using ground-truth trace decomposition
 

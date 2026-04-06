@@ -1,6 +1,6 @@
 # ART Backend (GRPO)
 
-> Single-GPU LoRA + GRPO training using OpenPipe's ART framework.
+> Single-GPU LoRA + GRPO training using OpenPipe ART with Unsloth GRPO.
 
 ## Overview
 
@@ -12,11 +12,11 @@
 
 **Status:** Implemented
 
-The ART backend runs LoRA + GRPO training on a single GPU using co-located vLLM inference and Unsloth LoRA training with time-sharing. During rollout generation, vLLM serves the model with the current LoRA adapter. During training, vLLM sleeps and Unsloth trains the adapter. This cycle repeats each iteration.
+The ART backend runs LoRA + GRPO training on a single GPU using [OpenPipe ART](https://github.com/OpenPipe/ART) (Agent Reinforcement Trainer) with co-located vLLM inference and [Unsloth](https://github.com/unslothai/unsloth) GRPO training via time-sharing. During rollout generation, vLLM serves the model with the current LoRA adapter. During training, vLLM sleeps while Unsloth trains the LoRA adapter using its optimized GRPO implementation. This cycle repeats each iteration.
 
 ## Features
 
-- Co-located vLLM + Unsloth on a single GPU
+- Co-located vLLM + Unsloth GRPO on a single GPU
 - Structured tool-call generation via OpenAI-compatible API
 - Built-in tool-call reward verification (`tool_call_reward`)
 - Automatic checkpoint saving and resume
