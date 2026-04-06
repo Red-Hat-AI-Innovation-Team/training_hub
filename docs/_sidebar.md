@@ -12,6 +12,7 @@
   * [SFT - Supervised Fine-Tuning](/algorithms/sft)
   * [OSFT - Orthogonal Subspace Fine-Tuning](/algorithms/osft)
   * [LoRA - Low-Rank Adaptation](/algorithms/lora)
+  * [LoRA + GRPO - Agentic RLVR](/algorithms/lora_grpo)
 
 * API Reference
   * [API Overview](/api/)
@@ -19,6 +20,7 @@
     * [sft()](/api/functions/sft)
     * [osft()](/api/functions/osft)
     * [lora_sft()](/api/functions/lora_sft)
+    * [lora_grpo()](/api/functions/lora_grpo)
     * [create_algorithm()](/api/functions/create-algorithm)
   * Classes
     * [Algorithm](/api/classes/Algorithm)
@@ -26,6 +28,7 @@
     * [SFTAlgorithm](/api/classes/SFTAlgorithm)
     * [OSFTAlgorithm](/api/classes/OSFTAlgorithm)
     * [LoRASFTAlgorithm](/api/classes/LoRASFTAlgorithm)
+    * [LoRAGRPOAlgorithm](/api/classes/LoRAGRPOAlgorithm)
     * [PEFTExtender](/api/classes/PEFTExtender)
     * [LoRAPEFTExtender](/api/classes/LoRAPEFTExtender)
     * [AlgorithmRegistry](/api/classes/AlgorithmRegistry)
@@ -34,6 +37,8 @@
     * [InstructLab Training](/api/backends/instructlab-training)
     * [Mini-Trainer](/api/backends/mini-trainer)
     * [Unsloth](/api/backends/unsloth)
+    * [ART (GRPO)](/api/backends/art-grpo)
+    * [verl (GRPO)](/api/backends/verl)
   * [Data Formats](/api/data-formats)
 
 * Guides
