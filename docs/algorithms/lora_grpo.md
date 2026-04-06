@@ -180,6 +180,7 @@ This installs both ART and verl backends along with LoRA dependencies (Unsloth, 
 - [verl Backend](/api/backends/verl)
 
 **Related topics:**
+- [Experiment Tracking & Logging](/guides/logging) — W&B and MLflow integration
 - [LoRA + SFT](/algorithms/lora) — Supervised fine-tuning with LoRA (non-RL)
 - [Data Preparation](/guides/data-preparation)
 - [Extending the Framework](/guides/extending-framework)

@@ -4,12 +4,12 @@ Training Hub supports multiple experiment tracking backends so you can monitor t
 
 ## Supported Loggers
 
-| Logger | Description | SFT | OSFT | LoRA |
-|--------|-------------|:---:|:----:|:----:|
-| [MLflow](#mlflow) | Open-source platform for ML lifecycle management | Yes | Yes | Yes |
-| [Weights & Biases](#weights--biases-wandb) | Cloud-based experiment tracking and visualization | Yes | Yes | Yes |
-| [TensorBoard](#tensorboard) | TensorFlow's visualization toolkit for training metrics | Yes | No | Yes |
-| [JSONL Metrics](#built-in-jsonl-metrics) | Built-in local file logging (always active) | Yes | Yes | Yes |
+| Logger | Description | SFT | OSFT | LoRA | LoRA GRPO |
+|--------|-------------|:---:|:----:|:----:|:---------:|
+| [MLflow](#mlflow) | Open-source platform for ML lifecycle management | Yes | Yes | Yes | verl only |
+| [Weights & Biases](#weights--biases-wandb) | Cloud-based experiment tracking and visualization | Yes | Yes | Yes | Yes |
+| [TensorBoard](#tensorboard) | TensorFlow's visualization toolkit for training metrics | Yes | No | Yes | No |
+| [JSONL Metrics](#built-in-jsonl-metrics) | Built-in local file logging (always active) | Yes | Yes | Yes | Yes |
 
 ?> **Zero-config detection** -- Training Hub automatically enables each logger when its trigger parameter is set. No additional flags or boilerplate code is needed.
 
@@ -199,6 +199,26 @@ lora_sft(
 )
 ```
 
+### Usage with LoRA GRPO
+
+!> **verl backend only** -- MLflow is supported with the verl backend. The ART backend uses W&B for experiment tracking.
+
+```python
+from training_hub import lora_grpo
+
+lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./traces.jsonl",
+    ckpt_output_dir="./checkpoints",
+    backend="verl",
+    n_gpus=4,
+    # MLflow configuration
+    mlflow_tracking_uri="http://localhost:5000",
+    mlflow_experiment_name="grpo-training",
+    mlflow_run_name="qwen-grpo-run",
+)
+```
+
 ### Viewing Results
 
 Open your MLflow UI in a browser at the tracking URI (e.g., `http://localhost:5000`) to view logged metrics, compare runs, and inspect hyperparameters.
@@ -275,6 +295,27 @@ lora_sft(
     wandb_run_name="qwen-lora-run",
 )
 ```
+
+### Usage with LoRA GRPO
+
+```python
+from training_hub import lora_grpo
+
+lora_grpo(
+    model_path="Qwen/Qwen3-4B",
+    data_path="./traces.jsonl",
+    ckpt_output_dir="./checkpoints",
+    lora_r=32,
+    lora_alpha=64,
+    num_iterations=15,
+    # W&B configuration
+    wandb_project="grpo-training",
+    wandb_entity="my-team",
+    wandb_run_name="qwen-grpo-run",
+)
+```
+
+?> **Both backends supported** -- W&B works with both the ART backend (auto-detects `WANDB_API_KEY`) and the verl backend.
 
 ### Viewing Results
 
@@ -446,6 +487,7 @@ sft(
 - [**sft() Function**](/api/functions/sft) - Full SFT parameter reference including logging
 - [**osft() Function**](/api/functions/osft) - Full OSFT parameter reference including logging
 - [**lora_sft() Function**](/api/functions/lora_sft) - Full LoRA parameter reference including logging
+- [**lora_grpo() Function**](/api/functions/lora_grpo) - Full LoRA GRPO parameter reference including logging
 - [**Distributed Training Guide**](/guides/distributed-training) - Multi-GPU and multi-node setup
 - [**LoRA Logging Examples**](/algorithms/lora#logging--experiment-tracking) - LoRA-specific logging details
 - [**Example Scripts**](/examples/) - Runnable scripts including MLflow and wandb examples
