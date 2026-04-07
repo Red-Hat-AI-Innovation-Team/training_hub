@@ -850,25 +850,24 @@ class ARTLoRAGRPOBackend(Backend):
             reward_history.append(mean_reward)
             full_match_history.append(full_match)
 
-            # Train GRPO step
-            await model.train(
-                train_groups,
-                config=art.TrainConfig(learning_rate=learning_rate),
-            )
+            # Write rollout metrics to training_metrics.jsonl immediately
+            # (before model.train which may os._exit on final iteration)
+            metrics_path = os.path.join(ckpt_output_dir, "training_metrics.jsonl")
+            rollout_entry = {
+                "step": iteration + 1,
+                "epoch": (iteration + 1) / num_iterations,
+                "phase": "rollout",
+                "mean_reward": mean_reward,
+                "full_match_rate": full_match,
+                "name_match_rate": name_match,
+                "total_rollouts": len(rewards),
+            }
+            with open(metrics_path, "a") as f:
+                f.write(json.dumps(rollout_entry) + "\n")
+                f.flush()
 
-            iter_time = time.time() - iter_start
-            timing_history.append(iter_time)
+            # Save results before training (survives os._exit)
             elapsed = time.time() - start_time
-
-            logger.info(
-                "Iter %d/%d: mean_reward=%.3f full_match=%.1f%% name_match=%.1f%% "
-                "rollouts=%d time=%.0fs elapsed=%.0fs",
-                iteration + 1, num_iterations,
-                mean_reward, full_match * 100, name_match * 100,
-                len(rewards), iter_time, elapsed,
-            )
-
-            # Save results every iteration
             results = {
                 "framework": "art",
                 "algorithm": "lora_grpo",
@@ -893,6 +892,54 @@ class ARTLoRAGRPOBackend(Backend):
             results_path = os.path.join(ckpt_output_dir, "training_results.json")
             with open(results_path, "w") as f:
                 json.dump(results, f, indent=2)
+
+            # Train GRPO step — ART writes loss metrics to its own
+            # history.jsonl live during training
+            await model.train(
+                train_groups,
+                config=art.TrainConfig(learning_rate=learning_rate),
+            )
+
+            iter_time = time.time() - iter_start
+            timing_history.append(iter_time)
+
+            # Write training metrics (loss/grad/entropy) from ART's history.
+            # ART writes history.jsonl live during model.train(), so this
+            # data is available immediately after training completes.
+            history_path = os.path.join(
+                art_path, art_project, "models", art_model_name, "history.jsonl"
+            )
+            train_entry = {
+                "step": iteration + 1,
+                "epoch": (iteration + 1) / num_iterations,
+                "phase": "train",
+                "wall_time_s": iter_time,
+            }
+            if os.path.exists(history_path):
+                try:
+                    with open(history_path) as hf:
+                        last_line = None
+                        for last_line in hf:
+                            pass
+                        if last_line:
+                            h = json.loads(last_line)
+                            train_entry["loss"] = h.get("loss/train")
+                            train_entry["grad_norm"] = h.get("loss/grad_norm")
+                            train_entry["learning_rate"] = h.get("loss/learning_rate")
+                            train_entry["entropy"] = h.get("loss/entropy")
+                except Exception:
+                    pass
+            with open(metrics_path, "a") as f:
+                f.write(json.dumps(train_entry) + "\n")
+                f.flush()
+
+            logger.info(
+                "Iter %d/%d: mean_reward=%.3f full_match=%.1f%% name_match=%.1f%% "
+                "rollouts=%d time=%.0fs elapsed=%.0fs",
+                iteration + 1, num_iterations,
+                mean_reward, full_match * 100, name_match * 100,
+                len(rewards), iter_time, elapsed,
+            )
 
             # User callback
             if iteration_callback is not None:
