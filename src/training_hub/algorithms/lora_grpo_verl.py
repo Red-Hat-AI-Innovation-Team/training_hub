@@ -312,6 +312,50 @@ def _write_agent_loop(output_dir: str) -> tuple[str, str]:
     return dst, installed_path
 
 
+def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
+    """Merge tokenizer files into verl's lora_adapter dirs for direct vLLM use.
+
+    verl saves adapter weights and tokenizer files in separate subdirs:
+        global_step_N/actor/lora_adapter/{adapter_config.json, adapter_model.safetensors}
+        global_step_N/actor/huggingface/{tokenizer files, config.json}
+
+    This copies the huggingface files into lora_adapter/ so that directory
+    is self-contained and directly loadable by vLLM as a LoRA adapter path.
+    The full checkpoint (FSDP state, optimizer, etc.) is preserved for resume.
+
+    Returns:
+        List of paths to the usable lora_adapter checkpoint directories.
+    """
+    import shutil
+
+    adapter_paths = []
+    if not os.path.exists(checkpoint_dir):
+        return adapter_paths
+
+    for entry in sorted(os.listdir(checkpoint_dir)):
+        if not entry.startswith("global_step_"):
+            continue
+
+        raw_dir = os.path.join(checkpoint_dir, entry)
+        lora_dir = os.path.join(raw_dir, "actor", "lora_adapter")
+        hf_dir = os.path.join(raw_dir, "actor", "huggingface")
+
+        if not os.path.isdir(lora_dir):
+            continue
+
+        # Copy tokenizer/config files into lora_adapter dir
+        if os.path.isdir(hf_dir):
+            for f in os.listdir(hf_dir):
+                dst = os.path.join(lora_dir, f)
+                if not os.path.exists(dst):  # don't overwrite adapter files
+                    shutil.copy2(os.path.join(hf_dir, f), dst)
+
+        adapter_paths.append(lora_dir)
+        logger.info("Normalized checkpoint: %s/actor/lora_adapter/", entry)
+
+    return adapter_paths
+
+
 class VeRLLoRAGRPOBackend(Backend):
     """verl backend for distributed multi-GPU LoRA + GRPO training.
 
@@ -362,6 +406,13 @@ class VeRLLoRAGRPOBackend(Backend):
         # batch size should NOT be multiplied by group_size.
         train_batch_size = tasks_per_iteration
 
+        # Calculate steps per epoch for checkpoint frequency.
+        # Save once per epoch by default so each epoch has a usable checkpoint.
+        import pandas as pd
+        train_dataset_size = len(pd.read_parquet(train_path))
+        steps_per_epoch = max(1, (train_dataset_size + train_batch_size - 1) // train_batch_size)
+        save_freq = steps_per_epoch
+
         # Build verl command
         cmd = [
             sys.executable, "-m", "verl.trainer.main_ppo",
@@ -408,7 +459,7 @@ class VeRLLoRAGRPOBackend(Backend):
             f"trainer.n_gpus_per_node={n_gpus}",
             "trainer.nnodes=1",
             f"trainer.total_epochs={num_iterations}",
-            "trainer.save_freq=5",
+            f"trainer.save_freq={save_freq}",
             "trainer.test_freq=-1",
             "trainer.val_before_train=False",
             "trainer.project_name=training-hub-grpo",
@@ -466,20 +517,82 @@ class VeRLLoRAGRPOBackend(Backend):
         # Add output dir to PYTHONPATH so verl can import the custom agent loop
         env["PYTHONPATH"] = ckpt_output_dir + ":" + env.get("PYTHONPATH", "")
 
-        result = subprocess.run(
-            cmd,
-            env=env,
-        )
+        # Stream output to stdout, log file, and parse metrics live
+        import re
+        log_path = os.path.join(ckpt_output_dir, "verl_training.log")
+        metrics_path = os.path.join(ckpt_output_dir, "training_metrics.jsonl")
+        reward_history = []
+        step_pattern = re.compile(r'step:(\d+)\s*-\s*(.*)')
 
-        if result.returncode != 0:
+        with open(log_path, "w") as log_file:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in proc.stdout:
+                # Stream to stdout live
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                # Save to log file
+                log_file.write(line)
+                log_file.flush()
+
+                # Parse step metrics and write training_metrics.jsonl live
+                match = step_pattern.search(line)
+                if match:
+                    step = int(match.group(1))
+                    metrics_str = match.group(2)
+                    raw = {}
+                    for kv in metrics_str.split(" - "):
+                        kv = kv.strip()
+                        if ":" not in kv:
+                            continue
+                        key, val = kv.split(":", 1)
+                        try:
+                            raw[key.strip()] = float(val.strip())
+                        except ValueError:
+                            pass
+
+                    entry = {
+                        "step": step,
+                        "epoch": raw.get("training/epoch", 0),
+                        "mean_reward": raw.get("critic/score/mean", 0),
+                        "loss": raw.get("actor/pg_loss"),
+                        "grad_norm": raw.get("actor/grad_norm"),
+                        "learning_rate": raw.get("actor/lr"),
+                        "entropy": raw.get("actor/entropy"),
+                        "response_length_mean": raw.get("response_length/mean"),
+                        "prompt_length_mean": raw.get("prompt_length/mean"),
+                        "wall_time_s": raw.get("timing_s/step"),
+                    }
+                    entry = {k: v for k, v in entry.items() if v is not None}
+                    reward_history.append(entry.get("mean_reward", 0))
+
+                    with open(metrics_path, "a") as mf:
+                        mf.write(json.dumps(entry) + "\n")
+                        mf.flush()
+
+            proc.wait()
+
+        if proc.returncode != 0:
             raise RuntimeError(
-                f"verl training failed with exit code {result.returncode}"
+                f"verl training failed with exit code {proc.returncode}"
             )
 
-        # Collect results
+        # Post-training: normalize checkpoints into flat adapter dirs
+        # (matching ART's format for uniform vLLM loading)
+        checkpoint_dir = os.path.join(ckpt_output_dir, "checkpoints")
+        adapter_checkpoints = _normalize_verl_checkpoints(checkpoint_dir)
+
         return {
             "status": "success",
-            "checkpoint_path": os.path.join(ckpt_output_dir, "checkpoints"),
+            "checkpoint_path": checkpoint_dir,
+            "adapter_checkpoints": adapter_checkpoints,
+            "reward_history": reward_history,
             "backend": "verl",
             "model_path": model_path,
             "n_gpus": n_gpus,
