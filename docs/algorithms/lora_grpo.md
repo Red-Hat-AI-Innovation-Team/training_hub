@@ -16,14 +16,14 @@ Both backends support single-turn and multi-turn tool-call data. Multi-turn trac
 
 **Use when you want to:**
 - Improve a model's tool-calling accuracy without expensive API-based training
-- Train on ground-truth tool-call traces from stronger models (distillation)
+- Train on ground-truth tool-call or verifiable traces from stronger models (distillation)
 - Scale RL training to larger models across multiple GPUs
 - Fine-tune agents for specific tool-calling domains (retail, support, etc.)
 
 **Works best when:**
-- You have ground-truth tool-call traces (from GPT-4, Claude, etc.)
+- You have ground-truth tool-call or verifiable traces
 - The task involves structured tool/function calling with verifiable outputs
-- You want to train LoRA adapters (not full fine-tuning) for efficiency
+- You want to train LoRA adapters (not full fine-tuning) for efficiency or agentic design
 - You need fast iteration ($0 API cost, no user simulator required)
 
 > **Note:** For supervised fine-tuning without RL, see [LoRA + SFT](/algorithms/lora).
