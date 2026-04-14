@@ -508,7 +508,6 @@ class VeRLLoRAGRPOBackend(Backend):
         env["NCCL_DEBUG"] = "WARN"
         env["VLLM_LOGGING_LEVEL"] = "WARN"
         env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "true"
-        env["HF_HUB_OFFLINE"] = "1"  # use cached model, avoid HF timeouts during training
 
         # Pass tracking env vars to subprocess
         wandb_entity = algorithm_params.get("wandb_entity") or os.environ.get("WANDB_ENTITY")
