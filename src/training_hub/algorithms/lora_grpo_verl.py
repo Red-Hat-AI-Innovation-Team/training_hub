@@ -168,7 +168,7 @@ def tool_call_compute_score(data_source, solution_str, ground_truth, **kwargs):
     # verl passes the raw generated text — we need to parse tool calls from it
     predicted_name, predicted_args = _extract_tool_call_from_text(solution_str)
 
-    if predicted_name is None:
+    if predicted_name is None or not isinstance(predicted_name, str):
         return 0.0
 
     if not _names_match(predicted_name, expected_name):
@@ -407,11 +407,12 @@ class VeRLLoRAGRPOBackend(Backend):
         train_batch_size = tasks_per_iteration
 
         # Calculate steps per epoch for checkpoint frequency.
-        # Save once per epoch by default so each epoch has a usable checkpoint.
+        # Default: save once per epoch. Can be overridden via saves_per_epoch.
         import pandas as pd
         train_dataset_size = len(pd.read_parquet(train_path))
         steps_per_epoch = max(1, (train_dataset_size + train_batch_size - 1) // train_batch_size)
-        save_freq = steps_per_epoch
+        saves_per_epoch = algorithm_params.get("saves_per_epoch", 1)
+        save_freq = max(1, steps_per_epoch // saves_per_epoch)
 
         # Build verl command
         cmd = [
@@ -436,7 +437,7 @@ class VeRLLoRAGRPOBackend(Backend):
             # Actor (training)
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
             f"actor_rollout_ref.actor.ppo_mini_batch_size={min(train_batch_size, 256)}",
-            f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
+            f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
             "actor_rollout_ref.actor.use_kl_loss=False",
             "actor_rollout_ref.actor.entropy_coeff=0",
             "actor_rollout_ref.actor.fsdp_config.param_offload=False",
@@ -507,6 +508,7 @@ class VeRLLoRAGRPOBackend(Backend):
         env["NCCL_DEBUG"] = "WARN"
         env["VLLM_LOGGING_LEVEL"] = "WARN"
         env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "true"
+        env["HF_HUB_OFFLINE"] = "1"  # use cached model, avoid HF timeouts during training
 
         # Pass tracking env vars to subprocess
         wandb_entity = algorithm_params.get("wandb_entity") or os.environ.get("WANDB_ENTITY")
@@ -582,6 +584,47 @@ class VeRLLoRAGRPOBackend(Backend):
             raise RuntimeError(
                 f"verl training failed with exit code {proc.returncode}"
             )
+
+        # Re-parse log file to fill in any gaps in training_metrics.jsonl
+        # (covers steps that were missed due to stdout buffering)
+        logged_steps = set()
+        if os.path.exists(metrics_path):
+            with open(metrics_path) as mf:
+                for line in mf:
+                    if line.strip():
+                        logged_steps.add(json.loads(line).get("step"))
+
+        with open(log_path) as lf:
+            for line in lf:
+                match = step_pattern.search(line)
+                if match and int(match.group(1)) not in logged_steps:
+                    step = int(match.group(1))
+                    raw = {}
+                    for kv in match.group(2).split(" - "):
+                        kv = kv.strip()
+                        if ":" not in kv:
+                            continue
+                        key, val = kv.split(":", 1)
+                        try:
+                            raw[key.strip()] = float(val.strip())
+                        except ValueError:
+                            pass
+                    entry = {
+                        "step": step,
+                        "epoch": raw.get("training/epoch", 0),
+                        "mean_reward": raw.get("critic/score/mean", 0),
+                        "loss": raw.get("actor/pg_loss"),
+                        "grad_norm": raw.get("actor/grad_norm"),
+                        "learning_rate": raw.get("actor/lr"),
+                        "entropy": raw.get("actor/entropy"),
+                        "response_length_mean": raw.get("response_length/mean"),
+                        "prompt_length_mean": raw.get("prompt_length/mean"),
+                        "wall_time_s": raw.get("timing_s/step"),
+                    }
+                    entry = {k: v for k, v in entry.items() if v is not None}
+                    reward_history.append(entry.get("mean_reward", 0))
+                    with open(metrics_path, "a") as mf:
+                        mf.write(json.dumps(entry) + "\n")
 
         # Post-training: normalize checkpoints into flat adapter dirs
         # (matching ART's format for uniform vLLM loading)
