@@ -72,6 +72,13 @@ def _prepare_verl_data(
             system_prompt=system_prompt, data_source=data_source,
         )
 
+    if reward_type == "custom":
+        return _prepare_generic_data(
+            data_path, train_path, val_path,
+            n_train=n_train, n_val=n_val,
+            system_prompt=system_prompt, data_source=data_source or "custom",
+        )
+
     # Tool-call data loading + decomposition
     from .lora_grpo import _load_local_dataset, _load_tool_call_dataset
 
@@ -140,6 +147,73 @@ def _prepare_verl_data(
         # verl requires a val file, create a small one from train
         samples_to_parquet(train_data[:min(50, len(train_data))], val_path)
 
+    return train_path, val_path
+
+
+def _prepare_generic_data(
+    data_path: str,
+    train_path: str,
+    val_path: str,
+    n_train: int = 5000,
+    n_val: int = 500,
+    system_prompt: str = None,
+    data_source: str = "custom",
+) -> tuple[str, str]:
+    """Prepare generic data for verl GRPO with custom reward functions.
+
+    Expects JSONL with 'question' and 'ground_truth' fields.
+    Optionally, samples can include 'messages' (list of chat messages)
+    instead of 'question'.
+
+    The ground_truth is passed to the reward function via
+    reward_model.ground_truth in the parquet schema.
+    """
+    import pandas as pd
+
+    with open(data_path) as f:
+        raw = [json.loads(line) for line in f if line.strip()]
+
+    samples = raw[:n_train]
+    val_samples = raw[n_train:n_train + n_val] if n_val > 0 else []
+
+    default_sys = system_prompt or ""
+
+    def build_rows(data):
+        rows = []
+        for i, s in enumerate(data):
+            # Build prompt from 'messages' or 'question'
+            if "messages" in s:
+                prompt = s["messages"]
+            elif "question" in s:
+                prompt = []
+                if default_sys:
+                    prompt.append({"role": "system", "content": default_sys})
+                prompt.append({"role": "user", "content": s["question"]})
+            else:
+                logger.warning("Sample %d has no 'question' or 'messages', skipping", i)
+                continue
+
+            gt = s.get("ground_truth", s.get("answer", ""))
+
+            rows.append({
+                "data_source": data_source,
+                "prompt": prompt,
+                "reward_model": {"style": "rule", "ground_truth": str(gt)},
+                "extra_info": {"index": i},
+            })
+        return rows
+
+    train_rows = build_rows(samples)
+    pd.DataFrame(train_rows).to_parquet(train_path, index=False)
+
+    if val_samples:
+        val_rows = build_rows(val_samples)
+        pd.DataFrame(val_rows).to_parquet(val_path, index=False)
+    else:
+        pd.DataFrame(train_rows[:min(5, len(train_rows))]).to_parquet(val_path, index=False)
+
+    logger.info("Prepared generic data: %d train, %d val", len(train_rows),
+                len(val_samples) if val_samples else min(5, len(train_rows)))
     return train_path, val_path
 
 
@@ -411,20 +485,6 @@ def _write_custom_reward_function(reward_fn, output_dir: str) -> str:
     source = textwrap.dedent(source)
     fn_name = reward_fn.__name__
 
-    # Get the module-level imports the function might need
-    fn_module = inspect.getmodule(reward_fn)
-    module_source = ""
-    if fn_module is not None:
-        try:
-            full_source = inspect.getsource(fn_module)
-            # Extract import lines from the module
-            imports = [line for line in full_source.split("\n")
-                       if line.strip().startswith(("import ", "from "))]
-            if imports:
-                module_source = "\n".join(imports) + "\n\n"
-        except (TypeError, OSError):
-            pass
-
     # If the function isn't named compute_score, add an alias
     alias = ""
     if fn_name != "compute_score":
@@ -432,7 +492,7 @@ def _write_custom_reward_function(reward_fn, output_dir: str) -> str:
 
     reward_path = os.path.join(output_dir, "verl_custom_reward.py")
     with open(reward_path, "w") as f:
-        f.write(module_source + source + alias)
+        f.write(source + alias)
 
     logger.info("Wrote custom reward function to %s (fn=%s)", reward_path, fn_name)
     return reward_path
@@ -678,7 +738,10 @@ class VeRLLoRAGRPOBackend(Backend):
         if data_path is None:
             raise ValueError("data_path is required for verl backend")
 
+        reward_fn = algorithm_params.get("reward_fn")
         reward_type = algorithm_params.get("reward_type", "tool_call")
+        if reward_fn is not None and reward_type == "tool_call":
+            reward_type = "custom"
 
         data_dir = os.path.join(ckpt_output_dir, "verl_data")
         train_path, val_path = _prepare_verl_data(
