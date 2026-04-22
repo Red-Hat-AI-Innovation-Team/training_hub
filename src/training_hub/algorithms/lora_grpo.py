@@ -1324,7 +1324,7 @@ def lora_grpo(
     # Algorithm variant
     use_dr_grpo: bool = True,
     # Backend selection
-    backend: str = "art",
+    backend: str = "verl",
     # Callbacks
     iteration_callback: Optional[Callable] = None,
     # Logging / experiment tracking
@@ -1388,7 +1388,8 @@ def lora_grpo(
             model, uses token-level loss normalization instead of KL regularization.
             Saves GPU memory and generally improves training efficiency.
             Only supported with verl backend. Falls back to standard GRPO on ART.
-        backend: Backend to use (default: 'art').
+        backend: Backend to use (default: 'verl'). Options: 'verl' (multi-GPU,
+            FSDP, Dr. GRPO support) or 'art' (single-GPU, Unsloth).
         iteration_callback: Callback after each iteration: (iteration_num, results_dict).
 
         wandb_project: Weights & Biases project name.
