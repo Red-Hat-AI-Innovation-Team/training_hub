@@ -384,6 +384,60 @@ def _verify(predicted, ground_truth):
     return reward_path
 
 
+def _write_custom_reward_function(reward_fn, output_dir: str) -> str:
+    """Write a user-provided reward function to a file for verl to load.
+
+    The function is serialized via inspect.getsource. It must be a standalone
+    function (no closures over local variables) with the verl reward signature:
+        compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs) -> float
+
+    If the function has a different name, a wrapper is generated that calls it
+    as `compute_score`.
+
+    Returns:
+        Path to the reward function file.
+    """
+    import inspect
+    import textwrap
+
+    # If reward_fn is a string, treat it as a path to a reward file
+    if isinstance(reward_fn, str):
+        if os.path.isfile(reward_fn):
+            logger.info("Using reward function file directly: %s", reward_fn)
+            return reward_fn
+        raise FileNotFoundError(f"Reward function file not found: {reward_fn}")
+
+    source = inspect.getsource(reward_fn)
+    source = textwrap.dedent(source)
+    fn_name = reward_fn.__name__
+
+    # Get the module-level imports the function might need
+    fn_module = inspect.getmodule(reward_fn)
+    module_source = ""
+    if fn_module is not None:
+        try:
+            full_source = inspect.getsource(fn_module)
+            # Extract import lines from the module
+            imports = [line for line in full_source.split("\n")
+                       if line.strip().startswith(("import ", "from "))]
+            if imports:
+                module_source = "\n".join(imports) + "\n\n"
+        except (TypeError, OSError):
+            pass
+
+    # If the function isn't named compute_score, add an alias
+    alias = ""
+    if fn_name != "compute_score":
+        alias = f"\ncompute_score = {fn_name}\n"
+
+    reward_path = os.path.join(output_dir, "verl_custom_reward.py")
+    with open(reward_path, "w") as f:
+        f.write(module_source + source + alias)
+
+    logger.info("Wrote custom reward function to %s (fn=%s)", reward_path, fn_name)
+    return reward_path
+
+
 def _write_reward_function(output_dir: str) -> str:
     """Write the tool-call reward function for verl to load.
 
@@ -639,7 +693,10 @@ class VeRLLoRAGRPOBackend(Backend):
         )
 
         # Write reward function (and agent loop for tool_call mode)
-        if reward_type == "tool_call":
+        reward_fn = algorithm_params.get("reward_fn")
+        if reward_fn is not None:
+            reward_path = _write_custom_reward_function(reward_fn, ckpt_output_dir)
+        elif reward_type == "tool_call":
             reward_path = _write_reward_function(ckpt_output_dir)
             _write_agent_loop(ckpt_output_dir)
         elif reward_type == "math":
@@ -753,7 +810,12 @@ class VeRLLoRAGRPOBackend(Backend):
         ])
 
         # Reward configuration
-        if reward_type == "tool_call":
+        if reward_fn is not None:
+            cmd.extend([
+                f"reward.custom_reward_function.path={reward_path}",
+                "reward.custom_reward_function.name=compute_score",
+            ])
+        elif reward_type == "tool_call":
             cmd.extend([
                 f"reward.custom_reward_function.path={reward_path}",
                 "reward.custom_reward_function.name=tool_call_compute_score",
