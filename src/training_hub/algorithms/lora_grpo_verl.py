@@ -642,7 +642,7 @@ def _normalize(args):
     return reward_path
 
 
-def _write_agent_loop(output_dir: str) -> tuple[str, str]:
+def _write_agent_loop(output_dir: str) -> str:
     """Write a single-turn tool-calling agent loop for verl.
 
     verl's default SingleTurnAgentLoop doesn't pass tools to the chat template.
@@ -650,7 +650,7 @@ def _write_agent_loop(output_dir: str) -> tuple[str, str]:
     enabling models like Qwen3 to generate structured tool calls.
 
     Returns:
-        (agent_module_path, agent_config_path)
+        Path to the agent loop module in output_dir.
     """
     import shutil
 
@@ -659,22 +659,27 @@ def _write_agent_loop(output_dir: str) -> tuple[str, str]:
     dst = os.path.join(output_dir, "verl_tool_agent.py")
     shutil.copy2(src, dst)
 
-    # Also install it into verl's agent_loop directory so Ray workers can import it
-    import verl.experimental.agent_loop as agent_loop_pkg
-    agent_loop_dir = os.path.dirname(agent_loop_pkg.__file__)
-    installed_path = os.path.join(agent_loop_dir, "verl_tool_agent.py")
-    shutil.copy2(src, installed_path)
+    # Try to install it into verl's agent_loop directory so Ray workers can
+    # import it. This may fail on read-only container filesystems (e.g., KubeRay
+    # custom images), which is fine — the module is still available via PYTHONPATH.
+    try:
+        import verl.experimental.agent_loop as agent_loop_pkg
+        agent_loop_dir = os.path.dirname(agent_loop_pkg.__file__)
+        installed_path = os.path.join(agent_loop_dir, "verl_tool_agent.py")
+        shutil.copy2(src, installed_path)
 
-    # Patch the __init__.py to import it
-    init_path = os.path.join(agent_loop_dir, "__init__.py")
-    with open(init_path, "r") as f:
-        init_content = f.read()
-    if "verl_tool_agent" not in init_content:
-        with open(init_path, "a") as f:
-            f.write("\nfrom .verl_tool_agent import SingleTurnToolAgentLoop\n")
-            f.write("_ = [*_, SingleTurnToolAgentLoop]\n")
+        # Patch the __init__.py to import it
+        init_path = os.path.join(agent_loop_dir, "__init__.py")
+        with open(init_path, "r") as f:
+            init_content = f.read()
+        if "verl_tool_agent" not in init_content:
+            with open(init_path, "a") as f:
+                f.write("\nfrom .verl_tool_agent import SingleTurnToolAgentLoop\n")
+                f.write("_ = [*_, SingleTurnToolAgentLoop]\n")
+    except (PermissionError, OSError) as e:
+        logger.warning("Could not install agent loop into verl package dir: %s", e)
 
-    return dst, installed_path
+    return dst
 
 
 def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
@@ -780,6 +785,7 @@ class VeRLLoRAGRPOBackend(Backend):
         temperature = algorithm_params.get("temperature", 0.7)
         gpu_memory_utilization = algorithm_params.get("gpu_memory_utilization", 0.35)
         n_gpus = algorithm_params.get("n_gpus", 1)
+        nnodes = algorithm_params.get("nnodes", 1)
         tp_size = algorithm_params.get("tensor_parallel_size", 1)
         use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
 
@@ -861,7 +867,7 @@ class VeRLLoRAGRPOBackend(Backend):
             # Trainer
             "trainer.critic_warmup=0",
             f"trainer.n_gpus_per_node={n_gpus}",
-            "trainer.nnodes=1",
+            f"trainer.nnodes={nnodes}",
             f"trainer.total_epochs={num_iterations}",
             f"trainer.save_freq={save_freq}",
             "trainer.test_freq=-1",
