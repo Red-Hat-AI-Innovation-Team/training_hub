@@ -1386,7 +1386,7 @@ def lora_grpo(
 
         use_dr_grpo: Use Dr. GRPO variant (default: True). Removes the reference
             model, uses token-level loss normalization instead of KL regularization.
-            Saves GPU memory and has shown stronger results in ALFWorld benchmarks.
+            Saves GPU memory and generally improves training efficiency.
             Only supported with verl backend. Falls back to standard GRPO on ART.
         backend: Backend to use (default: 'art').
         iteration_callback: Callback after each iteration: (iteration_num, results_dict).
