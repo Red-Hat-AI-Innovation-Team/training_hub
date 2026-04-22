@@ -1321,6 +1321,8 @@ def lora_grpo(
     art_model_name: Optional[str] = None,
     art_project: Optional[str] = None,
     art_path: Optional[str] = None,
+    # Algorithm variant
+    use_dr_grpo: bool = True,
     # Backend selection
     backend: str = "art",
     # Callbacks
@@ -1382,6 +1384,10 @@ def lora_grpo(
         art_project: ART project name (default: 'training-hub-grpo').
         art_path: Path for ART backend storage.
 
+        use_dr_grpo: Use Dr. GRPO variant (default: True). Removes the reference
+            model, uses token-level loss normalization instead of KL regularization.
+            Saves GPU memory and has shown stronger results in ALFWorld benchmarks.
+            Only supported with verl backend. Falls back to standard GRPO on ART.
         backend: Backend to use (default: 'art').
         iteration_callback: Callback after each iteration: (iteration_num, results_dict).
 
@@ -1478,6 +1484,7 @@ def lora_grpo(
         max_lora_rank=max_lora_rank,
         n_gpus=n_gpus,
         tensor_parallel_size=tensor_parallel_size,
+        use_dr_grpo=use_dr_grpo,
         art_model_name=art_model_name,
         art_project=art_project,
         art_path=art_path,

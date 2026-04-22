@@ -41,6 +41,9 @@ def _prepare_verl_data(
     n_train: int = 5000,
     n_val: int = 500,
     data_config: str = "Qwen3",
+    reward_type: str = "tool_call",
+    system_prompt: str = None,
+    data_source: str = None,
 ) -> tuple[str, str]:
     """Convert training data to verl's expected Parquet format.
 
@@ -48,17 +51,28 @@ def _prepare_verl_data(
     chat messages (list of dicts with role/content). Additional columns like
     'ground_truth' are passed through to the reward function.
 
-    For tool-call data, each sample becomes a row with:
-    - prompt: [system_msg, user_msg, ...context_msgs] (messages up to the turn)
-    - ground_truth: {"tool_name": ..., "tool_args": ...} (expected tool call)
-    - tools: list of tool definitions (for the tools= API parameter)
+    Supports two reward types:
+    - "tool_call": Tool-call verification (decomposed multi-turn traces)
+    - "math": Math answer verification via verl's built-in verifiers
+      (data should have 'problem' and 'answer' fields)
 
     Returns:
         (train_parquet_path, val_parquet_path)
     """
     import pandas as pd
 
-    # Use our existing data loading + decomposition
+    os.makedirs(output_dir, exist_ok=True)
+    train_path = os.path.join(output_dir, "train.parquet")
+    val_path = os.path.join(output_dir, "val.parquet")
+
+    if reward_type == "math":
+        return _prepare_math_data(
+            data_path, train_path, val_path,
+            n_train=n_train, n_val=n_val,
+            system_prompt=system_prompt, data_source=data_source,
+        )
+
+    # Tool-call data loading + decomposition
     from .lora_grpo import _load_local_dataset, _load_tool_call_dataset
 
     if data_path.endswith((".json", ".jsonl")):
@@ -119,10 +133,6 @@ def _prepare_verl_data(
         logger.info("Saved %d samples to %s", len(rows), path)
         return path
 
-    os.makedirs(output_dir, exist_ok=True)
-    train_path = os.path.join(output_dir, "train.parquet")
-    val_path = os.path.join(output_dir, "val.parquet")
-
     samples_to_parquet(train_data, train_path)
     if val_data:
         samples_to_parquet(val_data, val_path)
@@ -131,6 +141,247 @@ def _prepare_verl_data(
         samples_to_parquet(train_data[:min(50, len(train_data))], val_path)
 
     return train_path, val_path
+
+
+def _prepare_math_data(
+    data_path: str,
+    train_path: str,
+    val_path: str,
+    n_train: int = 5000,
+    n_val: int = 500,
+    system_prompt: str = None,
+    data_source: str = None,
+) -> tuple[str, str]:
+    """Prepare math problem data for verl GRPO training.
+
+    Expects JSONL with 'problem' and 'answer' fields. Uses verl's built-in
+    math reward verifiers (routes via data_source field).
+
+    Returns:
+        (train_parquet_path, val_parquet_path)
+    """
+    import pandas as pd
+
+    if system_prompt is None:
+        system_prompt = (
+            "Please reason step by step, and put your final answer "
+            "within \\boxed{}."
+        )
+
+    with open(data_path) as f:
+        raw = [json.loads(line) for line in f if line.strip()]
+
+    # Auto-detect data_source from filename if not specified
+    if data_source is None:
+        basename = os.path.basename(data_path).lower()
+        if "aime" in basename:
+            # Extract year if present
+            import re
+            year_match = re.search(r'(\d{4})', basename)
+            data_source = f"aime{year_match.group(1)}" if year_match else "aime"
+        elif "gsm8k" in basename:
+            data_source = "openai/gsm8k"
+        elif "math" in basename:
+            data_source = "lighteval/MATH"
+        else:
+            data_source = "math"
+
+    rows = []
+    for i, p in enumerate(raw):
+        # Support both 'problem' and 'question' field names
+        problem_text = p.get("problem") or p.get("question", "")
+        answer = str(p.get("answer", ""))
+
+        row = {
+            "prompt": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": problem_text},
+            ],
+            "reward_model": {
+                "ground_truth": answer,
+            },
+            "extra_info": {
+                "index": i,
+            },
+            "data_source": data_source,
+        }
+        rows.append(row)
+
+    train_rows = rows[:n_train]
+    val_rows = rows[n_train:n_train + n_val] if n_val > 0 else rows[:min(50, len(rows))]
+
+    pd.DataFrame(train_rows).to_parquet(train_path, index=False)
+    pd.DataFrame(val_rows).to_parquet(val_path, index=False)
+    logger.info("Saved %d math problems to %s (data_source=%s)", len(train_rows), train_path, data_source)
+
+    return train_path, val_path
+
+
+def _write_math_reward_function(output_dir: str) -> str:
+    """Write a math answer verification reward function for verl.
+
+    Uses math_verify for robust semantic comparison (handles LaTeX
+    equivalence like \\frac{1}{2} == 0.5). Falls back to string
+    matching if math_verify is not installed.
+
+    Returns:
+        Path to the reward function file.
+    """
+    reward_code = '''
+"""Math answer verification reward function for verl GRPO training.
+
+Extracts answers from \\boxed{} or <answer> tags and compares to ground truth
+using math_verify for semantic equivalence. Returns 1.0 for correct, 0.0 for wrong.
+
+Requires: pip install math-verify
+"""
+import re
+import logging
+
+logging.getLogger("math_verify").setLevel(logging.ERROR)
+
+
+def math_compute_score(data_source, solution_str, ground_truth, **kwargs):
+    """Compute reward for math answer verification.
+
+    Extracts the last \\boxed{} from the response, then uses math_verify
+    for semantic comparison with ground truth. Falls back to normalized
+    string matching if math_verify fails.
+
+    Args:
+        data_source: Dataset identifier (e.g., "aime2024", "math")
+        solution_str: The model's generated solution text
+        ground_truth: The correct answer as a string
+
+    Returns:
+        float: 1.0 if correct, 0.0 if wrong
+    """
+    if isinstance(ground_truth, dict):
+        ground_truth = ground_truth.get("ground_truth", ground_truth)
+    ground_truth = str(ground_truth).strip()
+
+    try:
+        predicted = _extract_answer(solution_str)
+        if predicted is None:
+            return 0.0
+        return 1.0 if _verify(predicted, ground_truth) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _extract_answer(text):
+    """Extract answer from model output.
+
+    Priority:
+    1. Last \\boxed{...}
+    2. <answer>...</answer> or <answer>... (stop consumed closing tag)
+    3. Full text (let math_verify handle extraction)
+    """
+    if not text:
+        return None
+
+    # Try last \\boxed{...}
+    boxed = _last_boxed(text)
+    if boxed is not None:
+        return _remove_boxed(boxed)
+
+    # Try <answer>...</answer>
+    m = re.search(r"<answer>\\s*(.+?)\\s*</answer>", text, re.DOTALL)
+    if m:
+        ans = m.group(1).strip()
+        # Remove boxed wrapper if present inside
+        inner_boxed = _last_boxed(ans)
+        if inner_boxed:
+            return _remove_boxed(inner_boxed)
+        return ans
+
+    # Try <answer>... at end (stop sequence consumed </answer>)
+    m = re.search(r"<answer>\\s*(.+?)\\s*$", text, re.DOTALL)
+    if m:
+        ans = m.group(1).strip()
+        inner_boxed = _last_boxed(ans)
+        if inner_boxed:
+            return _remove_boxed(inner_boxed)
+        return ans
+
+    # Fall back to full text (math_verify can often extract from it)
+    return text.strip()
+
+
+def _last_boxed(string):
+    """Find the last \\boxed{...} expression using brace counting."""
+    idx = string.rfind("\\\\boxed{")
+    if idx < 0:
+        idx = string.rfind("\\\\fbox{")
+        if idx < 0:
+            return None
+
+    i = idx
+    depth = 0
+    while i < len(string):
+        if string[i] == "{":
+            depth += 1
+        elif string[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return string[idx:i + 1]
+        i += 1
+    return None
+
+
+def _remove_boxed(s):
+    """Remove \\boxed{} or \\fbox{} wrapper."""
+    for prefix in ["\\\\boxed{", "\\\\fbox{"]:
+        if s.startswith(prefix) and s.endswith("}"):
+            return s[len(prefix):-1]
+    if "\\\\boxed " in s:
+        return s.split("\\\\boxed ")[-1].split("$")[0]
+    return s
+
+
+def _normalize_latex(text):
+    """Normalize LaTeX variants for comparison."""
+    text = re.sub(r"\\\\[dt]frac", r"\\\\frac", text)
+    text = re.sub(r"\\\\frac\\s*([^{\\s])\\s*([^{\\s])", r"\\\\frac{\\1}{\\2}", text)
+    return text
+
+
+def _verify(predicted, ground_truth):
+    """Verify answer using math_verify, with string fallback."""
+    predicted = predicted.strip()
+    ground_truth = ground_truth.strip()
+
+    # Quick exact match
+    if predicted == ground_truth:
+        return True
+
+    # Normalize and try again
+    pred_norm = _normalize_latex(predicted)
+    truth_norm = _normalize_latex(ground_truth)
+    if pred_norm == truth_norm:
+        return True
+
+    # Use math_verify for semantic comparison
+    try:
+        import math_verify
+        pred_parsed = math_verify.parse(pred_norm, parsing_timeout=5)
+        truth_parsed = math_verify.parse(truth_norm, parsing_timeout=5)
+        if not pred_parsed or not truth_parsed:
+            return False
+        return math_verify.verify(truth_parsed, pred_parsed)
+    except ImportError:
+        # Fallback: simple numeric comparison
+        try:
+            return abs(float(predicted) - float(ground_truth)) < 1e-6
+        except (ValueError, TypeError):
+            return False
+    except Exception:
+        return False
+'''
+    reward_path = os.path.join(output_dir, "verl_math_reward.py")
+    with open(reward_path, "w") as f:
+        f.write(reward_code)
+    return reward_path
 
 
 def _write_reward_function(output_dir: str) -> str:
@@ -373,6 +624,8 @@ class VeRLLoRAGRPOBackend(Backend):
         if data_path is None:
             raise ValueError("data_path is required for verl backend")
 
+        reward_type = algorithm_params.get("reward_type", "tool_call")
+
         data_dir = os.path.join(ckpt_output_dir, "verl_data")
         train_path, val_path = _prepare_verl_data(
             data_path=data_path,
@@ -380,11 +633,19 @@ class VeRLLoRAGRPOBackend(Backend):
             n_train=algorithm_params.get("n_train", 5000),
             n_val=algorithm_params.get("n_val", 500),
             data_config=algorithm_params.get("data_config", "Qwen3"),
+            reward_type=reward_type,
+            system_prompt=algorithm_params.get("system_prompt"),
+            data_source=algorithm_params.get("data_source"),
         )
 
-        # Write reward function and install custom agent loop
-        reward_path = _write_reward_function(ckpt_output_dir)
-        _write_agent_loop(ckpt_output_dir)
+        # Write reward function (and agent loop for tool_call mode)
+        if reward_type == "tool_call":
+            reward_path = _write_reward_function(ckpt_output_dir)
+            _write_agent_loop(ckpt_output_dir)
+        elif reward_type == "math":
+            reward_path = _write_math_reward_function(ckpt_output_dir)
+        else:
+            reward_path = None
 
         # Extract parameters
         model_path = algorithm_params["model_path"]
@@ -400,6 +661,7 @@ class VeRLLoRAGRPOBackend(Backend):
         gpu_memory_utilization = algorithm_params.get("gpu_memory_utilization", 0.35)
         n_gpus = algorithm_params.get("n_gpus", 1)
         tp_size = algorithm_params.get("tensor_parallel_size", 1)
+        use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
 
         # train_batch_size = number of prompts per batch. verl's rollout.n
         # (set from group_size) controls how many rollouts per prompt, so
@@ -420,6 +682,14 @@ class VeRLLoRAGRPOBackend(Backend):
             # Algorithm
             "algorithm.adv_estimator=grpo",
             "algorithm.use_kl_in_reward=False",
+        ]
+
+        # Dr. GRPO: no reference model, token-level normalization
+        if use_dr_grpo:
+            cmd.append("algorithm.norm_adv_by_std_in_grpo=False")
+            logger.info("Using Dr. GRPO: no ref model, token-level loss normalization")
+
+        cmd.extend([
             # Data
             f"data.train_files={train_path}",
             f"data.val_files={val_path}",
@@ -438,23 +708,36 @@ class VeRLLoRAGRPOBackend(Backend):
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
             f"actor_rollout_ref.actor.ppo_mini_batch_size={min(train_batch_size, 256)}",
             f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
-            "actor_rollout_ref.actor.use_kl_loss=False",
             "actor_rollout_ref.actor.entropy_coeff=0",
             "actor_rollout_ref.actor.fsdp_config.param_offload=False",
             "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False",
+        ])
+
+        # Actor KL and loss settings depend on Dr. GRPO vs standard
+        if use_dr_grpo:
+            cmd.extend([
+                "actor_rollout_ref.actor.use_kl_loss=False",
+                "actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-sum-norm",
+            ])
+        else:
+            cmd.extend([
+                "actor_rollout_ref.actor.use_kl_loss=True",
+                "actor_rollout_ref.actor.kl_loss_coef=0.01",
+                "actor_rollout_ref.actor.kl_loss_type=low_var_kl",
+            ])
+
+        cmd.extend([
             # Rollout (vLLM)
             "actor_rollout_ref.rollout.name=vllm",
             f"actor_rollout_ref.rollout.tensor_model_parallel_size={tp_size}",
             f"actor_rollout_ref.rollout.n={group_size}",
             f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_memory_utilization}",
+            f"actor_rollout_ref.rollout.max_model_len={max_prompt_length + max_tokens}",
             "actor_rollout_ref.rollout.load_format=safetensors",
             f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
-            # Reference model
+            # Reference model (only used when not Dr. GRPO)
             "actor_rollout_ref.ref.fsdp_config.param_offload=True",
             f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
-            # Reward
-            f"reward.custom_reward_function.path={reward_path}",
-            "reward.custom_reward_function.name=tool_call_compute_score",
             # Trainer
             "trainer.critic_warmup=0",
             f"trainer.n_gpus_per_node={n_gpus}",
@@ -467,7 +750,19 @@ class VeRLLoRAGRPOBackend(Backend):
             "trainer.experiment_name=lora_grpo",
             f"trainer.default_local_dir={ckpt_output_dir}/checkpoints",
             "trainer.resume_mode=auto",
-        ]
+        ])
+
+        # Reward configuration
+        if reward_type == "tool_call":
+            cmd.extend([
+                f"reward.custom_reward_function.path={reward_path}",
+                "reward.custom_reward_function.name=tool_call_compute_score",
+            ])
+        elif reward_type == "math":
+            cmd.extend([
+                f"reward.custom_reward_function.path={reward_path}",
+                "reward.custom_reward_function.name=math_compute_score",
+            ])
 
         # Experiment tracking (with env var fallbacks, matching other algorithms)
         loggers = ["console"]
