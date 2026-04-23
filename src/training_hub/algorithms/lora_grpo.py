@@ -1319,10 +1319,6 @@ def lora_grpo(
     n_gpus: int = 1,
     nnodes: int = 1,
     tensor_parallel_size: int = 1,
-    # ART configuration
-    art_model_name: Optional[str] = None,
-    art_project: Optional[str] = None,
-    art_path: Optional[str] = None,
     # Algorithm variant
     use_dr_grpo: bool = True,
     # Backend selection
@@ -1382,10 +1378,6 @@ def lora_grpo(
 
         gpu_memory_utilization: vLLM GPU memory fraction (default: 0.45).
         max_lora_rank: Max LoRA rank for vLLM engine (default: matches lora_r).
-        art_model_name: Custom name for ART model registration.
-        art_project: ART project name (default: 'training-hub-grpo').
-        art_path: Path for ART backend storage.
-
         use_dr_grpo: Use Dr. GRPO variant (default: True). Removes the reference
             model, uses token-level loss normalization instead of KL regularization.
             Saves GPU memory and generally improves training efficiency.
@@ -1489,9 +1481,6 @@ def lora_grpo(
         nnodes=nnodes,
         tensor_parallel_size=tensor_parallel_size,
         use_dr_grpo=use_dr_grpo,
-        art_model_name=art_model_name,
-        art_project=art_project,
-        art_path=art_path,
         iteration_callback=iteration_callback,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
