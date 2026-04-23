@@ -22,7 +22,7 @@ The verl backend uses FSDP for distributed LoRA training across multiple GPUs an
 - Epoch-based training for systematic data coverage
 - Supports GRPO with group-based advantage estimation
 - Automatic checkpoint saving and resume
-- Experiment tracking via W&B, MLflow, TensorBoard, and more
+- Experiment tracking via W&B, MLflow, and more
 
 ## Usage
 

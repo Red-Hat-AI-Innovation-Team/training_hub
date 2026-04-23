@@ -167,7 +167,7 @@ def _load_tool_call_dataset(
         raise ImportError(
             "The 'datasets' package is required for HuggingFace dataset loading. "
             "Install with: pip install datasets"
-        )
+        ) from None
 
     total_needed = n_train + n_val
     buffer = int(total_needed * 1.5)

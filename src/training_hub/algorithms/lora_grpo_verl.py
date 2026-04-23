@@ -42,8 +42,8 @@ def _prepare_verl_data(
     n_val: int = 500,
     data_config: str = "Qwen3",
     reward_type: str = "tool_call",
-    system_prompt: str = None,
-    data_source: str = None,
+    system_prompt: Optional[str] = None,
+    data_source: Optional[str] = None,
 ) -> tuple[str, str]:
     """Convert training data to verl's expected Parquet format.
 
@@ -156,7 +156,7 @@ def _prepare_generic_data(
     val_path: str,
     n_train: int = 5000,
     n_val: int = 500,
-    system_prompt: str = None,
+    system_prompt: Optional[str] = None,
     data_source: str = "custom",
 ) -> tuple[str, str]:
     """Prepare generic data for verl GRPO with custom reward functions.
@@ -223,8 +223,8 @@ def _prepare_math_data(
     val_path: str,
     n_train: int = 5000,
     n_val: int = 500,
-    system_prompt: str = None,
-    data_source: str = None,
+    system_prompt: Optional[str] = None,
+    data_source: Optional[str] = None,
 ) -> tuple[str, str]:
     """Prepare math problem data for verl GRPO training.
 
@@ -833,7 +833,7 @@ class VeRLLoRAGRPOBackend(Backend):
             # Actor (training)
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
             f"actor_rollout_ref.actor.ppo_mini_batch_size={min(train_batch_size, 256)}",
-            f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
+            "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
             "actor_rollout_ref.actor.entropy_coeff=0",
             "actor_rollout_ref.actor.fsdp_config.param_offload=False",
             "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False",
@@ -860,10 +860,10 @@ class VeRLLoRAGRPOBackend(Backend):
             f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_memory_utilization}",
             f"actor_rollout_ref.rollout.max_model_len={max_prompt_length + max_tokens}",
             "actor_rollout_ref.rollout.load_format=safetensors",
-            f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
+            f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={max(1, min(train_batch_size // max(n_gpus, 1), 2))}",
             # Reference model (only used when not Dr. GRPO)
             "actor_rollout_ref.ref.fsdp_config.param_offload=True",
-            f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={min(train_batch_size // max(n_gpus, 1), 2)}",
+            f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={max(1, min(train_batch_size // max(n_gpus, 1), 2))}",
             # Trainer
             "trainer.critic_warmup=0",
             f"trainer.n_gpus_per_node={n_gpus}",
