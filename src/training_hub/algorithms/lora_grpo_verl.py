@@ -776,7 +776,7 @@ class VeRLLoRAGRPOBackend(Backend):
         model_path = algorithm_params["model_path"]
         num_iterations = algorithm_params.get("num_iterations", 15)
         group_size = algorithm_params.get("group_size", 8)
-        tasks_per_iteration = algorithm_params.get("tasks_per_iteration", 100)
+        prompt_batch_size = algorithm_params.get("prompt_batch_size", 100)
         learning_rate = algorithm_params.get("learning_rate", 1e-5)
         lora_r = algorithm_params.get("lora_r", 16)
         lora_alpha = algorithm_params.get("lora_alpha", 8)
@@ -789,15 +789,15 @@ class VeRLLoRAGRPOBackend(Backend):
         tp_size = algorithm_params.get("tensor_parallel_size", 1)
 
         # Validate batch divisibility — verl requires total rollouts
-        # (tasks_per_iteration * group_size) to be evenly divisible by
+        # (prompt_batch_size * group_size) to be evenly divisible by
         # the number of agent loop workers (n_gpus * 4 by default).
-        total_rollouts = tasks_per_iteration * group_size
+        total_rollouts = prompt_batch_size * group_size
         n_workers = n_gpus * 4  # verl default: 4 agent loop workers per GPU
         if total_rollouts % n_workers != 0:
             raise ValueError(
-                f"tasks_per_iteration ({tasks_per_iteration}) * group_size ({group_size}) "
+                f"prompt_batch_size ({prompt_batch_size}) * group_size ({group_size}) "
                 f"= {total_rollouts} must be divisible by the number of agent workers "
-                f"({n_workers} = n_gpus * 4). Try adjusting tasks_per_iteration to "
+                f"({n_workers} = n_gpus * 4). Try adjusting prompt_batch_size to "
                 f"{(total_rollouts // n_workers + 1) * n_workers // group_size}."
             )
         use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
@@ -805,7 +805,7 @@ class VeRLLoRAGRPOBackend(Backend):
         # train_batch_size = number of prompts per batch. verl's rollout.n
         # (set from group_size) controls how many rollouts per prompt, so
         # batch size should NOT be multiplied by group_size.
-        train_batch_size = tasks_per_iteration
+        train_batch_size = prompt_batch_size
 
         # Calculate steps per epoch for checkpoint frequency.
         # Default: save once per epoch. Can be overridden via saves_per_epoch.

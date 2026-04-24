@@ -23,7 +23,7 @@ Example usage:
     # Quick test run
     python lora_grpo_example.py \\
         --ckpt-output-dir ./grpo_output \\
-        --num-iterations 2 --tasks-per-iteration 5
+        --num-iterations 2 --prompt-batch-size 5
 """
 
 import argparse
@@ -45,7 +45,7 @@ default_lora_alpha = 8
 default_learning_rate = 1e-5
 default_num_iterations = 15
 default_group_size = 8
-default_tasks_per_iteration = 100
+default_prompt_batch_size = 100
 default_data_path = "Agent-Ark/Toucan-1.5M"
 
 
@@ -56,10 +56,10 @@ def parse_arguments():
         epilog="""
 Examples:
   # Quick test (2 iterations, 5 tasks each)
-  python lora_grpo_example.py --ckpt-output-dir ./grpo_test --num-iterations 2 --tasks-per-iteration 5
+  python lora_grpo_example.py --ckpt-output-dir ./grpo_test --num-iterations 2 --prompt-batch-size 5
 
   # Full training run
-  python lora_grpo_example.py --ckpt-output-dir ./grpo_output --num-iterations 15 --tasks-per-iteration 100
+  python lora_grpo_example.py --ckpt-output-dir ./grpo_output --num-iterations 15 --prompt-batch-size 100
 
   # Granite MoE model (needs higher LoRA rank)
   python lora_grpo_example.py --model-path ibm-granite/granite-4.0-h-tiny --ckpt-output-dir ./grpo_granite --lora-r 128 --lora-alpha 256
@@ -87,8 +87,8 @@ Examples:
                         help=f'Number of GRPO iterations (default: {default_num_iterations})')
     parser.add_argument('--group-size', type=int, default=default_group_size,
                         help=f'Rollouts per task for advantage estimation (default: {default_group_size})')
-    parser.add_argument('--tasks-per-iteration', type=int, default=default_tasks_per_iteration,
-                        help=f'Tasks per iteration (default: {default_tasks_per_iteration})')
+    parser.add_argument('--prompt-batch-size', type=int, default=default_prompt_batch_size,
+                        help=f'Prompt batch size (default: {default_prompt_batch_size})')
     parser.add_argument('--learning-rate', type=float, default=default_learning_rate,
                         help=f'Learning rate (default: {default_learning_rate})')
     parser.add_argument('--concurrency', type=int, default=32,
@@ -119,7 +119,7 @@ Examples:
 def main():
     args = parse_arguments()
 
-    rollouts_per_iter = args.tasks_per_iteration * args.group_size
+    rollouts_per_iter = args.prompt_batch_size * args.group_size
     total_rollouts = rollouts_per_iter * args.num_iterations
 
     # Print configuration
@@ -131,7 +131,7 @@ def main():
     print()
     print("GRPO Configuration:")
     print(f"  Iterations:       {args.num_iterations}")
-    print(f"  Tasks/iteration:  {args.tasks_per_iteration}")
+    print(f"  Prompts/batch:  {args.prompt_batch_size}")
     print(f"  Group size:       {args.group_size}")
     print(f"  Rollouts/iter:    {rollouts_per_iter}")
     print(f"  Total rollouts:   {total_rollouts}")
@@ -161,7 +161,7 @@ def main():
             n_train=args.n_train,
             num_iterations=args.num_iterations,
             group_size=args.group_size,
-            tasks_per_iteration=args.tasks_per_iteration,
+            prompt_batch_size=args.prompt_batch_size,
             learning_rate=args.learning_rate,
             concurrency=args.concurrency,
             lora_r=args.lora_r,
@@ -194,7 +194,7 @@ def main():
         print("  - Ensure openpipe-art is installed: pip install openpipe-art")
         print("  - Reduce GPU memory usage: --gpu-memory-utilization 0.35")
         print("  - Reduce concurrency: --concurrency 8")
-        print("  - Try fewer tasks: --tasks-per-iteration 10 --num-iterations 2")
+        print("  - Try fewer tasks: --prompt-batch-size 10 --num-iterations 2")
         sys.exit(1)
 
 

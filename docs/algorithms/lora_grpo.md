@@ -102,7 +102,7 @@ result = lora_grpo(
     ckpt_output_dir="./output",
     backend="art",
     num_iterations=15,
-    tasks_per_iteration=100,
+    prompt_batch_size=100,
     group_size=8,
     lora_r=32,
     lora_alpha=64,
@@ -186,7 +186,7 @@ result = lora_grpo(
 
 ## Performance Tips
 
-1. **Start with a small test** — Use `num_iterations=2, tasks_per_iteration=10` to verify the pipeline works before long runs
+1. **Start with a small test** — Use `num_iterations=2, prompt_batch_size=10` to verify the pipeline works before long runs
 2. **Match LoRA rank to model size** — r=16-32 for 4B models, r=64-128 for larger or MoE models
 3. **Lower learning rate for stability** — 5e-6 to 1e-5 works well; higher rates cause oscillation
 4. **Strip thinking blocks** — For Qwen3 models, ensure `<think>` blocks are stripped from conversation history during evaluation

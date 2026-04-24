@@ -19,7 +19,7 @@ Example (single-turn tool-call verification):
         ckpt_output_dir="./grpo_output",
         num_iterations=15,
         group_size=8,
-        tasks_per_iteration=100,
+        prompt_batch_size=100,
     )
 
 Example (custom multi-turn rollout):
@@ -653,7 +653,7 @@ class ARTLoRAGRPOBackend(Backend):
         # GRPO hyperparameters
         num_iterations = params.get("num_iterations", 15)
         group_size = params.get("group_size", 8)
-        tasks_per_iteration = params.get("tasks_per_iteration", 100)
+        prompt_batch_size = params.get("prompt_batch_size", 100)
         learning_rate = params.get("learning_rate", 1e-5)
         temperature = params.get("temperature", 0.7)
         max_tokens = params.get("max_tokens", 512)
@@ -774,7 +774,7 @@ class ARTLoRAGRPOBackend(Backend):
                 reward_fn=reward_fn,
                 num_iterations=num_iterations,
                 group_size=group_size,
-                tasks_per_iteration=tasks_per_iteration,
+                prompt_batch_size=prompt_batch_size,
                 learning_rate=learning_rate,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -808,7 +808,7 @@ class ARTLoRAGRPOBackend(Backend):
     async def _run_training_loop(
         self, model, backend, art, train_data, *,
         mode, rollout_fn, reward_fn,
-        num_iterations, group_size, tasks_per_iteration,
+        num_iterations, group_size, prompt_batch_size,
         learning_rate, temperature, max_tokens, concurrency,
         ckpt_output_dir, art_path, art_project, art_model_name, model_path, lora_r, lora_alpha,
         iteration_callback,
@@ -873,7 +873,7 @@ class ARTLoRAGRPOBackend(Backend):
             logger.info("Resuming from step %d", start_iteration)
 
         os.makedirs(ckpt_output_dir, exist_ok=True)
-        rollouts_per_iter = tasks_per_iteration * group_size
+        rollouts_per_iter = prompt_batch_size * group_size
 
         # Training loop
         reward_history = []
@@ -884,7 +884,7 @@ class ARTLoRAGRPOBackend(Backend):
         logger.info(
             "Starting GRPO training: %d iterations, %d tasks/iter, group_size=%d, "
             "lr=%s, mode=%s",
-            num_iterations, tasks_per_iteration, group_size, learning_rate, mode,
+            num_iterations, prompt_batch_size, group_size, learning_rate, mode,
         )
 
         for iteration in range(start_iteration, num_iterations):
@@ -892,7 +892,7 @@ class ARTLoRAGRPOBackend(Backend):
 
             # Sample tasks for this iteration
             random.seed(42 + iteration)
-            n_tasks = min(tasks_per_iteration, len(train_data))
+            n_tasks = min(prompt_batch_size, len(train_data))
             iter_samples = random.sample(train_data, n_tasks)
 
             # Gather trajectory groups
@@ -941,7 +941,7 @@ class ARTLoRAGRPOBackend(Backend):
                 "iteration": iteration + 1,
                 "num_iterations": num_iterations,
                 "group_size": group_size,
-                "tasks_per_iteration": tasks_per_iteration,
+                "prompt_batch_size": prompt_batch_size,
                 "learning_rate": learning_rate,
                 "lora_r": lora_r,
                 "lora_alpha": lora_alpha,
@@ -1148,7 +1148,7 @@ class LoRAGRPOAlgorithm(Algorithm):
         # GRPO hyperparameters
         num_iterations: Optional[int] = None,
         group_size: Optional[int] = None,
-        tasks_per_iteration: Optional[int] = None,
+        prompt_batch_size: Optional[int] = None,
         learning_rate: Optional[float] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -1216,8 +1216,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             GRPO Hyperparameters:
                 num_iterations: Number of GRPO training iterations (default: 15).
                 group_size: Rollouts per task for advantage estimation (default: 8).
-                tasks_per_iteration: Number of unique prompts per training step (default: 100).
-            Alias: prompt_batch_size.
+                prompt_batch_size: Number of unique prompts per training step (default: 100).
                 learning_rate: Learning rate (default: 1e-5).
                 temperature: Sampling temperature for rollouts (default: 0.7).
                 max_tokens: Max tokens per rollout response (default: 512).
@@ -1268,7 +1267,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "reward_fn": reward_fn,
             "num_iterations": num_iterations,
             "group_size": group_size,
-            "tasks_per_iteration": tasks_per_iteration,
+            "prompt_batch_size": prompt_batch_size,
             "learning_rate": learning_rate,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -1322,7 +1321,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             # GRPO hyperparameters
             "num_iterations": int,
             "group_size": int,
-            "tasks_per_iteration": int,
+            "prompt_batch_size": int,
             "learning_rate": float,
             "temperature": float,
             "max_tokens": int,
@@ -1378,8 +1377,7 @@ def lora_grpo(
     # GRPO hyperparameters
     num_iterations: int = 15,
     group_size: int = 8,
-    tasks_per_iteration: int = 100,
-    prompt_batch_size: Optional[int] = None,
+    prompt_batch_size: int = 100,
     learning_rate: float = 1e-5,
     temperature: float = 0.7,
     max_tokens: int = 512,
@@ -1442,8 +1440,7 @@ def lora_grpo(
 
         num_iterations: GRPO training iterations (default: 15).
         group_size: Rollouts per task for advantage estimation (default: 8).
-        tasks_per_iteration: Number of unique prompts per training step (default: 100).
-            Alias: prompt_batch_size.
+        prompt_batch_size: Number of unique prompts per training step (default: 100).
         learning_rate: Learning rate (default: 1e-5).
         temperature: Sampling temperature (default: 0.7).
         max_tokens: Max response tokens per rollout (default: 512).
@@ -1485,7 +1482,7 @@ def lora_grpo(
             ckpt_output_dir="./grpo_output",
             num_iterations=15,
             group_size=8,
-            tasks_per_iteration=100,
+            prompt_batch_size=100,
             lora_r=16,
             lora_alpha=8,
         )
@@ -1531,10 +1528,6 @@ def lora_grpo(
     """
     from . import create_algorithm
 
-    # Resolve alias: prompt_batch_size takes precedence over tasks_per_iteration
-    if prompt_batch_size is not None:
-        tasks_per_iteration = prompt_batch_size
-
     algorithm = create_algorithm("lora_grpo", backend)
     return algorithm.train(
         model_path=model_path,
@@ -1548,7 +1541,7 @@ def lora_grpo(
         reward_fn=reward_fn,
         num_iterations=num_iterations,
         group_size=group_size,
-        tasks_per_iteration=tasks_per_iteration,
+        prompt_batch_size=prompt_batch_size,
         learning_rate=learning_rate,
         temperature=temperature,
         max_tokens=max_tokens,

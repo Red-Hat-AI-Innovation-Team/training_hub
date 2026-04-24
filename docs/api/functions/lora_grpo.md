@@ -22,7 +22,7 @@ def lora_grpo(
     # GRPO hyperparameters
     num_iterations: int = 15,
     group_size: int = 8,
-    tasks_per_iteration: int = 100,
+    prompt_batch_size: int = 100,
     learning_rate: float = 1e-5,
     temperature: float = 0.7,
     max_tokens: int = 512,
@@ -97,7 +97,7 @@ result = lora_grpo(
 |-----------|------|---------|-------------|
 | `num_iterations` | `int` | `15` | Number of GRPO training iterations (ART) or epochs (verl) |
 | `group_size` | `int` | `8` | Rollouts per task for advantage estimation |
-| `tasks_per_iteration` | `int` | `100` | Tasks sampled per iteration |
+| `prompt_batch_size` | `int` | `100` | Number of unique prompts per training step |
 | `learning_rate` | `float` | `1e-5` | Learning rate |
 | `temperature` | `float` | `0.7` | Sampling temperature for rollouts |
 | `max_tokens` | `int` | `512` | Maximum response tokens per rollout |
@@ -162,7 +162,7 @@ result = lora_grpo(
     ckpt_output_dir="./toucan_grpo",
     num_iterations=15,
     group_size=8,
-    tasks_per_iteration=100,
+    prompt_batch_size=100,
     lora_r=32,
     lora_alpha=64,
 )
