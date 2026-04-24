@@ -794,11 +794,14 @@ class VeRLLoRAGRPOBackend(Backend):
         total_rollouts = prompt_batch_size * group_size
         n_workers = n_gpus * 4  # verl default: 4 agent loop workers per GPU
         if total_rollouts % n_workers != 0:
+            # Find next valid prompt_batch_size (must produce total divisible by n_workers)
+            suggested = prompt_batch_size + 1
+            while (suggested * group_size) % n_workers != 0:
+                suggested += 1
             raise ValueError(
                 f"prompt_batch_size ({prompt_batch_size}) * group_size ({group_size}) "
                 f"= {total_rollouts} must be divisible by the number of agent workers "
-                f"({n_workers} = n_gpus * 4). Try adjusting prompt_batch_size to "
-                f"{(total_rollouts // n_workers + 1) * n_workers // group_size}."
+                f"({n_workers} = n_gpus * 4). Try prompt_batch_size={suggested}."
             )
         use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
 
@@ -925,6 +928,13 @@ class VeRLLoRAGRPOBackend(Backend):
             if mlflow_experiment_name and not wandb_project:
                 # verl maps project_name → MLflow experiment
                 cmd.append(f"trainer.project_name={mlflow_experiment_name}")
+            elif mlflow_experiment_name and wandb_project:
+                logger.warning(
+                    "Both wandb_project and mlflow_experiment_name set. "
+                    "verl uses trainer.project_name for both — using wandb_project=%s. "
+                    "MLflow experiment will also be named '%s'.",
+                    wandb_project, wandb_project,
+                )
 
         wandb_run_name = algorithm_params.get("wandb_run_name") or os.environ.get("WANDB_RUN_NAME")
         mlflow_run_name = algorithm_params.get("mlflow_run_name") or os.environ.get("MLFLOW_RUN_NAME")
