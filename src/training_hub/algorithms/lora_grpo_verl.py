@@ -787,6 +787,19 @@ class VeRLLoRAGRPOBackend(Backend):
         n_gpus = algorithm_params.get("n_gpus", 1)
         nnodes = algorithm_params.get("nnodes", 1)
         tp_size = algorithm_params.get("tensor_parallel_size", 1)
+
+        # Validate batch divisibility — verl requires total rollouts
+        # (tasks_per_iteration * group_size) to be evenly divisible by
+        # the number of agent loop workers (n_gpus * 4 by default).
+        total_rollouts = tasks_per_iteration * group_size
+        n_workers = n_gpus * 4  # verl default: 4 agent loop workers per GPU
+        if total_rollouts % n_workers != 0:
+            raise ValueError(
+                f"tasks_per_iteration ({tasks_per_iteration}) * group_size ({group_size}) "
+                f"= {total_rollouts} must be divisible by the number of agent workers "
+                f"({n_workers} = n_gpus * 4). Try adjusting tasks_per_iteration to "
+                f"{(total_rollouts // n_workers + 1) * n_workers // group_size}."
+            )
         use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
 
         # train_batch_size = number of prompts per batch. verl's rollout.n
