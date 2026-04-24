@@ -202,6 +202,22 @@ def _load_tool_call_dataset(
     return train, val
 
 
+def _load_generic_dataset(data_path: str, n_train: int) -> tuple[list[dict], list[dict]]:
+    """Load generic JSONL dataset with 'question'+'ground_truth' or 'messages' fields.
+
+    Returns:
+        (train_samples, val_samples) — val is empty for generic datasets.
+    """
+    logger.info("Loading generic dataset from %s", data_path)
+
+    with open(data_path) as f:
+        raw = [json.loads(line) for line in f if line.strip()]
+
+    samples = raw[:n_train]
+    logger.info("Loaded %d generic samples", len(samples))
+    return samples, []
+
+
 def _load_local_dataset(data_path: str, n_train: int, n_val: int) -> tuple[list[dict], list[dict]]:
     """Load dataset from local JSON/JSONL file.
 
@@ -693,16 +709,23 @@ class ARTLoRAGRPOBackend(Backend):
         art_project = wandb_project or params.get("art_project", "training-hub-grpo")
         art_path = params.get("art_path", os.path.join(ckpt_output_dir, ".art"))
 
-        # Resolve mode: built-in tool-call vs custom rollout
+        # Resolve mode: built-in tool-call vs custom rollout vs generic data
         if rollout_fn is not None:
-            if tasks is None:
+            if tasks is None and data_path is None:
                 raise ValueError(
                     "When using a custom rollout_fn, you must also provide 'tasks' "
-                    "(a list of task objects to pass to your rollout function)."
+                    "or 'data_path' (a list of task objects to pass to your rollout function)."
                 )
-            train_data = tasks
+            if tasks is not None:
+                train_data = tasks
+            else:
+                train_data, _ = _load_generic_dataset(data_path, n_train)
             val_data = []
             mode = "custom"
+        elif data_path is not None and reward_fn is not None:
+            # Generic data with custom reward — auto-generate rollout
+            train_data, val_data = _load_generic_dataset(data_path, n_train)
+            mode = "generic"
         elif data_path is not None:
             train_data, val_data = _load_tool_call_dataset(
                 data_path, n_train=n_train, n_val=n_val, data_config=data_config,
@@ -794,6 +817,39 @@ class ARTLoRAGRPOBackend(Backend):
                     reward_fn=actual_reward_fn,
                 )
             effective_rollout = _builtin_rollout
+        elif mode == "generic":
+            # Generic data: send question to model, evaluate with reward_fn
+            async def _generic_rollout(mdl, sample):
+                async with sem:
+                    client = mdl.openai_client()
+                    model_name = mdl.get_inference_name()
+
+                    question = sample.get("question", "")
+                    ground_truth = sample.get("ground_truth", sample.get("answer", ""))
+                    messages = sample.get("messages") or [{"role": "user", "content": question}]
+
+                    response = await client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    response_text = response.choices[0].message.content or ""
+
+                    reward = reward_fn(
+                        data_source="generic",
+                        solution_str=response_text,
+                        ground_truth=ground_truth,
+                    )
+
+                    trajectory = art.Trajectory(
+                        messages_and_choices=[
+                            (messages, [response.choices[0]]),
+                        ]
+                    )
+                    trajectory.reward = float(reward)
+                    return trajectory
+            effective_rollout = _generic_rollout
         else:
             # Wrap user's rollout_fn with semaphore for concurrency control
             async def _wrapped_rollout(mdl, task):
