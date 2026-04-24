@@ -174,6 +174,16 @@ For LoRA + GRPO training (both ART and verl backends):
 pip install training-hub[grpo,lora]
 ```
 
+> **Note:** When combining `[grpo]` with `[cuda]` extras, install them sequentially
+> to avoid dependency solver conflicts:
+> ```bash
+> pip install training-hub[grpo,lora]
+> pip install training-hub[cuda]
+> ```
+> The `[grpo]` extras constrain torch, vllm, and transformers versions for verl
+> compatibility, which may conflict with versions pulled by `[cuda]`. Sequential
+> installation lets the solver pick compatible versions.
+
 ### CUDA Support
 For GPU training with CUDA support:
 ```bash

@@ -21,11 +21,14 @@ For the current list of supported algorithms, backends, and dependencies, see:
 # Install in editable mode (development)
 pip install -e .
 
-# Install with CUDA support (requires two-step for flash-attn)
-pip install -e . && pip install -e .[cuda] --no-build-isolation
-
 # Install with LoRA support
 pip install -e .[lora]
+
+# Install with GRPO support (includes ART + verl backends)
+pip install -e .[grpo,lora]
+
+# Install with CUDA support (install sequentially after other extras)
+pip install -e .[cuda] --no-build-isolation
 
 # Install with development dependencies
 pip install -e .[dev]
@@ -175,9 +178,11 @@ Each algorithm has validation logic in its `train()` method. Read the method doc
 
 ### Installation
 
-CUDA extras require two-step install due to flash-attn build requirements:
+Install extras sequentially — `[grpo]` and `[cuda]` have conflicting transitive
+dependencies that the solver can resolve when installed in order:
 ```bash
-pip install -e . && pip install -e .[cuda] --no-build-isolation
+pip install -e .[grpo,lora]           # GRPO backends (ART + verl)
+pip install -e .[cuda] --no-build-isolation  # CUDA kernels (after grpo)
 ```
 
 ### Testing
