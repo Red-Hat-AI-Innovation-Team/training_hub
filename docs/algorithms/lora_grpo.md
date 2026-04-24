@@ -195,10 +195,42 @@ result = lora_grpo(
 ## Installation
 
 ```bash
-pip install training-hub[grpo,lora]
+pip install training-hub[grpo]
 ```
 
-This installs both ART and verl backends along with LoRA dependencies ([Unsloth](https://github.com/unslothai/unsloth), TRL, vLLM).
+This installs the GRPO backends (ART + verl) along with vLLM and training dependencies.
+
+### With CUDA extras
+
+If you also need CUDA-optimized kernels (for SFT or other algorithms), install extras
+sequentially — not in one command — due to dependency solver conflicts between `kernels`
+and `transformers` versions:
+
+```bash
+# Step 1: Install grpo extras first (pins transformers<5, vllm, etc.)
+pip install training-hub[grpo]
+
+# Step 2: Install cuda extras after (solver picks compatible kernel versions)
+pip install training-hub[cuda]
+```
+
+Installing `training-hub[grpo,cuda]` in a single command may fail because `kernels>=0.13`
+requires `transformers_hub>=1.0` while `transformers<5` (needed by verl/trl) pins
+`transformers_hub<1.0`. Sequential installation resolves this — the solver picks
+`kernels==0.12.x` which is compatible with both.
+
+### Dependency version notes
+
+The `[grpo]` extras pull in specific dependency versions that may differ from other extras:
+
+- **torch**: verl 0.7.1 is compatible with torch 2.6–2.9. The installed version depends
+  on your PyPI index (`--extra-index-url https://download.pytorch.org/whl/cu128` for CUDA 12.8).
+- **vllm**: verl pins `vllm<=0.12` but versions up to 0.15.x work in practice.
+- **transformers**: Capped at `<5.0` for trl/unsloth compatibility.
+- **flash-attn**: Must be installed after torch to build against the correct version.
+  If flash-attn breaks after a torch upgrade, reinstall with `pip install flash-attn --no-build-isolation`.
+- **numba**: vllm pins `numba==0.61.2`. Other training-hub extras may request newer versions
+  but 0.61.2 works for all code paths.
 
 ## Next Steps
 
