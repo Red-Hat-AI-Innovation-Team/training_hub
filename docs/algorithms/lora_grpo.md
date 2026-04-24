@@ -203,34 +203,26 @@ This installs the GRPO backends (ART + verl) along with vLLM and training depend
 ### With CUDA extras
 
 If you also need CUDA-optimized kernels (for SFT or other algorithms), install extras
-sequentially — not in one command — due to dependency solver conflicts between `kernels`
-and `transformers` versions:
+sequentially to avoid dependency solver conflicts:
 
 ```bash
-# Step 1: Install grpo extras first (pins transformers<5, vllm, etc.)
+# Install grpo first, then cuda
 pip install training-hub[grpo]
-
-# Step 2: Install cuda extras after (solver picks compatible kernel versions)
 pip install training-hub[cuda]
 ```
 
-Installing `training-hub[grpo,cuda]` in a single command may fail because `kernels>=0.13`
-requires `transformers_hub>=1.0` while `transformers<5` (needed by verl/trl) pins
-`transformers_hub<1.0`. Sequential installation resolves this — the solver picks
-`kernels==0.12.x` which is compatible with both.
+> **Note:** Installing `training-hub[grpo,cuda]` in a single command may fail due to
+> transitive dependency conflicts between packages. Sequential installation allows the
+> solver to pick compatible versions.
 
-### Dependency version notes
+### Dependency notes
 
-The `[grpo]` extras pull in specific dependency versions that may differ from other extras:
+The `[grpo]` extras may pull in different dependency versions than other extras due to
+verl and vLLM constraints. Key things to be aware of:
 
-- **torch**: verl 0.7.1 is compatible with torch 2.6–2.9. The installed version depends
-  on your PyPI index (`--extra-index-url https://download.pytorch.org/whl/cu128` for CUDA 12.8).
-- **vllm**: verl pins `vllm<=0.12` but versions up to 0.15.x work in practice.
-- **transformers**: Capped at `<5.0` for trl/unsloth compatibility.
-- **flash-attn**: Must be installed after torch to build against the correct version.
-  If flash-attn breaks after a torch upgrade, reinstall with `pip install flash-attn --no-build-isolation`.
-- **numba**: vllm pins `numba==0.61.2`. Other training-hub extras may request newer versions
-  but 0.61.2 works for all code paths.
+- **torch/vllm**: Versions are constrained by verl compatibility. Check verl's release notes for supported ranges.
+- **flash-attn**: Must be installed after torch. If it breaks after a torch upgrade, reinstall with `pip install flash-attn --no-build-isolation`.
+- **transformers**: Capped below a major version for trl/unsloth compatibility.
 
 ## Next Steps
 
