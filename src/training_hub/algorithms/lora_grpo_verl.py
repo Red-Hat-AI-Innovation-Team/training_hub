@@ -810,6 +810,11 @@ class VeRLLoRAGRPOBackend(Backend):
         # batch size should NOT be multiplied by group_size.
         train_batch_size = prompt_batch_size
 
+        # ppo_mini_batch_size must be divisible by n_gpus (world_size)
+        ppo_mini_batch_size = min(train_batch_size, 256)
+        if ppo_mini_batch_size % n_gpus != 0:
+            ppo_mini_batch_size = max(n_gpus, (ppo_mini_batch_size // n_gpus) * n_gpus)
+
         # Calculate steps per epoch for checkpoint frequency.
         # Default: save once per epoch. Can be overridden via saves_per_epoch.
         import pandas as pd
@@ -848,7 +853,7 @@ class VeRLLoRAGRPOBackend(Backend):
             "actor_rollout_ref.model.use_remove_padding=True",
             # Actor (training)
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
-            f"actor_rollout_ref.actor.ppo_mini_batch_size={min(train_batch_size, 256)}",
+            f"actor_rollout_ref.actor.ppo_mini_batch_size={ppo_mini_batch_size}",
             "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
             "actor_rollout_ref.actor.entropy_coeff=0",
             "actor_rollout_ref.actor.fsdp_config.param_offload=False",

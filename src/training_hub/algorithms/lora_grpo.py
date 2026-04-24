@@ -1280,6 +1280,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "gpu_memory_utilization": gpu_memory_utilization,
             "max_lora_rank": max_lora_rank,
             "n_gpus": n_gpus,
+            "nnodes": nnodes,
             "tensor_parallel_size": tensor_parallel_size,
             "art_model_name": art_model_name,
             "art_project": art_project,
@@ -1336,6 +1337,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "gpu_memory_utilization": float,
             "max_lora_rank": int,
             "n_gpus": int,
+            "nnodes": int,
             "tensor_parallel_size": int,
             # ART
             "art_model_name": str,
