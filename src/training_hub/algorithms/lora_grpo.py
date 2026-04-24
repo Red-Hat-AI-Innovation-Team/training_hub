@@ -97,15 +97,9 @@ async def _shutdown_art_backend(backend) -> None:
     except Exception:
         pass
 
-    import threading
-    non_daemon = [t for t in threading.enumerate()
-                  if t.is_alive() and not t.daemon and t != threading.main_thread()]
-    if non_daemon:
-        logger.info(
-            "Force-exiting to clean up %d non-daemon threads (torch/vLLM)",
-            len(non_daemon),
-        )
-        os._exit(0)
+    # Note: os._exit is NOT called here. The subprocess parent will handle
+    # cleanup. Calling os._exit prematurely would kill multi-iteration
+    # training runs before they complete.
 
 
 # ---------------------------------------------------------------------------
@@ -635,19 +629,20 @@ class ARTLoRAGRPOBackend(Backend):
     def _subprocess_entry(algorithm_params, results_path, error_path):
         """Subprocess entry point for training."""
         os.environ["VLLM_USE_V1"] = "0"
+        # Pass results_path into params so _run_training can save before shutdown
+        algorithm_params["_results_path"] = results_path
         try:
             import art
             from art.local.backend import LocalBackend
-            result = asyncio.run(
+            asyncio.run(
                 ARTLoRAGRPOBackend()._run_training(algorithm_params, art, LocalBackend)
             )
-            with open(results_path, "w") as f:
-                json.dump(result, f, indent=2)
         except SystemExit:
-            pass  # os._exit from shutdown — results already on disk
+            pass  # os._exit from shutdown — results saved in _run_training
         except Exception as e:
             with open(error_path, "w") as f:
-                f.write(str(e))
+                import traceback
+                f.write(traceback.format_exc())
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
@@ -770,8 +765,9 @@ class ARTLoRAGRPOBackend(Backend):
         await model.register(backend)
         logger.info("Model registered with ART backend at %s", art_path)
 
+        result = None
         try:
-            return await self._run_training_loop(
+            result = await self._run_training_loop(
                 model, backend, art, train_data,
                 mode=mode,
                 rollout_fn=rollout_fn,
@@ -785,12 +781,26 @@ class ARTLoRAGRPOBackend(Backend):
                 concurrency=concurrency,
                 ckpt_output_dir=ckpt_output_dir,
                 art_path=art_path,
+                art_project=art_project,
+                art_model_name=art_model_name,
                 model_path=model_path,
                 lora_r=lora_r,
                 lora_alpha=lora_alpha,
                 iteration_callback=iteration_callback,
             )
+            return result
         finally:
+            # Save results BEFORE shutdown — _shutdown_art_backend calls
+            # os._exit() which kills the process immediately.
+            results_path = params.get("_results_path")
+            if results_path and result is not None:
+                try:
+                    with open(results_path, "w") as f:
+                        json.dump(result, f, indent=2)
+                    logger.info("Results saved to %s", results_path)
+                except Exception as e:
+                    logger.warning("Failed to save results: %s", e)
+
             logger.info("Shutting down ART backend...")
             await _shutdown_art_backend(backend)
             logger.info("ART backend shut down")
@@ -800,7 +810,7 @@ class ARTLoRAGRPOBackend(Backend):
         mode, rollout_fn, reward_fn,
         num_iterations, group_size, tasks_per_iteration,
         learning_rate, temperature, max_tokens, concurrency,
-        ckpt_output_dir, art_path, model_path, lora_r, lora_alpha,
+        ckpt_output_dir, art_path, art_project, art_model_name, model_path, lora_r, lora_alpha,
         iteration_callback,
     ) -> Dict[str, Any]:
         """Inner training loop."""
@@ -842,10 +852,9 @@ class ARTLoRAGRPOBackend(Backend):
                         ground_truth=ground_truth,
                     )
 
+                    messages_and_choices = list(messages) + [response.choices[0]]
                     trajectory = art.Trajectory(
-                        messages_and_choices=[
-                            (messages, [response.choices[0]]),
-                        ]
+                        messages_and_choices=messages_and_choices,
                     )
                     trajectory.reward = float(reward)
                     return trajectory
@@ -958,6 +967,17 @@ class ARTLoRAGRPOBackend(Backend):
 
             iter_time = time.time() - iter_start
             timing_history.append(iter_time)
+
+            # Update and persist results after each train step.
+            # model.train() can trigger os._exit on the last iteration
+            # via ART's internal cleanup, so we save after every step.
+            elapsed = time.time() - start_time
+            results["iteration"] = iteration + 1
+            results["timing_history"] = list(timing_history)
+            results["total_time_seconds"] = elapsed
+            results["total_rollouts"] = (iteration + 1) * rollouts_per_iter
+            with open(os.path.join(ckpt_output_dir, "training_results.json"), "w") as f:
+                json.dump(results, f, indent=2)
 
             # Write training metrics (loss/grad/entropy) from ART's history.
             # ART writes history.jsonl live during model.train(), so this
