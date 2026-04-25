@@ -5,8 +5,8 @@ LoRA + GRPO Training Example
 Trains LoRA adapters using Group Relative Policy Optimization (GRPO) with
 reinforcement learning from verifiable rewards (RLVR).
 
-Defaults to the verl backend with Dr. GRPO (no reference model) on 4 GPUs.
-Use --backend art for single-GPU training.
+Defaults to the verl backend with Dr. GRPO (no reference model). Set
+--n-gpus to scale across GPUs; use --backend art for single-GPU training.
 
 Example usage:
     # Multi-GPU Dr. GRPO with verl (default)
