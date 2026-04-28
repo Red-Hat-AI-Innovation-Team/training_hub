@@ -167,6 +167,9 @@ def _create_seed_lora_checkpoint(
     resolved_config = peft_model.peft_config["default"]
     config_dict = resolved_config.to_dict()
     config_dict["base_model_name_or_path"] = model_path
+    # PEFT may store target_modules as a set; convert for JSON serialisation.
+    if isinstance(config_dict.get("target_modules"), set):
+        config_dict["target_modules"] = sorted(config_dict["target_modules"])
     with open(os.path.join(ckpt_path, "adapter_config.json"), "w") as f:
         json.dump(config_dict, f, indent=2)
 
@@ -817,7 +820,10 @@ class ARTLoRAGRPOBackend(Backend):
 
         init_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
 
-        engine_kwargs = {}
+        # engine_args controls the vLLM engine; gpu_memory_utilization must
+        # appear here (not just in init_args) because ART reads it from
+        # engine_args when constructing AsyncEngineArgs for vLLM.
+        engine_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
         effective_max_lora_rank = max_lora_rank if max_lora_rank else lora_r
         if effective_max_lora_rank > 16:
             engine_kwargs["max_lora_rank"] = effective_max_lora_rank
@@ -826,7 +832,7 @@ class ARTLoRAGRPOBackend(Backend):
             init_args=art.dev.InitArgs(**init_kwargs),
             peft_args=art.dev.PeftArgs(**peft_kwargs),
             trainer_args=art.dev.TrainerArgs(max_grad_norm=max_grad_norm),
-            **({"engine_args": art.dev.EngineArgs(**engine_kwargs)} if engine_kwargs else {}),
+            engine_args=art.dev.EngineArgs(**engine_kwargs),
         )
 
         model = art.TrainableModel(
