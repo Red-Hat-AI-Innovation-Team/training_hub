@@ -223,3 +223,45 @@ Uses `setuptools_scm` for automatic versioning from git tags. See `pyproject.tom
 Example scripts are in `examples/scripts/`. All examples accept `--help` for argument documentation.
 
 See `examples/README.md` for an overview of available examples.
+
+## Operational Practices for Development and Testing
+
+These are hard-won lessons from development on this codebase. Follow them carefully.
+
+### Environment Management
+
+- **Use `uv` for venv creation and package management** when available. Prefer `uv venv`, `uv pip install`, and `uv pip compile` over `python -m venv` and `pip install`. `uv` is significantly faster and has better dependency resolution. Only fall back to basic `python -m venv` / `pip` if `uv` is not installed.
+- **Track which venv you are using.** This project may have multiple venvs (e.g., `.venv`, `.venv-test`) for different purposes. Before running anything, confirm you are in the correct one. If you create a new venv for a workstream, note it explicitly so future sessions know it exists and what it's for.
+- **The main branch has correctly resolving dependency versions** unless something upstream has changed. Do not preemptively downgrade packages to "fix" version conflicts. If something breaks after a new install, the problem is more likely a build artifact issue (see flash-attn below) than a fundamental version incompatibility.
+- **Test install order in a fresh venv** when adding or changing dependencies. Development iteration can mask dependency resolution issues — packages may already be installed from prior work, hiding the fact that a clean `pip install` would fail. Always verify the install path documented in README/CLAUDE.md works from scratch before merging dependency changes.
+
+### Debugging Build and Runtime Failures
+
+- **Read the actual error before acting.** When a build or import fails, read the full traceback and identify the root cause. Do not guess based on the package name alone.
+- **flash-attn must be rebuilt when torch changes.** If you see flash-attn errors after a torch upgrade, the fix is `uv pip install flash-attn --no-build-isolation --force-reinstall` (rebuilding against the new torch), NOT downgrading torch. The versions are not incompatible — the compiled extension just needs to match the torch it was built with. Run `uv cache clean flash-attn` first if needed.
+- **Do not downgrade packages as a first resort.** If something worked before and breaks now, investigate what changed rather than assuming version incompatibility. Common actual causes: stale build cache, wrong venv, missing rebuild of compiled extensions, or something else already running on the GPU.
+
+### GPU and Process Management
+
+- **Check what is already running on GPUs before launching work.** Run `nvidia-smi` first. If GPUs are occupied, identify whether the processes are active work or leftover dead processes before deciding what to do.
+- **Never run broad kill commands** like `ray stop`, `pkill -f vllm`, or `kill -9` on process patterns without first checking what matches. Other users or workstreams may have active processes. Use targeted kills on specific PIDs after confirming they are yours and no longer needed.
+- **When you see OOM, check GPU state first.** An OOM error on a training run may not be the run's fault — another process may already be consuming GPU memory. Check `nvidia-smi` before reducing batch sizes or model configs.
+
+### Running and Monitoring Training
+
+- **Run long-running training in the background** so the user can provide input and you can do other work. Use `run_in_background=true` on Bash commands for training launches.
+- **Always do a short initial check (30-60 seconds) to verify a run has started successfully** before switching to a longer monitoring cadence. Check for: process is alive, GPU utilization is nonzero, no immediate crash in logs. Do not sleep for 5-10 minutes only to discover the run failed on startup.
+- **After confirming startup, check periodically but not excessively.** Read the last few lines of the log file rather than sleeping blindly. If the run produces metrics to a file (e.g., `training_metrics.jsonl`), read that for progress.
+
+### Avoiding Regressions
+
+- **Track speed and quality baselines.** Before making changes, note the current performance (e.g., reward values, training time per step, memory usage). After changes, verify these haven't degraded. If a "fix" makes things slower or reduces reward, the fix introduced a regression.
+- **Build quick test harnesses for bug fixes and new features.** Write a small script that exercises the specific broken or new path, run it, and confirm the fix. Also run (or at minimum read) any existing tests to make sure prior functionality isn't broken.
+- **Save test results and note what was tested.** When a test passes, record: what was run, what config, what the output was, what commit it was on. This creates a reference point for future work. Use memory files or commit messages for this, not just conversation context.
+
+### Working With This Codebase Specifically
+
+- **lora_grpo has two backends (verl and art) and three data modes (tool_call, generic, custom).** Changes to shared code paths (the `LoRAGRPOAlgorithm.train()` method, the convenience function, parameter forwarding) must be verified against both backends. A parameter added to the API must be forwarded in `optional_params` AND `get_optional_params()`.
+- **verl backend launches training via torchrun subprocess.** Parameters are passed as Hydra-style CLI overrides. If you add a new parameter, it must be appended to the `cmd` list in `VeRLLoRAGRPOBackend.execute_training()`.
+- **Batch divisibility matters for verl.** `prompt_batch_size * group_size` must be divisible by `n_gpus * nnodes * micro_batch_size`. `ppo_mini_batch_size` must be divisible by `n_gpus * nnodes`. Validation exists but verify it covers new configurations.
+- **ART backend runs in-process.** It uses `asyncio.run()` and `LocalBackend(in_process=True)`. Errors propagate directly. The `os._exit()` issue in shutdown was fixed — do not re-introduce it, as it kills multi-iteration training silently.
