@@ -265,3 +265,38 @@ These are hard-won lessons from development on this codebase. Follow them carefu
 - **verl backend launches training via torchrun subprocess.** Parameters are passed as Hydra-style CLI overrides. If you add a new parameter, it must be appended to the `cmd` list in `VeRLLoRAGRPOBackend.execute_training()`.
 - **Batch divisibility matters for verl.** `prompt_batch_size * group_size` must be divisible by `n_gpus * nnodes * micro_batch_size`. `ppo_mini_batch_size` must be divisible by `n_gpus * nnodes`. Validation exists but verify it covers new configurations.
 - **ART backend runs in-process.** It uses `asyncio.run()` and `LocalBackend(in_process=True)`. Errors propagate directly. The `os._exit()` issue in shutdown was fixed — do not re-introduce it, as it kills multi-iteration training silently.
+
+### Past Incidents (reference for future debugging)
+
+These are real issues encountered during development. They illustrate *why* the rules above exist.
+
+- **flash-attn "wrong torch" failure:** After torch was upgraded, flash-attn import failed. The attempted fix was downgrading torch, which would have broken other things. Actual fix: `uv cache clean flash-attn && uv pip install flash-attn --no-build-isolation --force-reinstall`. The extension just needed rebuilding.
+- **ART multi-iteration silent failure:** `os._exit(0)` in `_shutdown_art_backend` was killing the process after iteration 1. A `NameError` on `art_project` (removed from method signature thinking closure would capture it — closures don't work across method boundaries) was the root cause, but `os._exit` masked the error. Multi-iteration training had worked before; the question was "what changed?" not "is this possible?"
+- **Eval regression from history truncation:** A change to truncate observation history (`h_obs[:80]`) during an eval refactor caused scores to drop from ~43% to ~16%. The truncation was introduced incidentally during a different change and wasn't caught until explicit comparison with prior results.
+- **Broad `ray stop` killed other users:** Running `ray stop` to clean up after training killed another user's active Ray cluster on the shared machine. Should have checked `ps aux` first and killed specific PIDs.
+- **OOM blamed on new workload:** Training OOM'd and the response was to reduce batch size. Actual cause: stale GPU processes from a prior run were still consuming memory. `nvidia-smi` would have shown this immediately.
+- **`nnodes` silently dropped:** When hiding ART-internal params from the public API, `nnodes` was accidentally removed from the `optional_params` dict. Multi-node training silently fell back to 1 node. Caught by CodeRabbit review. Lesson: when adding parameters to the convenience function, they must also appear in `optional_params` in `train()` AND in `get_optional_params()`.
+- **Install order dependency:** `[grpo]` and `[cuda]` extras must be installed sequentially. In development this worked because packages accumulated over time; in a fresh venv the solver couldn't resolve both simultaneously. Only caught when testing in a clean environment.
+
+### verl Backend Reference Configuration
+
+These are known-good configuration values from validated training runs. Use as a starting point when debugging or configuring new runs.
+
+```
+# Validated on 4x H100, Qwen3-4B, OpenShift tool-call data (1886 traces)
+lora_r=128, lora_alpha=256
+gpu_memory_utilization=0.3
+micro_batch_size=2  (needed for large vocab models — seq_len * 152K vocab causes OOM on logits)
+max_prompt_length=32768
+prompt_batch_size=50, group_size=8
+learning_rate=5e-6
+Step 1 reward: 0.154 (baseline reference for OpenShift v5 data)
+Training time: ~7 min/step
+
+# Validated on 4x H100, Qwen3-4B, AIME math data (custom reward)
+lora_r=16, lora_alpha=8
+gpu_memory_utilization=0.3
+num_iterations=2, group_size=8, prompt_batch_size=50
+learning_rate=1e-5
+Result: successful completion, both iterations
+```
