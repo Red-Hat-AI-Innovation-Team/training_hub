@@ -259,6 +259,16 @@ These are hard-won lessons from development on this codebase. Follow them carefu
 - **Build quick test harnesses for bug fixes and new features.** Write a small script that exercises the specific broken or new path, run it, and confirm the fix. Also run (or at minimum read) any existing tests to make sure prior functionality isn't broken.
 - **Save test results and note what was tested.** When a test passes, record: what was run, what config, what the output was, what commit it was on. This creates a reference point for future work. Use memory files or commit messages for this, not just conversation context.
 
+### Validating Before Shipping
+
+These are process lessons — not what broke, but what could have been done better to catch problems earlier.
+
+- **Do not create PRs before functionally testing the change.** Code review and syntax checks are not sufficient. If a fix touches a runtime code path (especially one involving subprocesses, GPU operations, or third-party libraries), run it end-to-end before opening a PR. A fix that passes `python -c "import ast; ast.parse(...)"` but crashes at runtime wastes reviewer time and erodes trust. Set up a test environment first, then write the fix, then test, then PR.
+- **Read how the downstream library actually consumes your inputs.** When passing config to a third-party library (ART, vLLM, PEFT), read the library's source to understand which config dict it reads from and how. Do not assume two config sections (`init_args` vs `engine_args`) are merged. Do not assume a parameter set in one place is forwarded to another. `grep` for the parameter name in the library's installed source (`site-packages/art/`, etc.) to trace how it flows.
+- **When a subprocess fails opaquely, find the real error before trying fixes.** `RuntimeError: Engine core initialization failed. Failed core proc(s): {}` tells you nothing. Do not start upgrading/downgrading packages or changing configs until you've found the actual exception. For vLLM, grep full output for `EngineCore_DP0.*ERROR`. For ART subprocess errors, read the `.training_error` file. Time spent on wrong fixes compounds — each attempt changes the environment and may introduce new problems.
+- **Test with the actual return format, not assumed keys.** Before writing test assertions about a function's return value, call the function once and inspect what it actually returns. Writing assertions like `result["algorithm"]` based on reading an intermediate internal dict (not the return value) wastes a test cycle.
+- **Test serialization of third-party objects before saving them.** When saving configs or state dicts from libraries like PEFT, verify the object is JSON/safetensors-serializable before building a pipeline around it. `peft_config.to_dict()` returning a `set` for `target_modules` is not obvious from the API — only a quick `json.dumps(config.to_dict())` test reveals it.
+
 ### Working With This Codebase Specifically
 
 - **lora_grpo has two backends (verl and art) and three data modes (tool_call, generic, custom).** Changes to shared code paths (the `LoRAGRPOAlgorithm.train()` method, the convenience function, parameter forwarding) must be verified against both backends. A parameter added to the API must be forwarded in `optional_params` AND `get_optional_params()`.
