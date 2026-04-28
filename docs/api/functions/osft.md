@@ -31,6 +31,8 @@ def osft(
     lr_scheduler_kwargs: dict[str, str] | None = None,
     checkpoint_at_epoch: bool | None = None,
     save_final_checkpoint: bool | None = None,
+    on_demand_checkpointing: bool | None = None,
+    resume_from_full_state_checkpoint: str | None = None,
     num_epochs: int | None = None,
     nproc_per_node: int | None = None,
     nnodes: int | None = None,
@@ -103,6 +105,8 @@ def osft(
 |-----------|------|---------|-------------|
 | `checkpoint_at_epoch` | `bool` | Backend default | If `True`, saves a checkpoint at the end of each epoch. |
 | `save_final_checkpoint` | `bool` | Backend default | If `True`, saves the final model checkpoint after training completes. |
+| `on_demand_checkpointing` | `bool` | `False` | Enable signal-driven full-state checkpointing. When `True`, catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and saves complete training state (OSFT factors, optimizer, scheduler, RNG) using DCP sharded saves before exiting. Each rank saves its own shard. Designed for Kubernetes/OpenShift/SLURM preemption scenarios. See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing). |
+| `resume_from_full_state_checkpoint` | `str` | `None` | Path to a full-state checkpoint directory to resume training from. The checkpoint must have been saved by the on-demand checkpointing system. On resume, OSFT factors and all training state are restored for exact trajectory continuation. |
 
 #### Distributed Training (Multi-GPU / Multi-Node)
 
@@ -305,6 +309,7 @@ The `unfreeze_rank_ratio` parameter is the key to OSFT's continual learning capa
 - [**Mini-Trainer Backend**](/api/backends/mini-trainer) - Backend implementation details
 - [**Data Formats**](/api/data-formats) - Input data format specifications
 - [**Distributed Training Guide**](/guides/distributed-training) - Multi-node setup guide
+- [**On-Demand Checkpointing Guide**](/guides/on-demand-checkpointing) - Signal-driven checkpointing for preemptible environments
 - [**OSFT Algorithm Overview**](/algorithms/osft) - Conceptual overview and theory
 - [**OSFT Examples**](/examples/#orthogonal-subspace-fine-tuning-osft) - Notebooks and scripts
 

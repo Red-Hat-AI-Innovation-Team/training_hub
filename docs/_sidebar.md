@@ -44,6 +44,7 @@
 * Guides
   * [Experiment Tracking & Logging](/guides/logging)
   * [Distributed Training](/guides/distributed-training)
+  * [On-Demand Checkpointing](/guides/on-demand-checkpointing)
   * [Data Preparation](/guides/data-preparation)
   * [Continual Pretraining](/guides/continual-pretraining)
   * [Runtime Estimates](/guides/runtime-estimates)

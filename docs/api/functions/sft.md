@@ -25,6 +25,7 @@ def sft(
     is_pretraining: Optional[bool] = None,
     block_size: Optional[int] = None,
     document_column_name: Optional[str] = None,
+    on_demand_checkpointing: Optional[bool] = None,
     nproc_per_node: Optional[int] = None,
     nnodes: Optional[int] = None,
     node_rank: Optional[int] = None,
@@ -88,6 +89,7 @@ def sft(
 | `checkpoint_at_epoch` | `bool` | Backend default | If `True`, saves a checkpoint at the end of each epoch. |
 | `accelerate_full_state_at_epoch` | `bool` | Backend default | If `True`, saves the full training state (optimizer, scheduler, etc.) at each epoch for automatic resumption with Accelerate. |
 | `save_samples` | `int` | Backend default | Enables frequency based checkpointing. The model will checkpoint after every `save_samples` number of samples seen. |
+| `on_demand_checkpointing` | `bool` | `False` | Enable signal-driven full-state checkpointing. When `True`, catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and saves complete training state before exiting. On restart, training automatically resumes from the checkpoint in `ckpt_output_dir`. Designed for Kubernetes/OpenShift/SLURM preemption scenarios. See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing). |
 
 #### Distributed Training (Multi-GPU / Multi-Node)
 
@@ -253,6 +255,7 @@ result = sft(
 - [**InstructLab Training Backend**](/api/backends/instructlab-training) - Backend implementation details
 - [**Data Formats**](/api/data-formats) - Required data format specifications
 - [**Distributed Training Guide**](/guides/distributed-training) - Complete multi-node setup guide
+- [**On-Demand Checkpointing Guide**](/guides/on-demand-checkpointing) - Signal-driven checkpointing for preemptible environments
 - [**SFT Algorithm Overview**](/algorithms/sft) - Conceptual overview of supervised fine-tuning
 - [**SFT Examples**](/examples/#supervised-fine-tuning-sft) - Working code examples and notebooks
 

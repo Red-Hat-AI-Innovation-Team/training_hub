@@ -133,6 +133,53 @@ The backend uses PyTorch's `torchrun` under the hood for robust distributed exec
 
 See [Distributed Training Guide](/guides/distributed-training.md) for complete multi-node setup instructions.
 
+## On-Demand Checkpointing
+
+Training Hub supports **on-demand full-state checkpointing** for SFT, designed for environments like Kubernetes/OpenShift AI and SLURM where training jobs can be preempted at any time.
+
+When enabled, the training process installs signal handlers that catch termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) before the hard SIGKILL. Upon receiving a signal, workers coordinate via `all_reduce` to save a full distributed checkpoint (model, optimizer, LR scheduler) and exit gracefully.
+
+### Enabling On-Demand Checkpointing
+
+```python
+from training_hub import sft
+
+result = sft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./training_data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    num_epochs=10,
+    effective_batch_size=32,
+    learning_rate=2e-5,
+    max_seq_len=2048,
+    max_tokens_per_gpu=45000,
+    on_demand_checkpointing=True,  # Enable signal-driven checkpointing
+)
+```
+
+### Resume Behavior
+
+When a checkpoint saved by on-demand checkpointing is found in `ckpt_output_dir`, training **automatically resumes** from where it was interrupted — no additional parameters needed. Simply re-run the same training command and the backend detects the checkpoint.
+
+### Kubernetes Configuration
+
+To give workers enough time to save a checkpoint before the hard SIGKILL, increase `terminationGracePeriodSeconds` in your pod spec:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 300  # 5 minutes
+```
+
+### Manually Triggering a Checkpoint
+
+You can trigger a checkpoint without sending a signal by writing the trigger file directly (useful for debugging or custom orchestration):
+
+```bash
+touch /dev/shm/instructlab_checkpoint_requested
+```
+
+See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing) for complete details on multi-node behavior, trigger file mechanics, and Kubernetes/OpenShift configuration.
+
 ## Advanced Usage
 
 ### Using the Factory Pattern
@@ -213,6 +260,7 @@ if 'instructlab-training' in AlgorithmRegistry.list_backends('sft'):
 - [OSFT Algorithm](/algorithms/osft.md) - Alternative for continual learning without catastrophic forgetting
 - [Data Formats](/api/data-formats.md) - Detailed data format specifications
 - [Distributed Training Guide](/guides/distributed-training.md) - Multi-node training setup
+- [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing) - Signal-driven checkpointing for preemptible environments
 - [Data Preparation Guide](/guides/data-preparation.md) - Best practices for preparing training data
 
 **Working examples:**

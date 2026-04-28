@@ -50,6 +50,8 @@ class OSFTAlgorithm(Algorithm):
         # checkpointing
         checkpoint_at_epoch: bool | None = None,
         save_final_checkpoint: bool | None = None,
+        on_demand_checkpointing: bool | None = None,
+        resume_from_full_state_checkpoint: str | None = None,
         # parameters for the training mode
         num_epochs: int | None = None,
         # whether to use the processed dataset
@@ -127,6 +129,16 @@ class OSFTAlgorithm(Algorithm):
             weight_decay (float): AdamW optimizer weight decay coefficient.
             checkpoint_at_epoch (bool): Whether to checkpoint at each epoch.
             save_final_checkpoint (bool): Whether to save final checkpoint once training is complete.
+            on_demand_checkpointing (bool): Enable signal-driven full-state checkpointing. When True,
+                the training process catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and
+                saves complete training state (model OSFT factors, optimizer, scheduler, RNG) using
+                DCP sharded saves before exiting. Each rank saves its own shard — no gathering to
+                rank 0. Designed for Kubernetes/OpenShift/SLURM environments where jobs can be
+                preempted.
+            resume_from_full_state_checkpoint (str): Path to a full-state checkpoint directory to
+                resume training from. The checkpoint must have been saved by the on-demand
+                checkpointing system. On resume, OSFT factors and all training state are restored
+                for exact training trajectory continuation.
             num_epochs (int): Number of epochs to train for.
             use_processed_dataset (bool):
                 Whether to use the processed dataset. If False, the data is assumed to be in standard
@@ -220,6 +232,8 @@ class OSFTAlgorithm(Algorithm):
             # checkpointing settings
             'checkpoint_at_epoch': checkpoint_at_epoch,
             'save_final_checkpoint': save_final_checkpoint,
+            'on_demand_checkpointing': on_demand_checkpointing,
+            'resume_from_full_state_checkpoint': resume_from_full_state_checkpoint,
             'num_epochs': num_epochs,
             'use_liger': use_liger,
             'seed': seed,
@@ -288,6 +302,8 @@ class OSFTAlgorithm(Algorithm):
             'weight_decay': float,
             'checkpoint_at_epoch': bool,
             'save_final_checkpoint': bool,
+            'on_demand_checkpointing': bool,
+            'resume_from_full_state_checkpoint': str,
             'num_epochs': int,
             'use_processed_dataset': bool,
             'unmask_messages': bool,
@@ -596,6 +612,8 @@ def osft(
     weight_decay: float | None = None,
     checkpoint_at_epoch: bool | None = None,
     save_final_checkpoint: bool | None = None,
+    on_demand_checkpointing: bool | None = None,
+    resume_from_full_state_checkpoint: str | None = None,
     num_epochs: int | None = None,
     # Torchrun parameters for multi-node support
     nproc_per_node: Literal['auto', 'gpu'] | int | None = None,
@@ -647,6 +665,8 @@ def osft(
         weight_decay=weight_decay,
         checkpoint_at_epoch=checkpoint_at_epoch,
         save_final_checkpoint=save_final_checkpoint,
+        on_demand_checkpointing=on_demand_checkpointing,
+        resume_from_full_state_checkpoint=resume_from_full_state_checkpoint,
         num_epochs=num_epochs,
         nproc_per_node=nproc_per_node,
         nnodes=nnodes,
