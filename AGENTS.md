@@ -265,6 +265,10 @@ These are hard-won lessons from development on this codebase. Follow them carefu
 - **verl backend launches training via torchrun subprocess.** Parameters are passed as Hydra-style CLI overrides. If you add a new parameter, it must be appended to the `cmd` list in `VeRLLoRAGRPOBackend.execute_training()`.
 - **Batch divisibility matters for verl.** `prompt_batch_size * group_size` must be divisible by `n_gpus * nnodes * micro_batch_size`. `ppo_mini_batch_size` must be divisible by `n_gpus * nnodes`. Validation exists but verify it covers new configurations.
 - **ART backend runs in-process.** It uses `asyncio.run()` and `LocalBackend(in_process=True)`. Errors propagate directly. The `os._exit()` issue in shutdown was fixed — do not re-introduce it, as it kills multi-iteration training silently.
+- **ART backend runs in a spawned subprocess.** `execute_training()` uses `mp.get_context("spawn")`. Functions passed as parameters (e.g., `reward_fn`, `rollout_fn`, `iteration_callback`) must be picklable — they must be defined at module level, not as closures or lambdas. Local functions defined inside test methods or `if __name__ == "__main__"` blocks will fail with `AttributeError: Can't get attribute ...`. The same applies to `python -c` scripts: define functions in importable files instead.
+- **ART has two sets of config: `init_args` (Unsloth) and `engine_args` (vLLM).** Parameters that affect vLLM (like `gpu_memory_utilization`) must be set in `engine_args`, not just `init_args`. ART reads `engine_args` directly when constructing `AsyncEngineArgs` for vLLM. If a parameter is missing from `engine_args`, vLLM uses its default (e.g., `gpu_memory_utilization=0.9`), which will OOM when Unsloth already holds model weights on the same GPU.
+- **vLLM V1 is the only engine in vLLM 0.15+.** The `VLLM_USE_V1=0` env var was removed in vLLM ~0.12. Do not attempt to force the V0 engine — it does not exist. vLLM V1 eagerly validates LoRA adapter paths on `add_lora`; if a checkpoint doesn't exist yet, create a seed adapter (see `_create_seed_lora_checkpoint`).
+- **vLLM engine core errors are hidden in subprocess logs.** When `AsyncLLM.from_engine_args` fails with `RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}`, the actual error is in the EngineCore subprocess stderr, NOT the parent process. To find it, grep for `EngineCore_DP0.*ERROR` in the full output. Common causes: flashinfer version mismatch, GPU memory exhaustion, incompatible torch version for compiled extensions.
 
 ### Past Incidents (reference for future debugging)
 
@@ -277,12 +281,38 @@ These are real issues encountered during development. They illustrate *why* the 
 - **OOM blamed on new workload:** Training OOM'd and the response was to reduce batch size. Actual cause: stale GPU processes from a prior run were still consuming memory. `nvidia-smi` would have shown this immediately.
 - **`nnodes` silently dropped:** When hiding ART-internal params from the public API, `nnodes` was accidentally removed from the `optional_params` dict. Multi-node training silently fell back to 1 node. Caught by CodeRabbit review. Lesson: when adding parameters to the convenience function, they must also appear in `optional_params` in `train()` AND in `get_optional_params()`.
 - **Install order dependency:** `[grpo]` and `[cuda]` extras must be installed sequentially. In development this worked because packages accumulated over time; in a fresh venv the solver couldn't resolve both simultaneously. Only caught when testing in a clean environment.
+- **`VLLM_USE_V1=0` became a no-op:** The env var was set in `_subprocess_entry` to force vLLM's legacy V0 engine. vLLM ~0.12 removed the env var, and ART 0.5.17 pins vLLM 0.17.0 which only has V1. vLLM V1 eagerly validates LoRA adapter paths on `add_lora`, but ART calls `add_lora` before training creates the first checkpoint — causing `FileNotFoundError` on `adapter_config.json`. Fix: create a seed LoRA checkpoint (zero-initialized `lora_B` = identity transform) before `model.register(backend)`. Lesson: env var workarounds for third-party behavior silently break when the dependency upgrades. Prefer structural fixes (creating the expected files) over environment hacks.
+- **`gpu_memory_utilization` not forwarded to vLLM:** The parameter was passed in `init_args` (Unsloth initialization) but not in `engine_args` (vLLM engine args). ART reads `engine_args` when constructing `AsyncEngineArgs`, so vLLM defaulted to 0.9 and OOM'd because Unsloth already held ~14GB of model weights on the same GPU. Worse, `engine_args` was conditionally omitted entirely (`**({"engine_args": ...} if engine_kwargs else {})`) — when `max_lora_rank` wasn't set, no engine args were forwarded at all. Fix: always pass `engine_args` with at least `gpu_memory_utilization`. Lesson: read how the downstream library (ART) actually consumes config — don't assume `init_args` and `engine_args` are merged.
+- **PEFT `target_modules` returned as a set:** `peft_config.to_dict()` returns `target_modules` as a Python `set`, which `json.dump` cannot serialize. This crashed the seed checkpoint creation with `TypeError: Object of type set is not JSON serializable`. Fix: convert to sorted list before serializing. Lesson: always test serialization of configs from third-party libraries — they may use non-JSON-safe types internally.
+- **flashinfer-cubin version mismatch:** vLLM 0.17.0 installed `flashinfer-python==0.6.4` but `flashinfer-cubin==0.6.8.post1` was already present from a prior install. The version mismatch caused the vLLM engine core subprocess to crash silently with `RuntimeError: flashinfer-cubin version (0.6.8.post1) does not match flashinfer version (0.6.4)`. The parent process only showed `Engine core initialization failed. Failed core proc(s): {}` with no root cause. Fix: `uv pip install flashinfer-cubin==0.6.4`. Lesson: when vLLM engine core fails silently, grep for `EngineCore_DP0.*ERROR` to find the real error in subprocess logs.
+- **vLLM engine core error invisible in spawned subprocess:** When ART runs inside Training Hub's `mp.spawn` subprocess, vLLM launches its engine core as a sub-subprocess. Errors in that sub-subprocess are printed to stderr but not captured by the parent. The parent only sees `RuntimeError: Engine core initialization failed` with an empty proc set. Spent significant time trying to install compatible versions and upgrade torch before discovering the actual error (flashinfer mismatch, then GPU memory). Lesson: always capture and grep the full stderr, including lines prefixed with `(EngineCore_DP0 pid=...)`, before trying to fix the problem.
+
+### Testing the ART Backend
+
+There are no automated tests checked into the repo yet. When testing ART GRPO locally:
+
+- **Use generic data mode** (not tool-call) for quick validation. Create a JSONL file with `{"question": "...", "ground_truth": "..."}` entries and pass a `reward_fn` that checks if `ground_truth` appears in the model's response. This avoids downloading the Toucan dataset.
+- **Make questions hard enough to produce reward variance.** If the model gets 100% reward on trivial questions (e.g., "What is 2+2?"), ART skips the GRPO training step ("Skipping tuning as there is no suitable data") because all trajectories have the same reward and there's no advantage signal. Use questions the model sometimes gets wrong to exercise the actual training path.
+- **Use minimal configs for speed:** `num_iterations=1`, `group_size=2`, `prompt_batch_size=5`, `lora_r=8`, `max_tokens=64`, `gpu_memory_utilization=0.3`. A single iteration takes ~90s on H100.
+- **`reward_fn` must be picklable.** Define it at module level in an importable file. Do not define it as a closure, lambda, or inside `python -c`. The ART subprocess uses `mp.get_context("spawn")` which pickles all parameters.
+- **Set `CUDA_VISIBLE_DEVICES=0`** to constrain to a single GPU (ART is single-GPU only). Without this, vLLM may try to use all visible GPUs.
+- **Install vllm separately after `[grpo]`.** `openpipe-art` declares vllm as a dependency but the prebuilt wheel may need manual installation to match CUDA/torch versions. After install, verify: `python -c "from vllm import _C; print('OK')"`. If `_C` import fails, the wheel was built for a different torch version.
+- **Verify flashinfer versions match:** `uv pip list | grep flashinfer` — `flashinfer-python` and `flashinfer-cubin` must be the same version. Mismatches crash the vLLM engine core subprocess silently.
 
 ### verl Backend Reference Configuration
 
 These are known-good configuration values from validated training runs. Use as a starting point when debugging or configuring new runs.
 
 ```
+# Validated on 1x H100, Qwen2.5-7B-Instruct, generic Q&A data (ART backend)
+lora_r=8, lora_alpha=4
+gpu_memory_utilization=0.3
+num_iterations=1, group_size=2, prompt_batch_size=5
+max_tokens=64, concurrency=4
+Result: successful completion, 10 rollouts, reward=1.0 (trivial data)
+Training time: ~90s total (including model load + vLLM warmup)
+Environment: openpipe-art==0.5.17, vllm==0.17.0, torch==2.10.0
+
 # Validated on 4x H100, Qwen3-4B, OpenShift tool-call data (1886 traces)
 lora_r=128, lora_alpha=256
 gpu_memory_utilization=0.3
