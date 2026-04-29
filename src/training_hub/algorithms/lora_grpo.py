@@ -842,19 +842,33 @@ class ARTLoRAGRPOBackend(Backend):
             _internal_config=internal_config,
         )
 
-        # Create a seed LoRA checkpoint so vLLM V1's eager add_lora
-        # validation finds a valid adapter on disk before training starts.
-        seed_ckpt_path = os.path.join(
-            art_path, art_project, "models", art_model_name,
-            "checkpoints", "0000",
-        )
-        _create_seed_lora_checkpoint(
-            model_path, seed_ckpt_path, lora_r, lora_alpha, target_modules,
-        )
+        # Patch ART's convert_checkpoint_if_needed to create a seed LoRA
+        # checkpoint if save_model didn't produce one.  This runs after
+        # ART's directory setup + save_model but before vLLM's add_lora,
+        # which is the only safe insertion point.  The pre-registration
+        # approach doesn't work because model.register() recreates the
+        # project directory structure, wiping any files we placed earlier.
+        import art.utils.convert_moe_lora as _convert_mod
+        _original_convert = _convert_mod.convert_checkpoint_if_needed
+
+        def _convert_and_ensure_checkpoint(checkpoint_dir):
+            _original_convert(checkpoint_dir)
+            if not os.path.exists(
+                os.path.join(checkpoint_dir, "adapter_config.json")
+            ):
+                _create_seed_lora_checkpoint(
+                    model_path, checkpoint_dir,
+                    lora_r, lora_alpha, target_modules,
+                )
+
+        _convert_mod.convert_checkpoint_if_needed = _convert_and_ensure_checkpoint
 
         # Register with backend
-        backend = LocalBackend(in_process=True, path=art_path)
-        await model.register(backend)
+        try:
+            backend = LocalBackend(in_process=True, path=art_path)
+            await model.register(backend)
+        finally:
+            _convert_mod.convert_checkpoint_if_needed = _original_convert
         logger.info("Model registered with ART backend at %s", art_path)
 
         result = None
