@@ -848,8 +848,14 @@ class ARTLoRAGRPOBackend(Backend):
         # which is the only safe insertion point.  The pre-registration
         # approach doesn't work because model.register() recreates the
         # project directory structure, wiping any files we placed earlier.
-        import art.utils.convert_moe_lora as _convert_mod
-        _original_convert = _convert_mod.convert_checkpoint_if_needed
+        #
+        # We must patch the reference in art.unsloth.service (where it's
+        # called), not just art.utils.convert_moe_lora, because service.py
+        # uses `from ..utils.convert_moe_lora import convert_checkpoint_if_needed`
+        # which creates a local binding that isn't affected by reassigning
+        # the module attribute.
+        import art.unsloth.service as _art_svc
+        _original_convert = _art_svc.convert_checkpoint_if_needed
 
         def _convert_and_ensure_checkpoint(checkpoint_dir):
             _original_convert(checkpoint_dir)
@@ -861,14 +867,14 @@ class ARTLoRAGRPOBackend(Backend):
                     lora_r, lora_alpha, target_modules,
                 )
 
-        _convert_mod.convert_checkpoint_if_needed = _convert_and_ensure_checkpoint
+        _art_svc.convert_checkpoint_if_needed = _convert_and_ensure_checkpoint
 
         # Register with backend
         try:
             backend = LocalBackend(in_process=True, path=art_path)
             await model.register(backend)
         finally:
-            _convert_mod.convert_checkpoint_if_needed = _original_convert
+            _art_svc.convert_checkpoint_if_needed = _original_convert
         logger.info("Model registered with ART backend at %s", art_path)
 
         result = None
