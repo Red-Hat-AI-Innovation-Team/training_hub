@@ -131,13 +131,13 @@ If a previous training run was killed before workers could clean up the trigger 
 
 You can trigger a checkpoint-and-exit without sending a signal by writing the trigger file directly. This is useful for debugging, testing, or integration with custom orchestration.
 
-### SFT
+Both backends use the same default trigger filename — `checkpoint_requested` — located on the tmpfs mount at `/dev/shm`:
 
 ```bash
-touch /dev/shm/instructlab_checkpoint_requested
+touch /dev/shm/checkpoint_requested
 ```
 
-Or from Python:
+Or from Python (SFT backend):
 
 ```python
 from instructlab.training.on_demand_checkpoint import write_trigger_file
@@ -145,9 +145,21 @@ from instructlab.training.on_demand_checkpoint import write_trigger_file
 write_trigger_file()
 ```
 
-### OSFT
+### Custom Trigger Filename
 
-The OSFT backend uses a similar trigger file mechanism. Consult the mini-trainer documentation for the exact trigger file path.
+Both `instructlab-training` and `mini-trainer` support overriding the trigger filename via the `CHECKPOINT_TRIGGER_FILENAME` environment variable. Set it before launching training:
+
+```bash
+export CHECKPOINT_TRIGGER_FILENAME=my_custom_trigger
+```
+
+Then trigger with:
+
+```bash
+touch /dev/shm/my_custom_trigger
+```
+
+This is useful when running multiple independent training jobs on the same node and you need each job to have its own trigger file.
 
 ## Differences Between SFT and OSFT
 
@@ -158,6 +170,8 @@ The OSFT backend uses a similar trigger file mechanism. Consult the mini-trainer
 | **Checkpoint format** | Distributed checkpoint | DCP sharded (each rank saves its own shard) |
 | **What's saved** | Model, optimizer, scheduler, metadata | OSFT factors, optimizer, scheduler, RNG, counters |
 | **Resume fidelity** | Resumes from exact step | Bit-identical optimization trajectories |
+| **Default trigger file** | `/dev/shm/checkpoint_requested` | `/dev/shm/checkpoint_requested` |
+| **Custom trigger env var** | `CHECKPOINT_TRIGGER_FILENAME` | `CHECKPOINT_TRIGGER_FILENAME` |
 
 ## Interaction with Other Checkpointing
 

@@ -175,7 +175,14 @@ spec:
 You can trigger a checkpoint without sending a signal by writing the trigger file directly (useful for debugging or custom orchestration):
 
 ```bash
-touch /dev/shm/instructlab_checkpoint_requested
+touch /dev/shm/checkpoint_requested
+```
+
+To use a custom trigger filename (e.g., when running multiple training jobs on the same node), set the `CHECKPOINT_TRIGGER_FILENAME` environment variable before launching training:
+
+```bash
+export CHECKPOINT_TRIGGER_FILENAME=my_custom_trigger
+touch /dev/shm/my_custom_trigger
 ```
 
 See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing) for complete details on multi-node behavior, trigger file mechanics, and Kubernetes/OpenShift configuration.
