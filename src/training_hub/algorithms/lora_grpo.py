@@ -862,6 +862,14 @@ class ARTLoRAGRPOBackend(Backend):
             if not os.path.exists(
                 os.path.join(checkpoint_dir, "adapter_config.json")
             ):
+                logger.warning(
+                    "ART's automatic LoRA adapter initialization did not "
+                    "produce adapter_config.json at %s — falling back to "
+                    "manual seed checkpoint creation. This is usually "
+                    "harmless but may indicate an Unsloth/PEFT version "
+                    "incompatibility.",
+                    checkpoint_dir,
+                )
                 _create_seed_lora_checkpoint(
                     model_path, checkpoint_dir,
                     lora_r, lora_alpha, target_modules,
