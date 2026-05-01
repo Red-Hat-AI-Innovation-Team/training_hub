@@ -103,6 +103,81 @@ async def _shutdown_art_backend(backend) -> None:
 
 
 # ---------------------------------------------------------------------------
+# vLLM V1 LoRA compatibility
+# ---------------------------------------------------------------------------
+
+
+def _create_seed_lora_checkpoint(
+    model_path: str,
+    ckpt_path: str,
+    lora_r: int,
+    lora_alpha: int,
+    target_modules: Optional[list] = None,
+) -> None:
+    """Create an initial zero-effect LoRA adapter checkpoint.
+
+    vLLM V1 eagerly validates LoRA adapter paths when ``add_lora`` is called.
+    ART calls ``add_lora`` before training has produced a checkpoint, causing a
+    ``FileNotFoundError`` on ``adapter_config.json``.  This function creates a
+    minimal seed adapter whose ``lora_B`` weights are all zero — making it an
+    identity transform so the model behaves like the unmodified base model for
+    the first rollout iteration.
+
+    A *meta-device* model is used so no real weight memory is allocated for the
+    base model; only the small LoRA parameter tensors are materialised on CPU.
+    """
+    if os.path.exists(os.path.join(ckpt_path, "adapter_config.json")):
+        return  # Already exists (resume or previous run)
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoConfig
+    from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
+    from safetensors.torch import save_file
+
+    logger.info(
+        "Creating seed LoRA checkpoint at %s (vLLM V1 compatibility)", ckpt_path
+    )
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(
+            config, torch_dtype=torch.bfloat16
+        )
+
+    lora_cfg = LoraConfig(
+        r=lora_r,
+        lora_alpha=lora_alpha,
+        target_modules=target_modules or "all-linear",
+        task_type="CAUSAL_LM",
+        lora_dropout=0.0,
+        bias="none",
+    )
+    peft_model = get_peft_model(model, lora_cfg)
+
+    # Extract LoRA state dict (meta tensors) and materialise as zeros on CPU.
+    meta_state = get_peft_model_state_dict(peft_model)
+    cpu_state = {
+        k: torch.zeros(v.shape, dtype=v.dtype) for k, v in meta_state.items()
+    }
+
+    os.makedirs(ckpt_path, exist_ok=True)
+    save_file(cpu_state, os.path.join(ckpt_path, "adapter_model.safetensors"))
+
+    # Save adapter_config.json with resolved target modules.
+    resolved_config = peft_model.peft_config["default"]
+    config_dict = resolved_config.to_dict()
+    config_dict["base_model_name_or_path"] = model_path
+    # PEFT may store target_modules as a set; convert for JSON serialisation.
+    if isinstance(config_dict.get("target_modules"), set):
+        config_dict["target_modules"] = sorted(config_dict["target_modules"])
+    with open(os.path.join(ckpt_path, "adapter_config.json"), "w") as f:
+        json.dump(config_dict, f, indent=2)
+
+    del peft_model, model, meta_state, cpu_state
+    logger.info("Seed LoRA checkpoint created")
+
+
+# ---------------------------------------------------------------------------
 # Built-in dataset loading (Toucan-style tool-call data)
 # ---------------------------------------------------------------------------
 
@@ -628,7 +703,11 @@ class ARTLoRAGRPOBackend(Backend):
     @staticmethod
     def _subprocess_entry(algorithm_params, results_path, error_path):
         """Subprocess entry point for training."""
-        os.environ["VLLM_USE_V1"] = "0"
+        # Note: VLLM_USE_V1=0 was previously set here to force the legacy V0
+        # engine, but that env var was removed in vLLM ~0.12.  vLLM 0.15+
+        # (shipped with openpipe-art 0.5.17) only has the V1 engine.  Instead,
+        # we create a seed LoRA checkpoint before model registration so that
+        # vLLM V1's eager add_lora validation finds a valid adapter on disk.
         # Pass results_path into params so _run_training can save before shutdown
         algorithm_params["_results_path"] = results_path
         try:
@@ -741,7 +820,10 @@ class ARTLoRAGRPOBackend(Backend):
 
         init_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
 
-        engine_kwargs = {}
+        # engine_args controls the vLLM engine; gpu_memory_utilization must
+        # appear here (not just in init_args) because ART reads it from
+        # engine_args when constructing AsyncEngineArgs for vLLM.
+        engine_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
         effective_max_lora_rank = max_lora_rank if max_lora_rank else lora_r
         if effective_max_lora_rank > 16:
             engine_kwargs["max_lora_rank"] = effective_max_lora_rank
@@ -750,7 +832,7 @@ class ARTLoRAGRPOBackend(Backend):
             init_args=art.dev.InitArgs(**init_kwargs),
             peft_args=art.dev.PeftArgs(**peft_kwargs),
             trainer_args=art.dev.TrainerArgs(max_grad_norm=max_grad_norm),
-            **({"engine_args": art.dev.EngineArgs(**engine_kwargs)} if engine_kwargs else {}),
+            engine_args=art.dev.EngineArgs(**engine_kwargs),
         )
 
         model = art.TrainableModel(
@@ -760,9 +842,47 @@ class ARTLoRAGRPOBackend(Backend):
             _internal_config=internal_config,
         )
 
+        # Patch ART's convert_checkpoint_if_needed to create a seed LoRA
+        # checkpoint if save_model didn't produce one.  This runs after
+        # ART's directory setup + save_model but before vLLM's add_lora,
+        # which is the only safe insertion point.  The pre-registration
+        # approach doesn't work because model.register() recreates the
+        # project directory structure, wiping any files we placed earlier.
+        #
+        # We must patch the reference in art.unsloth.service (where it's
+        # called), not just art.utils.convert_moe_lora, because service.py
+        # uses `from ..utils.convert_moe_lora import convert_checkpoint_if_needed`
+        # which creates a local binding that isn't affected by reassigning
+        # the module attribute.
+        import art.unsloth.service as _art_svc
+        _original_convert = _art_svc.convert_checkpoint_if_needed
+
+        def _convert_and_ensure_checkpoint(checkpoint_dir):
+            _original_convert(checkpoint_dir)
+            if not os.path.exists(
+                os.path.join(checkpoint_dir, "adapter_config.json")
+            ):
+                logger.warning(
+                    "ART's automatic LoRA adapter initialization did not "
+                    "produce adapter_config.json at %s — falling back to "
+                    "manual seed checkpoint creation. This is usually "
+                    "harmless but may indicate an Unsloth/PEFT version "
+                    "incompatibility.",
+                    checkpoint_dir,
+                )
+                _create_seed_lora_checkpoint(
+                    model_path, checkpoint_dir,
+                    lora_r, lora_alpha, target_modules,
+                )
+
+        _art_svc.convert_checkpoint_if_needed = _convert_and_ensure_checkpoint
+
         # Register with backend
-        backend = LocalBackend(in_process=True, path=art_path)
-        await model.register(backend)
+        try:
+            backend = LocalBackend(in_process=True, path=art_path)
+            await model.register(backend)
+        finally:
+            _art_svc.convert_checkpoint_if_needed = _original_convert
         logger.info("Model registered with ART backend at %s", art_path)
 
         result = None
