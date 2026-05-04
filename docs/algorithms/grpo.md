@@ -37,11 +37,10 @@ Only the **verl** backend is supported. Full fine-tuning requires FSDP for multi
 | Trainable params | ~1-2% (adapter only) | 100% (all weights) |
 | Checkpoint size | ~1-2 GB | ~16 GB (8B model) |
 | Serving | Base model + adapter | Standalone model |
-| Training speed | Slower (adapter overhead) | Faster per step |
 | Overfitting risk | Lower | Higher (may peak early) |
 | Memory | Lower | Higher |
 
-In practice, both achieve similar peak reward. Full FT tends to peak earlier but may overfit in later epochs, while LoRA training is more stable across epochs.
+Despite a significant drop in trainable parameters, we find that in most cases the adapter-based approach sees similar or stronger quality, while providing more flexibility in deployment and agentic systems. Depending on the use-case, either method will carry different benefits (capacity vs flexibility).
 
 ## Data Format
 
