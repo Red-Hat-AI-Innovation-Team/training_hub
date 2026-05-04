@@ -222,9 +222,11 @@ result = osft(
     max_seq_len=2048,
     learning_rate=2e-5,
     on_demand_checkpointing=True,
-    resume_from_full_state_checkpoint="./checkpoints/full_state_checkpoints",
+    resume_from_full_state_checkpoint="./checkpoints/full_state_checkpoints/step_0",
 )
 ```
+
+The path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent `full_state_checkpoints` directory — the DCP `.metadata` file lives inside the step directory.
 
 On resume, the model structure is initialized normally (with SVD computation), then all parameters are overwritten with checkpoint values via DCP in-place load — ensuring **bit-identical optimization trajectories** after resumption.
 

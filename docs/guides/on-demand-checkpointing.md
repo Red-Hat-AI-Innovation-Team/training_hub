@@ -68,13 +68,13 @@ result = osft(
 )
 ```
 
-**Resuming:** Specify the checkpoint path explicitly:
+**Resuming:** Specify the checkpoint path explicitly. The path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent directory:
 
 ```python
 result = osft(
     # ... same parameters as above ...
     on_demand_checkpointing=True,
-    resume_from_full_state_checkpoint="./checkpoints/full_state_checkpoints",
+    resume_from_full_state_checkpoint="./checkpoints/full_state_checkpoints/step_0",
 )
 ```
 
