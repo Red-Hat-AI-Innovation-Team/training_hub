@@ -55,6 +55,10 @@ src/training_hub/
 │   ├── sft.py               # Supervised Fine-Tuning
 │   ├── osft.py              # Orthogonal Subspace Fine-Tuning
 │   ├── lora.py              # LoRA + SFT
+│   ├── lora_grpo.py         # LoRA + GRPO and GRPO (ART backend, algorithm, convenience fns)
+│   ├── lora_grpo_verl.py    # verl backend for LoRA + GRPO and GRPO
+│   ├── rewards.py           # Reward functions (tool_call_reward, binary_reward)
+│   ├── verl_tool_agent.py   # Custom verl agent loop for tool-call training
 │   └── peft_extender.py     # PEFT parameter handling for LoRA
 └── profiling/
     └── memory_estimator.py  # GPU memory estimation for training
@@ -101,10 +105,10 @@ Training Hub is designed to support multiple backends per algorithm:
 
 - **Files**: `snake_case.py`
 - **Classes**: `PascalCase` (e.g., `SFTAlgorithm`, `MiniTrainerOSFTBackend`)
-- **Functions**: `snake_case` (e.g., `sft()`, `osft()`, `lora_sft()`)
+- **Functions**: `snake_case` (e.g., `sft()`, `osft()`, `lora_sft()`, `lora_grpo()`, `grpo()`)
 - **Constants**: `UPPER_SNAKE_CASE` (e.g., `FLOAT32_BYTES_N`)
-- **Backend names**: kebab-case strings (e.g., `"instructlab-training"`, `"mini-trainer"`)
-- **Algorithm names**: lowercase (e.g., `"sft"`, `"osft"`, `"lora_sft"`)
+- **Backend names**: kebab-case strings (e.g., `"instructlab-training"`, `"mini-trainer"`, `"verl"`, `"art"`)
+- **Algorithm names**: lowercase (e.g., `"sft"`, `"osft"`, `"lora_sft"`, `"lora_grpo"`, `"grpo"`)
 
 ## Code Style
 
