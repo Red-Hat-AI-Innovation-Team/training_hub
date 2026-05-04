@@ -14,6 +14,14 @@
   </a>
 </p>
 
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="/docs/assets/quickstart-dark.gif">
+    <source media="(prefers-color-scheme: light)" srcset="/docs/assets/quickstart.gif">
+    <img src="/docs/assets/quickstart.gif" alt="Training Hub quickstart examples" width="800" height="420">
+  </picture>
+</div>
+
 **New to Training Hub?** Read our comprehensive introduction: [Get Started with Language Model Post-Training Using Training Hub](https://developers.redhat.com/articles/2025/11/19/get-started-language-model-post-training-using-training-hub)
 
 ## Support Matrix
