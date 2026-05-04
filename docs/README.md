@@ -139,7 +139,7 @@ result = lora_grpo(
 )
 ```
 
-### [GRPO (Full Fine-Tuning RLVR)](./algorithms/grpo)
+### [GRPO (Full Fine-Tuning RLVR)](/algorithms/grpo)
 
 Full-parameter GRPO training via the verl backend. Trains all model weights instead of LoRA adapters. Same data formats and reward functions as LoRA + GRPO.
 

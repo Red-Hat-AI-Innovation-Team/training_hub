@@ -1795,6 +1795,17 @@ def grpo(
             n_gpus=4,
         )
     """
+    _unsupported = {
+        "backend", "rollout_fn", "tasks", "concurrency",
+        "lora_r", "lora_alpha", "target_modules", "max_lora_rank", "max_grad_norm",
+    } & kwargs.keys()
+    if _unsupported:
+        raise ValueError(
+            "grpo() only supports verl full fine-tuning. "
+            f"Unsupported arguments: {', '.join(sorted(_unsupported))}. "
+            "Use lora_grpo() for LoRA training or ART backend."
+        )
+
     return lora_grpo(
         model_path=model_path,
         ckpt_output_dir=ckpt_output_dir,
