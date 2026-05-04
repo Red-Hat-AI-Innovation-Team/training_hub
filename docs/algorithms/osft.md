@@ -207,9 +207,11 @@ result = osft(
 )
 ```
 
-### Resuming from a Checkpoint
+### Resume Behavior
 
-Unlike SFT, OSFT requires explicitly specifying the checkpoint path when resuming:
+When a checkpoint saved by on-demand checkpointing is found in `ckpt_output_dir`, training **automatically resumes** from where it was interrupted — no additional parameters needed. Simply re-run the same training command and the backend auto-detects the latest checkpoint.
+
+If you need to resume from a specific checkpoint (e.g., not the latest), you can override auto-detection with an explicit path:
 
 ```python
 result = osft(
@@ -226,7 +228,7 @@ result = osft(
 )
 ```
 
-The path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent `full_state_checkpoints` directory — the DCP `.metadata` file lives inside the step directory.
+The explicit path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent `full_state_checkpoints` directory.
 
 On resume, the model structure is initialized normally (with SVD computation), then all parameters are overwritten with checkpoint values via DCP in-place load — ensuring **bit-identical optimization trajectories** after resumption.
 
@@ -362,3 +364,4 @@ if 'mini-trainer' in AlgorithmRegistry.list_backends('osft'):
 
 **Working examples:**
 - Check the [examples directory](/examples/) for Jupyter notebooks and scripts demonstrating OSFT in action
+

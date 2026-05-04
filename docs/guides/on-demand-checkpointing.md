@@ -68,7 +68,9 @@ result = osft(
 )
 ```
 
-**Resuming:** Specify the checkpoint path explicitly. The path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent directory:
+**Resuming:** Simply re-run the same command. The backend automatically detects the latest checkpoint in `ckpt_output_dir` and resumes from where training was interrupted — matching SFT's auto-resume behavior.
+
+To override auto-detection and resume from a specific checkpoint, pass the path explicitly:
 
 ```python
 result = osft(
@@ -165,8 +167,8 @@ This is useful when running multiple independent training jobs on the same node 
 
 | Feature | SFT | OSFT |
 |---------|-----|------|
-| **Parameter** | `on_demand_checkpointing` | `on_demand_checkpointing` + `resume_from_full_state_checkpoint` |
-| **Resume** | Automatic (detects checkpoint in `ckpt_output_dir`) | Explicit path via `resume_from_full_state_checkpoint` |
+| **Parameter** | `on_demand_checkpointing` | `on_demand_checkpointing` (+ optional `resume_from_full_state_checkpoint`) |
+| **Resume** | Automatic (detects checkpoint in `ckpt_output_dir`) | Automatic (detects latest checkpoint in `ckpt_output_dir`); explicit path override via `resume_from_full_state_checkpoint` |
 | **Checkpoint format** | Distributed checkpoint | DCP sharded (each rank saves its own shard) |
 | **What's saved** | Model, optimizer, scheduler, metadata | OSFT factors, optimizer, scheduler, RNG, counters |
 | **Resume fidelity** | Resumes from exact step | Bit-identical optimization trajectories |
@@ -191,3 +193,4 @@ On-demand checkpoints are designed as **opaque resume tokens** for the preemptio
 - [sft() Function Reference](/api/functions/sft) — Complete SFT parameter documentation
 - [osft() Function Reference](/api/functions/osft) — Complete OSFT parameter documentation
 - [Distributed Training Guide](/guides/distributed-training) — Multi-node training setup
+

@@ -105,8 +105,8 @@ def osft(
 |-----------|------|---------|-------------|
 | `checkpoint_at_epoch` | `bool` | Backend default | If `True`, saves a checkpoint at the end of each epoch. |
 | `save_final_checkpoint` | `bool` | Backend default | If `True`, saves the final model checkpoint after training completes. |
-| `on_demand_checkpointing` | `bool` | `False` | Enable signal-driven full-state checkpointing. When `True`, catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and saves complete training state (OSFT factors, optimizer, scheduler, RNG) using DCP sharded saves before exiting. Each rank saves its own shard. Designed for Kubernetes/OpenShift/SLURM preemption scenarios. See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing). |
-| `resume_from_full_state_checkpoint` | `str` | `None` | Path to a full-state checkpoint directory to resume training from. The checkpoint must have been saved by the on-demand checkpointing system. On resume, OSFT factors and all training state are restored for exact trajectory continuation. |
+| `on_demand_checkpointing` | `bool` | `False` | Enable signal-driven full-state checkpointing. When `True`, catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and saves complete training state (OSFT factors, optimizer, scheduler, RNG) using DCP sharded saves before exiting. Each rank saves its own shard. On restart, training automatically resumes from the latest checkpoint in `ckpt_output_dir`. Designed for Kubernetes/OpenShift/SLURM preemption scenarios. See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing). |
+| `resume_from_full_state_checkpoint` | `str` | `None` | Optional explicit override to resume from a specific full-state checkpoint directory instead of the auto-detected latest. The checkpoint must have been saved by the on-demand checkpointing system. The path must point to the step subdirectory (e.g., `full_state_checkpoints/step_0`). On resume, OSFT factors and all training state are restored for exact trajectory continuation. |
 
 #### Distributed Training (Multi-GPU / Multi-Node)
 
@@ -316,3 +316,4 @@ The `unfreeze_rank_ratio` parameter is the key to OSFT's continual learning capa
 ## Source
 
 [View source on GitHub](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/osft.py)
+
