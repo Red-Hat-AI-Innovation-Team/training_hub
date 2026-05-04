@@ -13,6 +13,7 @@
   * [OSFT - Orthogonal Subspace Fine-Tuning](/algorithms/osft)
   * [LoRA - Low-Rank Adaptation](/algorithms/lora)
   * [LoRA + GRPO - Adapter RLVR](/algorithms/lora_grpo)
+  * [GRPO - Full Fine-Tuning RLVR](/algorithms/grpo)
 
 * API Reference
   * [API Overview](/api/)
@@ -21,6 +22,7 @@
     * [osft()](/api/functions/osft)
     * [lora_sft()](/api/functions/lora_sft)
     * [lora_grpo()](/api/functions/lora_grpo)
+    * [grpo()](/api/functions/grpo)
     * [create_algorithm()](/api/functions/create-algorithm)
   * Classes
     * [Algorithm](/api/classes/Algorithm)

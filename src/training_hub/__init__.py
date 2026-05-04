@@ -2,7 +2,7 @@ from .algorithms import Algorithm, Backend, AlgorithmRegistry, create_algorithm
 from .algorithms.sft import sft, SFTAlgorithm, InstructLabTrainingSFTBackend
 from .algorithms.osft import OSFTAlgorithm, MiniTrainerOSFTBackend, osft
 from .algorithms.lora import lora_sft, LoRASFTAlgorithm, UnslothLoRABackend
-from .algorithms.lora_grpo import lora_grpo, LoRAGRPOAlgorithm, ARTLoRAGRPOBackend
+from .algorithms.lora_grpo import lora_grpo, grpo, LoRAGRPOAlgorithm, ARTLoRAGRPOBackend
 from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .hub_core import welcome
@@ -18,6 +18,7 @@ __all__ = [
     'osft',
     'lora_sft',
     'lora_grpo',
+    'grpo',
     'SFTAlgorithm',
     'InstructLabTrainingSFTBackend',
     'OSFTAlgorithm',

@@ -97,7 +97,25 @@ def _prepare_verl_data(
             prompt.append({"role": "user", "content": s["question"]})
             # Add GT context for multi-turn samples
             for ctx_msg in s.get("context_messages", []):
-                prompt.append(ctx_msg)
+                msg = dict(ctx_msg)
+                # Ensure tool_calls arguments are dicts, not JSON strings
+                # (required by Qwen3.5 chat template which calls .items() on them)
+                if "tool_calls" in msg and msg["tool_calls"]:
+                    fixed_calls = []
+                    for tc in msg["tool_calls"]:
+                        tc = dict(tc)
+                        if "function" in tc:
+                            fn = dict(tc["function"])
+                            if isinstance(fn.get("arguments"), str):
+                                try:
+                                    parsed = json.loads(fn["arguments"])
+                                    fn["arguments"] = parsed if isinstance(parsed, dict) else {}
+                                except (json.JSONDecodeError, TypeError):
+                                    fn["arguments"] = {}
+                            tc["function"] = fn
+                        fixed_calls.append(tc)
+                    msg["tool_calls"] = fixed_calls
+                prompt.append(msg)
 
             tools = s.get("tools", [])
 
@@ -845,19 +863,26 @@ class VeRLLoRAGRPOBackend(Backend):
             f"data.max_response_length={max_tokens}",
             "data.filter_overlong_prompts=True",
             "data.truncation=error",
-            # Model + LoRA
+            # Model
             f"actor_rollout_ref.model.path={model_path}",
-            f"actor_rollout_ref.model.lora_rank={lora_r}",
-            f"actor_rollout_ref.model.lora_alpha={lora_alpha}",
+        ])
+        # LoRA (skip for full fine-tuning when lora_r=0 or None)
+        if lora_r:
+            cmd.extend([
+                f"actor_rollout_ref.model.lora_rank={lora_r}",
+                f"actor_rollout_ref.model.lora_alpha={lora_alpha}",
+            ])
+        cmd.extend([
             "actor_rollout_ref.model.enable_gradient_checkpointing=True",
             "actor_rollout_ref.model.use_remove_padding=True",
+            "actor_rollout_ref.model.use_fused_kernels=True",
             # Actor (training)
             f"actor_rollout_ref.actor.optim.lr={learning_rate}",
             f"actor_rollout_ref.actor.ppo_mini_batch_size={ppo_mini_batch_size}",
             "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
             "actor_rollout_ref.actor.entropy_coeff=0",
-            "actor_rollout_ref.actor.fsdp_config.param_offload=False",
-            "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False",
+            f"actor_rollout_ref.actor.fsdp_config.param_offload={algorithm_params.get('param_offload', False)}",
+            f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={algorithm_params.get('optimizer_offload', False)}",
         ])
 
         # Actor KL and loss settings depend on Dr. GRPO vs standard
@@ -880,8 +905,16 @@ class VeRLLoRAGRPOBackend(Backend):
             f"actor_rollout_ref.rollout.n={group_size}",
             f"actor_rollout_ref.rollout.gpu_memory_utilization={gpu_memory_utilization}",
             f"actor_rollout_ref.rollout.max_model_len={max_prompt_length + max_tokens}",
-            "actor_rollout_ref.rollout.load_format=safetensors",
+            f"actor_rollout_ref.rollout.load_format={algorithm_params.get('load_format', 'dummy')}",
+            "actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072",
             f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={max(1, min(train_batch_size // max(n_gpus, 1), 2))}",
+        ])
+        if algorithm_params.get("layered_summon", False):
+            cmd.append("actor_rollout_ref.rollout.layered_summon=True")
+        # language_model_only for multimodal architectures used as text-only (e.g. Qwen3.5)
+        if algorithm_params.get("language_model_only", False):
+            cmd.append("+actor_rollout_ref.rollout.engine_kwargs.vllm.language_model_only=True")
+        cmd.extend([
             # Reference model (only used when not Dr. GRPO)
             "actor_rollout_ref.ref.fsdp_config.param_offload=True",
             f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={max(1, min(train_batch_size // max(n_gpus, 1), 2))}",
@@ -1098,8 +1131,9 @@ class VeRLLoRAGRPOBackend(Backend):
 
 
 # Register the verl backend for the lora_grpo algorithm
-# (algorithm is already registered by lora_grpo.py, we just add a new backend)
+# (algorithms are already registered by lora_grpo.py, we just add verl backends)
 try:
     AlgorithmRegistry.register_backend("lora_grpo", "verl", VeRLLoRAGRPOBackend)
+    AlgorithmRegistry.register_backend("grpo", "verl", VeRLLoRAGRPOBackend)
 except ValueError:
     pass  # Algorithm not registered yet (import order), will be registered on first use

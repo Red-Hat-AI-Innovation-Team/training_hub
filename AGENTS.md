@@ -55,6 +55,10 @@ src/training_hub/
 │   ├── sft.py               # Supervised Fine-Tuning
 │   ├── osft.py              # Orthogonal Subspace Fine-Tuning
 │   ├── lora.py              # LoRA + SFT
+│   ├── lora_grpo.py         # LoRA + GRPO and GRPO (ART backend, algorithm, convenience fns)
+│   ├── lora_grpo_verl.py    # verl backend for LoRA + GRPO and GRPO
+│   ├── rewards.py           # Reward functions (tool_call_reward, binary_reward)
+│   ├── verl_tool_agent.py   # Custom verl agent loop for tool-call training
 │   └── peft_extender.py     # PEFT parameter handling for LoRA
 └── profiling/
     └── memory_estimator.py  # GPU memory estimation for training
@@ -101,10 +105,10 @@ Training Hub is designed to support multiple backends per algorithm:
 
 - **Files**: `snake_case.py`
 - **Classes**: `PascalCase` (e.g., `SFTAlgorithm`, `MiniTrainerOSFTBackend`)
-- **Functions**: `snake_case` (e.g., `sft()`, `osft()`, `lora_sft()`)
+- **Functions**: `snake_case` (e.g., `sft()`, `osft()`, `lora_sft()`, `lora_grpo()`, `grpo()`)
 - **Constants**: `UPPER_SNAKE_CASE` (e.g., `FLOAT32_BYTES_N`)
-- **Backend names**: kebab-case strings (e.g., `"instructlab-training"`, `"mini-trainer"`)
-- **Algorithm names**: lowercase (e.g., `"sft"`, `"osft"`, `"lora_sft"`)
+- **Backend names**: kebab-case strings (e.g., `"instructlab-training"`, `"mini-trainer"`, `"verl"`, `"art"`)
+- **Algorithm names**: lowercase (e.g., `"sft"`, `"osft"`, `"lora_sft"`, `"lora_grpo"`, `"grpo"`)
 
 ## Code Style
 
@@ -313,6 +317,45 @@ There are no automated tests checked into the repo yet. When testing ART GRPO lo
 - **Install vllm separately after `[grpo]`.** `openpipe-art` declares vllm as a dependency but the prebuilt wheel may need manual installation to match CUDA/torch versions. After install, verify: `python -c "from vllm import _C; print('OK')"`. If `_C` import fails, the wheel was built for a different torch version.
 - **Verify flashinfer versions match:** `uv pip list | grep flashinfer` — `flashinfer-python` and `flashinfer-cubin` must be the same version. Mismatches crash the vLLM engine core subprocess silently.
 
+### Disk and Cache Management
+
+- **Set `TMPDIR` to a large filesystem** (e.g., NVMe) before launching training. Flash-attn and flashinfer JIT compilation write hundreds of MB of temp files to `/tmp`. If `/tmp` is on a small root partition, the build fills the disk silently and the compilation fails with no useful error. Also set `RAY_TMPDIR` for Ray socket paths (AF_UNIX paths have a 107-byte limit — deep NVMe paths can exceed this, use a short path like `/mnt/nvme0n1/tmp`).
+- **Clear flashinfer JIT cache when changing CUDA toolkit versions.** The cache at `~/.cache/flashinfer/` contains compiled kernels for a specific CUDA version. After upgrading nvcc, delete the cache: `rm -rf ~/.cache/flashinfer/`.
+- **Clear uv and pip caches periodically.** They can grow to 60-100GB on root. `uv cache clean` and `rm -rf ~/.cache/pip/`.
+- **vLLM compile cache** at `~/.cache/vllm/torch_compile_cache/` can also grow large. Safe to delete between runs.
+
+### Training Larger Models with verl (8B+)
+
+These lessons apply to models larger than Qwen3-4B on 80GB H100s with co-located FSDP+vLLM.
+
+- **Use `load_format=dummy` instead of `safetensors`** for the verl rollout config. With `safetensors`, vLLM loads the full model from disk during init on top of FSDP's copy, doubling GPU memory. With `dummy`, vLLM allocates empty tensors for profiling and gets real weights via the checkpoint engine's weight sync. This is verl's own default — we were overriding it unnecessarily.
+- **Increase `update_weights_bucket_megabytes` to 3072.** The default 2048MB bucket can't fit the embedding weight for models with large vocabularies (e.g., Qwen3's 152K vocab × 4096 hidden × 4 bytes = 2.36GB in float32). Without this, the FSDP→vLLM weight sync fails.
+- **`load_format=safetensors` is needed for LoRA on very large models (9B+).** With `dummy` format, the first weight sync calls `FSDP.summon_full_params` which reconstructs the full unsharded model on each GPU — OOM for 9B+. With `safetensors`, vLLM preloads base weights from disk, so subsequent syncs only transfer LoRA params (`base_sync_done=True`). Use with `layered_summon=True` for efficient LoRA-only syncs.
+- **Full fine-tuning works by setting `lora_r=0`.** verl treats `lora_rank=0` as "no LoRA, train all parameters." No other changes needed — the same FSDP+vLLM pipeline handles full fine-tuning. Full FT is faster per step (no LoRA adapter management overhead) but uses more memory and may overfit earlier.
+- **verl's FSDP→vLLM weight sync is the memory bottleneck.** During `update_weights`, FSDP gathers the full model in float32 onto each GPU to sync to vLLM. For 9B models in float32 this is ~36GB per GPU on top of FSDP's shards. This is why Qwen3-8B (8.2B params, 152K vocab) barely fits but Qwen3.5-9B (9.5B params, 248K vocab) doesn't without `safetensors` + `layered_summon`.
+
+### Qwen3.5 (GatedDeltaNet) Specific
+
+Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 25% full attention. This requires specific setup:
+
+- **CUDA toolkit >= 12.5 required.** flashinfer's GDN kernels use PTX intrinsics (`tensormap_replace_global_dim`) added in CUDA 12.5. CUDA 12.4 fails at JIT compile time. Install the toolkit only — no driver upgrade needed: `sudo dnf install -y cuda-toolkit-12-8`.
+- **Install `flash-linear-attention` and `tilelang`.** Without FLA's fused Triton kernels, GDN layers decompose into 15-20 separate GPU ops per step — 10-50x slower. `tilelang` is required on Hopper GPUs with Triton >= 3.4.0 to avoid incorrect gradients. Set `use_fused_kernels=True` in the verl model config.
+- **vLLM >= 0.19.0 required.** Older versions don't support `Qwen3_5ForConditionalGeneration`.
+- **Pass `language_model_only=True`.** Qwen3.5-9B is text-only but registers as a multimodal architecture. Without this flag, vLLM loads the full VL model with vision encoder. Install `qwen-vl-utils` as well (imported during model init even in text-only mode).
+- **Do NOT use `tensor_parallel_size > 1`.** Qwen3.5 has known TP issues with vLLM 0.19 (NCCL hangs during inference).
+- **Set `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200`.** Default is 300s. GDN inference on long prompts (20K+ tokens) with TP=1 can exceed 5 minutes, causing `TimeoutError: RPC call to sample_tokens timed out`.
+- **Qwen3.5 chat template requires dict arguments in tool_calls.** Unlike Qwen3, the Qwen3.5 Jinja template calls `.items()` on tool call arguments. If `arguments` is a JSON string instead of a dict, tokenization fails with `"Can only get item pairs from a mapping"`. The data prep code must `json.loads()` string arguments before passing them to the tokenizer.
+- **transformers >= 4.58 required** for the `qwen3_5` model type. Also upgrade `huggingface_hub >= 1.0`.
+- **Force-reinstall `nvidia-nccl-cu12` after installing vLLM 0.19.** vLLM may leave a stale cu13 NCCL `.so` file even though pip shows cu12. Verify with `python -c "import ctypes; lib=ctypes.CDLL('path/to/libnccl.so.2'); v=ctypes.c_int(); lib.ncclGetVersion(ctypes.byref(v)); print(v.value)"`.
+
+### Past Incidents (continued)
+
+- **Root filesystem filled by flash-attn JIT compilation.** CUDA compilation of flash-attn wrote hundreds of 125-140MB temp files to `/tmp` on a 100GB root partition. The build failed silently with "Error compiling objects for extension" and no disk space error. Fix: set `TMPDIR=/mnt/nvme0n1/tmp` before building. Lesson: always set TMPDIR to a large filesystem for CUDA compilation.
+- **Stale `libnccl.so` version after package reinstall.** `pip list` showed `nvidia-nccl-cu12==2.27.5` but the actual `.so` file was version 2.28.9 (from a prior cu13 install). Caused NCCL errors at runtime. Fix: `pip install nvidia-nccl-cu12==2.27.5 --force-reinstall`. Lesson: pip metadata and actual library files can diverge — verify with ctypes or ldd when debugging NCCL issues.
+- **vLLM `sample_tokens` timeout on GDN models.** Qwen3.5-9B with 29K+ token prompts exceeded the 300s default `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`. The vLLM worker appeared to hang and the engine reported `EngineDeadError`. Fix: increase timeout to 1200s. Lesson: GDN linear attention is slower per token than standard attention — timeout values calibrated for transformer models may be too low.
+- **FLA fused kernels crash without `tilelang` on Hopper.** `RuntimeError: Triton >= 3.4.0 on Hopper GPUs produces incorrect results for gated chunk_bwd_dqkwg (see #640). Please install tilelang`. The error message is clear and actionable — just `pip install tilelang`.
+- **21 min/step without FLA vs 3.3 min/step with FLA.** The `[transformers] The fast path is not available because one of the required library is not installed` warning is easy to miss. Without FLA, GDN layers use a decomposed fallback that is 10-50x slower. Always install `flash-linear-attention` when training GDN/Qwen3.5 models.
+
 ### verl Backend Reference Configuration
 
 These are known-good configuration values from validated training runs. Use as a starting point when debugging or configuring new runs.
@@ -343,4 +386,25 @@ gpu_memory_utilization=0.3
 num_iterations=2, group_size=8, prompt_batch_size=50
 learning_rate=1e-5
 Result: successful completion, both iterations
+
+# Validated on 8x H100, Qwen3-8B, OpenShift v4 data (LoRA)
+lora_r=128, lora_alpha=256
+gpu_memory_utilization=0.5, load_format=dummy
+update_weights_bucket_megabytes=3072
+prompt_batch_size=48, group_size=8
+learning_rate=5e-6, max_prompt_length=32768
+Final reward: 0.80 avg, 0.89 peak (8 epochs, 41 hours)
+
+# Validated on 8x H100, Qwen3-8B, OpenShift v4 data (full fine-tuning)
+lora_r=0 (full fine-tuning)
+gpu_memory_utilization=0.5, load_format=dummy
+Peak reward: 0.804 at epoch 5, then overfitting (8 epochs, 26.5 hours)
+
+# Validated on 8x H100, Qwen3.5-9B, OpenShift v4 data (LoRA)
+lora_r=128, lora_alpha=256
+gpu_memory_utilization=0.3, load_format=safetensors, layered_summon=True
+language_model_only=True, use_fused_kernels=True
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200
+Requires: vllm==0.19.0, flash-linear-attention, tilelang, CUDA toolkit 12.5+
+Step time: ~3.3 min/step, reward 0.85+ by epoch 2
 ```

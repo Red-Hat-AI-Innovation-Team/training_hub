@@ -24,6 +24,7 @@
 | Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | - | Implemented |
 | **Low-Rank Adaptation (LoRA) + SFT** | - | - | - | ✅ | - | Implemented |
 | **LoRA + GRPO (Adapter-Based RLVR)** | - | - | - | ✅ | ✅ | Implemented |
+| **GRPO (Full Fine-Tuning RLVR)** | - | - | - | - | ✅ | Implemented |
 | Direct Preference Optimization (DPO) | - | - | - | - | 🔄 | Planned |
 
 **Legend:**
@@ -135,6 +136,22 @@ result = lora_grpo(
     ckpt_output_dir="./grpo_output",
     backend="verl",
     n_gpus=4,
+)
+```
+
+### [GRPO (Full Fine-Tuning RLVR)](/algorithms/grpo)
+
+Full-parameter GRPO training via the verl backend. Trains all model weights instead of LoRA adapters. Same data formats and reward functions as LoRA + GRPO.
+
+```python
+from training_hub import grpo
+
+result = grpo(
+    model_path="Qwen/Qwen3-8B",
+    data_path="./tool_call_traces.jsonl",
+    ckpt_output_dir="./grpo_full_output",
+    n_gpus=8,
+    num_iterations=8,
 )
 ```
 
