@@ -14,6 +14,7 @@ Training Hub provides convenient top-level functions for common training tasks:
 | [`osft()`](/api/functions/osft) | Orthogonal subspace fine-tuning for continual learning | [Details](/api/functions/osft) |
 | [`lora_sft()`](/api/functions/lora_sft) | Parameter-efficient fine-tuning with LoRA | [Details](/api/functions/lora_sft) |
 | [`lora_grpo()`](/api/functions/lora_grpo) | LoRA + GRPO for tool-calling agents (RLVR) | [Details](/api/functions/lora_grpo) |
+| [`grpo()`](/api/functions/grpo) | Full-parameter GRPO training (verl backend) | [Details](/api/functions/grpo) |
 | [`create_algorithm()`](/api/functions/create-algorithm) | Factory function to create algorithm instances | [Details](/api/functions/create-algorithm) |
 
 ### Classes

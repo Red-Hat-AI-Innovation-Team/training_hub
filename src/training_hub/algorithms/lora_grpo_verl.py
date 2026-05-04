@@ -1130,8 +1130,9 @@ class VeRLLoRAGRPOBackend(Backend):
 
 
 # Register the verl backend for the lora_grpo algorithm
-# (algorithm is already registered by lora_grpo.py, we just add a new backend)
+# (algorithms are already registered by lora_grpo.py, we just add verl backends)
 try:
     AlgorithmRegistry.register_backend("lora_grpo", "verl", VeRLLoRAGRPOBackend)
+    AlgorithmRegistry.register_backend("grpo", "verl", VeRLLoRAGRPOBackend)
 except ValueError:
     pass  # Algorithm not registered yet (import order), will be registered on first use

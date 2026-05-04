@@ -1475,9 +1475,12 @@ class LoRAGRPOAlgorithm(Algorithm):
         }
 
 
-# Register algorithm and backend
+# Register algorithm and backends
 AlgorithmRegistry.register_algorithm("lora_grpo", LoRAGRPOAlgorithm)
 AlgorithmRegistry.register_backend("lora_grpo", "art", ARTLoRAGRPOBackend)
+
+# GRPO (full fine-tuning) reuses the same algorithm class — verl backend only
+AlgorithmRegistry.register_algorithm("grpo", LoRAGRPOAlgorithm)
 
 
 # ---------------------------------------------------------------------------
@@ -1686,5 +1689,141 @@ def lora_grpo(
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
+        **kwargs,
+    )
+
+
+def grpo(
+    model_path: str,
+    ckpt_output_dir: str,
+    # Data source (built-in tool-call mode)
+    data_path: Optional[str] = None,
+    data_config: str = "Qwen3",
+    n_train: int = 5000,
+    n_val: int = 500,
+    # Custom rollout mode
+    reward_fn: Optional[Callable] = None,
+    # GRPO hyperparameters
+    num_iterations: int = 15,
+    group_size: int = 8,
+    prompt_batch_size: int = 100,
+    learning_rate: float = 1e-5,
+    temperature: float = 0.7,
+    max_tokens: int = 512,
+    max_prompt_length: int = 16384,
+    # vLLM configuration
+    gpu_memory_utilization: float = 0.45,
+    # Multi-GPU/multi-node configuration
+    n_gpus: int = 1,
+    nnodes: int = 1,
+    tensor_parallel_size: int = 1,
+    # Algorithm variant
+    use_dr_grpo: bool = True,
+    # Callbacks
+    iteration_callback: Optional[Callable] = None,
+    # Logging / experiment tracking
+    wandb_project: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
+    mlflow_tracking_uri: Optional[str] = None,
+    mlflow_experiment_name: Optional[str] = None,
+    mlflow_run_name: Optional[str] = None,
+    **kwargs,
+) -> Any:
+    """Run full-parameter GRPO training (no LoRA) via the verl backend.
+
+    Trains all model parameters using Group Relative Policy Optimization.
+    This is equivalent to ``lora_grpo(..., lora_r=0, backend="verl")`` but
+    provides a cleaner interface for full fine-tuning without LoRA-specific
+    parameters. Only the verl backend is supported (multi-GPU FSDP).
+
+    Args:
+        model_path: HuggingFace model ID or local path (e.g., 'Qwen/Qwen3-8B').
+        ckpt_output_dir: Directory to save checkpoints and training results.
+
+        data_path: Dataset path. HuggingFace ID or local JSON/JSONL path.
+        data_config: HuggingFace dataset config name (default: 'Qwen3').
+        n_train: Number of training samples to load (default: 5000).
+        n_val: Number of validation samples to load (default: 500).
+
+        reward_fn: Custom reward function. For generic data, signature:
+            (data_source, solution_str, ground_truth) -> float.
+
+        num_iterations: GRPO training epochs (default: 15).
+        group_size: Rollouts per prompt for advantage estimation (default: 8).
+        prompt_batch_size: Unique prompts per training step (default: 100).
+        learning_rate: Learning rate (default: 1e-5).
+        temperature: Sampling temperature (default: 0.7).
+        max_tokens: Max response tokens per rollout (default: 512).
+        max_prompt_length: Max prompt length in tokens (default: 16384).
+
+        gpu_memory_utilization: vLLM GPU memory fraction (default: 0.45).
+        n_gpus: Number of GPUs (default: 1).
+        nnodes: Number of nodes (default: 1).
+        tensor_parallel_size: vLLM tensor parallelism (default: 1).
+        use_dr_grpo: Use Dr. GRPO variant (default: True).
+        iteration_callback: Callback after each iteration.
+
+        wandb_project: Weights & Biases project name.
+        wandb_entity: Weights & Biases team/entity name.
+        wandb_run_name: Weights & Biases run name.
+        mlflow_tracking_uri: MLflow tracking server URI.
+        mlflow_experiment_name: MLflow experiment name.
+        mlflow_run_name: MLflow run name.
+
+    Returns:
+        Dict with training results including reward_history and checkpoint_path.
+
+    Examples:
+        # Full fine-tuning on OpenShift tool-call data
+        result = grpo(
+            model_path="Qwen/Qwen3-8B",
+            data_path="training_data_v4.jsonl",
+            ckpt_output_dir="./grpo_full_output",
+            n_gpus=8,
+            num_iterations=8,
+            group_size=8,
+            prompt_batch_size=48,
+        )
+
+        # Full fine-tuning with custom reward
+        result = grpo(
+            model_path="Qwen/Qwen3-8B",
+            data_path="./my_data.jsonl",
+            reward_fn=my_reward,
+            ckpt_output_dir="./grpo_output",
+            n_gpus=4,
+        )
+    """
+    return lora_grpo(
+        model_path=model_path,
+        ckpt_output_dir=ckpt_output_dir,
+        data_path=data_path,
+        data_config=data_config,
+        n_train=n_train,
+        n_val=n_val,
+        reward_fn=reward_fn,
+        num_iterations=num_iterations,
+        group_size=group_size,
+        prompt_batch_size=prompt_batch_size,
+        learning_rate=learning_rate,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        max_prompt_length=max_prompt_length,
+        gpu_memory_utilization=gpu_memory_utilization,
+        n_gpus=n_gpus,
+        nnodes=nnodes,
+        tensor_parallel_size=tensor_parallel_size,
+        use_dr_grpo=use_dr_grpo,
+        iteration_callback=iteration_callback,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
+        wandb_run_name=wandb_run_name,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_experiment_name=mlflow_experiment_name,
+        mlflow_run_name=mlflow_run_name,
+        # Full fine-tuning: no LoRA, verl only
+        lora_r=0,
+        backend="verl",
         **kwargs,
     )
