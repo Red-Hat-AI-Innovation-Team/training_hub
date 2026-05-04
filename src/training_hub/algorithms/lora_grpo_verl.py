@@ -108,9 +108,10 @@ def _prepare_verl_data(
                             fn = dict(tc["function"])
                             if isinstance(fn.get("arguments"), str):
                                 try:
-                                    fn["arguments"] = json.loads(fn["arguments"])
+                                    parsed = json.loads(fn["arguments"])
+                                    fn["arguments"] = parsed if isinstance(parsed, dict) else {}
                                 except (json.JSONDecodeError, TypeError):
-                                    pass
+                                    fn["arguments"] = {}
                             tc["function"] = fn
                         fixed_calls.append(tc)
                     msg["tool_calls"] = fixed_calls
