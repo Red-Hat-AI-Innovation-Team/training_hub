@@ -30,6 +30,11 @@ pip install -e .[grpo,lora]
 # Install with CUDA support (install sequentially after other extras)
 pip install -e .[cuda] --no-build-isolation
 
+# Feature dev with backend repos as editable (clone them alongside training_hub)
+# This lets you edit backend code and test changes without reinstalling
+pip install -e ../mini_trainer    # OSFT backend
+pip install -e ../training        # SFT backend
+
 # Install with development dependencies
 pip install -e .[dev]
 
