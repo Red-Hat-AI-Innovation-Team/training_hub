@@ -617,6 +617,99 @@ def osft(
     trust_remote_code: bool | None = None,
     **kwargs,
 ) -> any:
+    """Convenience function to run Orthogonal Subspace Fine-Tuning (OSFT) training.
+
+    OSFT is intended for continual-learning workloads where the goal is to adapt a
+    pretrained or instruction-tuned model to new data while helping preserve prior
+    behavior. It constrains weight updates to an orthogonal subspace of the original
+    model's weight matrices and does not require a supplementary replay dataset.
+
+    Note:
+        The OSFT algorithm does not reduce the memory requirement when compared to SFT,
+        but it significantly reduces the data requirement for customizing an instruction-tuned
+        model compared to SFT.
+
+    Note:
+        While values of `unfreeze_rank_ratio` between 0.0 and 1.0 are valid, in practice
+        you will seldom need values greater than 0.5 for general continual-learning
+        regimes.
+
+    Args:
+        model_path: Local path or Hugging Face model ID to fine-tune.
+        data_path: Path to the training data. When `use_processed_dataset` is
+            `True`, this is the path to the processed dataset. When
+            `use_processed_dataset` is `False`, this is the path to the
+            original dataset.
+        unfreeze_rank_ratio: Controls the amount that each matrix is unfrozen during OSFT.
+            Valid values are between 0.0 and 1.0.
+        effective_batch_size: Effective batch size for training.
+        max_tokens_per_gpu: Maximum number of tokens placed on a single GPU for
+            training. When hitting OOMs, consider reducing this value.
+        max_seq_len: Sets the maximum sequence length (in tokens) of samples that will be used for training.
+            Any sample exceeding this length will be dropped from the dataset.
+        learning_rate: Learning rate for model weight updates.
+        ckpt_output_dir: Directory where checkpoints and logs are saved.
+        data_output_dir: Directory where outputs from data processing will be saved such as intermediate
+            files. When not provided, it defaults to `_internal_data_processing` under the
+            `ckpt_output_dir`.
+        backend: Backend implementation to use. (Defaults to "mini-trainer").
+        target_patterns: List of patterns to match against when selecting modules for OSFT,
+            useful for custom training regimes or enabling OSFT for custom models which
+            do not have pre-defined defaults.
+        seed: Random seed for training.
+        use_liger: Whether to use Liger kernels for training.
+        use_processed_dataset: Whether to use the processed dataset. If `False`, the
+            data is assumed to be in standard messages format with a `messages` and
+            optional `unmask` field on each sample. When `True`, each sample is
+            expected to have `input_ids` and `labels` fields containing data
+            tokenized for the model being trained.
+        unmask_messages: Whether to unmask messages during data processing. This value is ignored
+            when `use_processed_dataset` is True.
+        is_pretraining: Enable pretraining mode. Expects data with {"document": "text"} format.
+            Data is tokenized without chat templates. Blocking happens in mini-trainer.
+            Mutually exclusive with unmask_messages.
+        block_size: Block size in tokens for pretraining. Required when
+            `is_pretraining` is True. Passed to mini-trainer for block-based sampling.
+        document_column_name: Column containing raw documents when pretraining.
+            Defaults to the backend's document-column default when not provided.
+        lr_scheduler: Name of the PyTorch learning-rate scheduler to use.
+        warmup_steps: Number of warmup steps for the learning-rate scheduler.
+        lr_scheduler_kwargs: Additional keyword arguments passed to the scheduler.
+        beta1: AdamW optimizer beta1 coefficient for first-moment estimates.
+        beta2: AdamW optimizer beta2 coefficient for second-moment estimates.
+        eps: AdamW optimizer epsilon for numerical stability.
+        weight_decay: AdamW optimizer weight-decay coefficient.
+        checkpoint_at_epoch: Whether to save a checkpoint at the end of each epoch.
+        save_final_checkpoint: Whether to save a checkpoint once training completes.
+        num_epochs: Number of epochs to train for.
+        nproc_per_node: Number of processes, usually GPUs, per node for distributed
+            training.
+        nnodes: Total number of nodes for distributed training.
+        node_rank: Rank of this node for distributed training.
+        rdzv_id: Unique job ID for rendezvous in distributed training.
+        rdzv_endpoint: Master-node endpoint for multi-node training.
+        master_port: Master-node port for distributed training.
+        master_addr: Master-node address for distributed training.
+        wandb_project: Weights & Biases project name.
+        wandb_entity: Weights & Biases team or entity name.
+        wandb_run_name: Weights & Biases run name.
+        tensorboard_log_dir: Optional TensorBoard log directory forwarded to the
+            backend when supported.
+        mlflow_tracking_uri: MLflow tracking server URI.
+        mlflow_experiment_name: MLflow experiment name.
+        mlflow_run_name: MLflow run name.
+        trust_remote_code: Whether to trust remote code when loading the model.
+        **kwargs: Additional backend-specific parameters passed to the backend.
+
+    Returns:
+        Training result returned by the backend.
+
+    Raises:
+        ValueError: If `unfreeze_rank_ratio` is outside [0.0, 1.0], if
+            `block_size` is missing when `is_pretraining` is `True`, if
+            mutually exclusive training modes are combined, or if parameter
+            types fail validation.
+    """
     from . import create_algorithm
 
     algorithm: OSFTAlgorithm = create_algorithm('osft', backend)
