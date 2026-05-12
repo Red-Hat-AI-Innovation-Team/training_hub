@@ -1,0 +1,9 @@
+{
+  "name": "training-hub",
+  "description": "LLM post-training — unified interface for SFT, OSFT, LoRA fine-tuning, and GRPO reinforcement learning",
+  "version": "1.0.0",
+  "author": {
+    "name": "Red Hat AI Innovation Team"
+  },
+  "skills": "./skills"
+}

@@ -240,6 +240,82 @@ cd training_hub
 uv pip install -e . && uv pip install -e .[cuda] --no-build-isolation
 ```
 
+## Coding Agent Plugin
+
+Training Hub is available as a plugin for five major coding agents, bringing LLM training capabilities directly into your coding workflow.
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+**Via org marketplace** (recommended — includes all Red Hat AI plugins):
+```
+/plugin marketplace add Red-Hat-AI-Innovation-Team/plugins
+/plugin install training-hub@Red-Hat-AI-Innovation-Team/plugins
+```
+
+**Via this repo directly:**
+```
+/plugin marketplace add Red-Hat-AI-Innovation-Team/training_hub
+/plugin install training-hub@Red-Hat-AI-Innovation-Team/training_hub
+```
+
+**From a local clone:**
+```bash
+git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git
+/plugin marketplace add /path/to/training_hub
+```
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+Clone the repo and open it — Cursor discovers the plugin via `.cursor-plugin/plugin.json` automatically.
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini extensions install https://github.com/Red-Hat-AI-Innovation-Team/training_hub
+```
+</details>
+
+<details>
+<summary><strong>Codex CLI</strong></summary>
+
+```bash
+git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git ~/.codex/training-hub
+mkdir -p ~/.agents/skills
+ln -s ~/.codex/training-hub/skills ~/.agents/skills/training-hub
+```
+
+Restart Codex to discover the skills. See `.codex-plugin/INSTALL.md` for full instructions.
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+Add to your `opencode.json`:
+
+```json
+{
+  "plugin": ["training-hub@git+https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git"]
+}
+```
+
+Restart OpenCode. See `.opencode-plugin/INSTALL.md` for full instructions.
+</details>
+
+### After Installing
+
+Run `/th-setup` (or invoke the `setup-guide` skill) to configure your training algorithm, model, and data.
+
+| Command | Description |
+|---|---|
+| `/th-setup` | Guided first-time configuration |
+| `/th-train` | Run LLM training using saved configuration |
+| `/th-estimate` | Estimate GPU memory requirements |
+
 ## Getting Started
 
 For comprehensive tutorials, examples, and documentation, see the [examples directory](./examples/).

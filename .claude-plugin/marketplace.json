@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "training-hub",
+  "description": "LLM post-training — unified interface for SFT, OSFT, LoRA fine-tuning, and GRPO reinforcement learning",
+  "owner": {
+    "name": "Red Hat AI Innovation Team"
+  },
+  "plugins": [
+    {
+      "name": "training-hub",
+      "description": "LLM post-training — unified interface for SFT, OSFT, LoRA fine-tuning, and GRPO reinforcement learning",
+      "author": {
+        "name": "Red Hat AI Innovation Team"
+      },
+      "source": "./"
+    }
+  ]
+}
