@@ -76,6 +76,10 @@ grpo = [
     "transformers>=4.51.3,<5.0",  # trl<=0.24 (capped by unsloth) breaks with transformers 5.x
 ]
 
+gepa = [
+    "gepa>=0.1.1",
+]
+
 dev = [
     "ipykernel",
     "ipython",
