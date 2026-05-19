@@ -1041,6 +1041,7 @@ class ARTLoRAGRPOBackend(Backend):
             rollout_entry = {
                 "step": iteration + 1,
                 "epoch": (iteration + 1) / num_iterations,
+                "max_steps": num_iterations,
                 "phase": "rollout",
                 "mean_reward": mean_reward,
                 "full_match_rate": full_match,
@@ -1108,6 +1109,7 @@ class ARTLoRAGRPOBackend(Backend):
             train_entry = {
                 "step": iteration + 1,
                 "epoch": (iteration + 1) / num_iterations,
+                "max_steps": num_iterations,
                 "phase": "train",
                 "wall_time_s": iter_time,
             }
