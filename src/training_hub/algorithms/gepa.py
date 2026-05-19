@@ -36,11 +36,11 @@ class GEPABackend(Backend):
         """
         try:
             from gepa import optimize
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "GEPA requires the 'gepa' package. "
                 "Install it with: pip install training-hub[gepa]"
-            )
+            ) from err
 
         # Load trainset from data_path if it's a file path
         trainset = algorithm_params.pop("trainset", None)
@@ -318,7 +318,7 @@ AlgorithmRegistry.register_algorithm("gepa", GEPAAlgorithm)
 AlgorithmRegistry.register_backend("gepa", "gepa", GEPABackend)
 
 
-def prompt_optimize(
+def gepa(
     seed_candidate: dict[str, str],
     task_lm: str,
     data_path: Optional[str] = None,
@@ -421,9 +421,9 @@ def prompt_optimize(
 
     Example::
 
-        from training_hub import prompt_optimize
+        from training_hub import gepa
 
-        result = prompt_optimize(
+        result = gepa(
             seed_candidate={"system_prompt": "Answer the question."},
             task_lm="openai/gpt-4o-mini",
             data_path="qa_data.jsonl",
