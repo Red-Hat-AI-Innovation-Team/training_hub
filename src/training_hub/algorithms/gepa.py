@@ -135,6 +135,7 @@ class GEPAAlgorithm(Algorithm):
         # Model configuration
         evaluator: Optional[Callable] = None,
         reflection_lm: Optional[str] = None,
+        api_base: Optional[str] = None,
         # Optimization parameters
         max_metric_calls: Optional[int] = None,
         candidate_selection_strategy: Optional[str] = None,
@@ -186,6 +187,10 @@ class GEPAAlgorithm(Algorithm):
                 Defaults to gepa's ContainsAnswerEvaluator.
             reflection_lm: Model for reflection/mutation (e.g.
                 ``"openai/gpt-4o"``). Defaults to task_lm if not specified.
+            api_base: Base URL for the LLM API endpoint. Use this to point
+                at a local vLLM or compatible server (e.g.
+                ``"http://localhost:8000/v1"``) instead of relying on
+                environment variables.
             max_metric_calls: Maximum number of evaluation calls (budget).
                 GEPA typically needs 100-500 evaluations.
             candidate_selection_strategy: Selection strategy for the
@@ -234,6 +239,7 @@ class GEPAAlgorithm(Algorithm):
             "valset": valset,
             "evaluator": evaluator,
             "reflection_lm": reflection_lm,
+            "api_base": api_base,
             "max_metric_calls": max_metric_calls,
             "candidate_selection_strategy": candidate_selection_strategy,
             "frontier_type": frontier_type,
@@ -285,6 +291,7 @@ class GEPAAlgorithm(Algorithm):
             "output_dir": str,
             "evaluator": Callable,
             "reflection_lm": str,
+            "api_base": str,
             "max_metric_calls": int,
             "candidate_selection_strategy": str,
             "frontier_type": str,
@@ -329,6 +336,7 @@ def gepa(
     # Model configuration
     evaluator: Optional[Callable] = None,
     reflection_lm: Optional[str] = None,
+    api_base: Optional[str] = None,
     # Optimization parameters
     max_metric_calls: Optional[int] = None,
     candidate_selection_strategy: Optional[str] = None,
@@ -385,6 +393,10 @@ def gepa(
             Defaults to gepa's ContainsAnswerEvaluator.
         reflection_lm: Model for reflection/mutation (e.g.
             ``"openai/gpt-4o"``). Defaults to task_lm if not specified.
+        api_base: Base URL for the LLM API endpoint. Use this to point
+            at a local vLLM or compatible server (e.g.
+            ``"http://localhost:8000/v1"``) instead of relying on
+            environment variables.
         max_metric_calls: Maximum number of evaluation calls (budget).
             GEPA typically needs 100-500 evaluations.
         candidate_selection_strategy: Selection strategy. One of ``"pareto"``,
@@ -444,6 +456,7 @@ def gepa(
         output_dir=output_dir,
         evaluator=evaluator,
         reflection_lm=reflection_lm,
+        api_base=api_base,
         max_metric_calls=max_metric_calls,
         candidate_selection_strategy=candidate_selection_strategy,
         frontier_type=frontier_type,
