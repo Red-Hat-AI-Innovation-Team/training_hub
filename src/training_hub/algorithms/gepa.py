@@ -13,10 +13,13 @@ Requires the ``gepa`` package: ``pip install training-hub[gepa]``
 """
 
 import json
+import logging
 import os
 from typing import Any, Callable, Dict, Optional, Type
 
 from . import Algorithm, AlgorithmRegistry, Backend
+
+logger = logging.getLogger(__name__)
 
 
 class GEPABackend(Backend):
@@ -105,8 +108,9 @@ class GEPABackend(Backend):
             result_dict = result.to_dict()
             with open(os.path.join(output_dir, "result.json"), "w") as f:
                 json.dump(result_dict, f, indent=2, default=str)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, OSError) as e:
+            logger.warning("Failed to save result metadata to %s: %s",
+                           os.path.join(output_dir, "result.json"), e)
 
 
 class GEPAAlgorithm(Algorithm):
@@ -297,7 +301,7 @@ class GEPAAlgorithm(Algorithm):
             "mlflow_tracking_uri": str,
             "mlflow_experiment_name": str,
             "batch_sampler": object,
-            "reflection_prompt_template": str,
+            "reflection_prompt_template": object,  # accepts str | dict[str, str]
             "custom_candidate_proposer": object,
             "module_selector": str,
             "use_merge": bool,
