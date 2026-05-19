@@ -54,6 +54,11 @@ class GEPABackend(Backend):
         # Extract output_dir (not a gepa.optimize param)
         output_dir = algorithm_params.pop("output_dir", None)
 
+        # Remove MLflow-backend-only params that don't apply here
+        for mlflow_param in ("predict_fn", "prompt_uris", "scorers",
+                             "aggregation", "enable_tracking", "gepa_kwargs"):
+            algorithm_params.pop(mlflow_param, None)
+
         # Build the optimize() kwargs from algorithm_params
         optimize_kwargs = {k: v for k, v in algorithm_params.items() if v is not None}
 
@@ -113,6 +118,157 @@ class GEPABackend(Backend):
                            os.path.join(output_dir, "result.json"), e)
 
 
+class MLflowGEPABackend(Backend):
+    """MLflow backend for GEPA prompt optimization.
+
+    Uses ``mlflow.genai.optimize_prompts()`` which wraps GEPA with MLflow's
+    prompt registry, scorer framework, and experiment tracking. This backend
+    is for users who want to optimize prompts registered in MLflow's prompt
+    registry and leverage MLflow's evaluation/tracking infrastructure.
+
+    Requires ``mlflow>=3.5.0`` and the ``gepa`` package.
+    """
+
+    def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
+        """Execute GEPA prompt optimization via MLflow.
+
+        Args:
+            algorithm_params: Parameters including MLflow-specific ones
+                (predict_fn, prompt_uris, scorers, aggregation, enable_tracking)
+                and GEPA optimizer config (reflection_lm, max_metric_calls, etc.).
+
+        Returns:
+            PromptOptimizationResult from mlflow.genai.optimize_prompts().
+        """
+        try:
+            from mlflow.genai import optimize_prompts
+            from mlflow.genai.optimize.optimizers import GepaPromptOptimizer
+        except ImportError as err:
+            raise ImportError(
+                "MLflow GEPA backend requires 'mlflow>=3.5.0' and 'gepa'. "
+                "Install with: pip install 'mlflow>=3.5.0' training-hub[gepa]"
+            ) from err
+
+        # Extract MLflow-specific required params
+        predict_fn = algorithm_params.pop("predict_fn", None)
+        prompt_uris = algorithm_params.pop("prompt_uris", None)
+
+        if predict_fn is None:
+            raise ValueError(
+                "MLflow backend requires 'predict_fn': a callable that uses "
+                "MLflow registered prompts to generate output."
+            )
+        if prompt_uris is None:
+            raise ValueError(
+                "MLflow backend requires 'prompt_uris': list of MLflow prompt "
+                "URIs to optimize (e.g. ['prompts:/my_prompt/1'])."
+            )
+
+        # Extract MLflow-specific optional params
+        scorers = algorithm_params.pop("scorers", None)
+        aggregation = algorithm_params.pop("aggregation", None)
+        enable_tracking = algorithm_params.pop("enable_tracking", True)
+
+        # Build train_data from trainset or data_path
+        trainset = algorithm_params.pop("trainset", None)
+        data_path = algorithm_params.pop("data_path", None)
+
+        if trainset is None and data_path is not None:
+            trainset = GEPABackend._load_data(data_path)
+
+        # Convert GEPA data format to MLflow format if needed
+        if trainset is not None:
+            train_data = self._convert_to_mlflow_format(trainset)
+        else:
+            train_data = None
+
+        # Build GepaPromptOptimizer from our params
+        reflection_lm = algorithm_params.pop("reflection_lm", None)
+        task_lm = algorithm_params.pop("task_lm", None)
+        reflection_model = reflection_lm or task_lm
+        if reflection_model is None:
+            raise ValueError(
+                "MLflow backend requires 'reflection_lm' or 'task_lm' to "
+                "configure the GepaPromptOptimizer reflection model."
+            )
+
+        max_metric_calls = algorithm_params.pop("max_metric_calls", 100)
+        display_progress_bar = algorithm_params.pop("display_progress_bar", False)
+        gepa_kwargs = algorithm_params.pop("gepa_kwargs", None)
+
+        optimizer = GepaPromptOptimizer(
+            reflection_model=reflection_model,
+            max_metric_calls=max_metric_calls,
+            display_progress_bar=display_progress_bar,
+            gepa_kwargs=gepa_kwargs,
+        )
+
+        result = optimize_prompts(
+            predict_fn=predict_fn,
+            train_data=train_data,
+            prompt_uris=prompt_uris,
+            optimizer=optimizer,
+            scorers=scorers,
+            aggregation=aggregation,
+            enable_tracking=enable_tracking,
+        )
+
+        # Save results if output_dir specified
+        output_dir = algorithm_params.pop("output_dir", None)
+        if output_dir is not None:
+            self._save_mlflow_result(result, output_dir)
+
+        return result
+
+    @staticmethod
+    def _convert_to_mlflow_format(trainset: list[dict]) -> list[dict]:
+        """Convert GEPA data format to MLflow format if needed.
+
+        GEPA format: {"input": ..., "answer": ..., "additional_context": ...}
+        MLflow format: {"inputs": {...}, "outputs": ...}
+
+        If data is already in MLflow format (has "inputs" key), pass through.
+        """
+        if not trainset:
+            return trainset
+
+        sample = trainset[0]
+        if "inputs" in sample:
+            return trainset
+
+        converted = []
+        for record in trainset:
+            entry = {
+                "inputs": {"input": record["input"]},
+                "outputs": record.get("answer", ""),
+            }
+            if record.get("additional_context"):
+                entry["inputs"]["additional_context"] = record["additional_context"]
+            converted.append(entry)
+        return converted
+
+    @staticmethod
+    def _save_mlflow_result(result: Any, output_dir: str) -> None:
+        """Save MLflow optimization result metadata to output_dir."""
+        os.makedirs(output_dir, exist_ok=True)
+
+        result_dict = {
+            "optimizer_name": result.optimizer_name,
+            "initial_eval_score": result.initial_eval_score,
+            "final_eval_score": result.final_eval_score,
+            "initial_eval_score_per_scorer": result.initial_eval_score_per_scorer,
+            "final_eval_score_per_scorer": result.final_eval_score_per_scorer,
+            "optimized_prompt_uris": [p.uri for p in result.optimized_prompts],
+        }
+
+        try:
+            with open(os.path.join(output_dir, "result.json"), "w") as f:
+                json.dump(result_dict, f, indent=2, default=str)
+        except (TypeError, OSError) as e:
+            logger.warning("Failed to save MLflow result to %s: %s",
+                           os.path.join(output_dir, "result.json"), e)
+
+
 class GEPAAlgorithm(Algorithm):
     """GEPA (Genetic-Pareto) prompt optimization algorithm.
 
@@ -126,6 +282,7 @@ class GEPAAlgorithm(Algorithm):
 
     def train(
         self,
+        *,
         seed_candidate: dict[str, str],
         task_lm: str,
         data_path: Optional[str] = None,
@@ -165,6 +322,13 @@ class GEPAAlgorithm(Algorithm):
         display_progress_bar: Optional[bool] = None,
         cache_evaluation: Optional[bool] = None,
         raise_on_exception: Optional[bool] = None,
+        # MLflow backend parameters
+        predict_fn: Optional[Callable] = None,
+        prompt_uris: Optional[list[str]] = None,
+        scorers: Optional[list] = None,
+        aggregation: Optional[Callable] = None,
+        enable_tracking: Optional[bool] = None,
+        gepa_kwargs: Optional[dict] = None,
         **kwargs,
     ) -> Any:
         """Execute GEPA prompt optimization.
@@ -222,10 +386,25 @@ class GEPAAlgorithm(Algorithm):
             display_progress_bar: Show progress bar during optimization.
             cache_evaluation: Cache evaluation results.
             raise_on_exception: Raise exceptions instead of logging them.
+            predict_fn: (MLflow backend only) Callable that uses MLflow
+                registered prompts to generate output. Required for the
+                ``"mlflow"`` backend.
+            prompt_uris: (MLflow backend only) List of MLflow prompt URIs to
+                optimize (e.g. ``["prompts:/my_prompt/1"]``). Required for the
+                ``"mlflow"`` backend.
+            scorers: (MLflow backend only) List of MLflow Scorer instances for
+                evaluation (e.g. ``[Correctness(model="openai:/gpt-4o")]``).
+            aggregation: (MLflow backend only) Callable that computes an
+                overall score from individual scorer outputs.
+            enable_tracking: (MLflow backend only) Whether to log optimization
+                progress to MLflow (default True).
+            gepa_kwargs: (MLflow backend only) Additional kwargs passed through
+                to ``gepa.optimize()`` via the ``GepaPromptOptimizer``.
             **kwargs: Additional parameters passed to the backend.
 
         Returns:
-            GEPAResult with best_candidate, metrics, and optimization history.
+            GEPAResult (gepa backend) or PromptOptimizationResult (mlflow
+            backend) with optimization results.
         """
         params = {
             "seed_candidate": seed_candidate,
@@ -265,6 +444,12 @@ class GEPAAlgorithm(Algorithm):
             "display_progress_bar": display_progress_bar,
             "cache_evaluation": cache_evaluation,
             "raise_on_exception": raise_on_exception,
+            "predict_fn": predict_fn,
+            "prompt_uris": prompt_uris,
+            "scorers": scorers,
+            "aggregation": aggregation,
+            "enable_tracking": enable_tracking,
+            "gepa_kwargs": gepa_kwargs,
         }
 
         for key, value in optional_params.items():
@@ -317,15 +502,23 @@ class GEPAAlgorithm(Algorithm):
             "display_progress_bar": bool,
             "cache_evaluation": bool,
             "raise_on_exception": bool,
+            "predict_fn": Callable,
+            "prompt_uris": list,
+            "scorers": list,
+            "aggregation": Callable,
+            "enable_tracking": bool,
+            "gepa_kwargs": dict,
         }
 
 
 # Register algorithm and backend
 AlgorithmRegistry.register_algorithm("gepa", GEPAAlgorithm)
 AlgorithmRegistry.register_backend("gepa", "gepa", GEPABackend)
+AlgorithmRegistry.register_backend("gepa", "mlflow", MLflowGEPABackend)
 
 
 def gepa(
+    *,
     seed_candidate: dict[str, str],
     task_lm: str,
     data_path: Optional[str] = None,
@@ -366,6 +559,13 @@ def gepa(
     display_progress_bar: Optional[bool] = None,
     cache_evaluation: Optional[bool] = None,
     raise_on_exception: Optional[bool] = None,
+    # MLflow backend parameters
+    predict_fn: Optional[Callable] = None,
+    prompt_uris: Optional[list[str]] = None,
+    scorers: Optional[list] = None,
+    aggregation: Optional[Callable] = None,
+    enable_tracking: Optional[bool] = None,
+    gepa_kwargs: Optional[dict] = None,
     **kwargs,
 ) -> Any:
     """Optimize a prompt using GEPA (Genetic-Pareto) evolutionary search.
@@ -387,7 +587,9 @@ def gepa(
             ``data_path`` for passing data directly.
         valset: Optional validation set (same format as trainset).
         output_dir: Directory to save the optimized prompt and results.
-        backend: Backend to use (default: ``"gepa"``).
+        backend: Backend to use. ``"gepa"`` (default) calls ``gepa.optimize()``
+            directly; ``"mlflow"`` uses ``mlflow.genai.optimize_prompts()`` for
+            integration with MLflow's prompt registry and scorer framework.
         evaluator: Custom scoring function matching the gepa Evaluator
             protocol: ``(data, response) -> (score, feedback, objective_scores)``.
             Defaults to gepa's ContainsAnswerEvaluator.
@@ -425,16 +627,27 @@ def gepa(
         display_progress_bar: Show progress bar during optimization.
         cache_evaluation: Cache evaluation results.
         raise_on_exception: Raise exceptions instead of logging them.
+        predict_fn: (MLflow backend only) Callable that uses MLflow
+            registered prompts to generate output.
+        prompt_uris: (MLflow backend only) List of MLflow prompt URIs to
+            optimize (e.g. ``["prompts:/my_prompt/1"]``).
+        scorers: (MLflow backend only) List of MLflow Scorer instances.
+        aggregation: (MLflow backend only) Callable that computes an overall
+            score from individual scorer outputs.
+        enable_tracking: (MLflow backend only) Whether to log optimization
+            progress to MLflow (default True).
+        gepa_kwargs: (MLflow backend only) Additional kwargs passed through
+            to ``gepa.optimize()`` via the ``GepaPromptOptimizer``.
         **kwargs: Additional parameters passed to the backend.
 
     Returns:
-        GEPAResult with ``best_candidate`` (the optimized prompt),
-        ``total_metric_calls``, and optimization history.
+        GEPAResult (gepa backend) or PromptOptimizationResult (mlflow backend).
 
     Example::
 
         from training_hub import gepa
 
+        # Direct GEPA backend (default)
         result = gepa(
             seed_candidate={"system_prompt": "Answer the question."},
             task_lm="openai/gpt-4o-mini",
@@ -443,6 +656,23 @@ def gepa(
             output_dir="./optimized_prompt",
         )
         print(result.best_candidate)
+
+        # MLflow backend (requires mlflow>=3.5.0)
+        import mlflow
+        from mlflow.genai.scorers import Correctness
+
+        prompt = mlflow.genai.register_prompt(
+            name="qa", template="Answer: {{question}}"
+        )
+        result = gepa(
+            seed_candidate={"qa": prompt.template},
+            task_lm="openai/gpt-4o-mini",
+            backend="mlflow",
+            predict_fn=my_predict_fn,
+            prompt_uris=[prompt.uri],
+            scorers=[Correctness(model="openai:/gpt-4o")],
+            data_path="qa_data.jsonl",
+        )
     """
     from . import create_algorithm
 
@@ -482,5 +712,11 @@ def gepa(
         display_progress_bar=display_progress_bar,
         cache_evaluation=cache_evaluation,
         raise_on_exception=raise_on_exception,
+        predict_fn=predict_fn,
+        prompt_uris=prompt_uris,
+        scorers=scorers,
+        aggregation=aggregation,
+        enable_tracking=enable_tracking,
+        gepa_kwargs=gepa_kwargs,
         **kwargs,
     )
