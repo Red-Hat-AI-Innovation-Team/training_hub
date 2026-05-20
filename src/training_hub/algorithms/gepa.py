@@ -157,7 +157,7 @@ class MLflowGEPABackend(Backend):
         except ImportError as err:
             raise ImportError(
                 "MLflow GEPA backend requires 'mlflow>=3.5.0' and 'gepa'. "
-                "Install with: pip install training-hub[gepa-mlflow]"
+                "Install with: pip install training-hub[gepa]"
             ) from err
 
         # Handle api_base: set via litellm env var, not passed to MLflow
@@ -212,6 +212,9 @@ class MLflowGEPABackend(Backend):
         display_progress_bar = algorithm_params.pop("display_progress_bar", False)
         gepa_kwargs = algorithm_params.pop("gepa_kwargs", None)
 
+        # Convert litellm format (openai/model) to MLflow URI format (openai:/model)
+        reflection_model = self._to_mlflow_uri(reflection_model)
+
         optimizer = GepaPromptOptimizer(
             reflection_model=reflection_model,
             max_metric_calls=max_metric_calls,
@@ -235,6 +238,21 @@ class MLflowGEPABackend(Backend):
             self._save_mlflow_result(result, output_dir)
 
         return result
+
+    @staticmethod
+    def _to_mlflow_uri(model_string: str) -> str:
+        """Convert litellm model string to MLflow URI format.
+
+        litellm uses ``provider/model`` (e.g. ``openai/gpt-4o-mini``),
+        while MLflow expects ``provider:/model`` (e.g. ``openai:/gpt-4o-mini``).
+        If already in MLflow format (contains ``:/``), returns as-is.
+        """
+        if ":/" in model_string:
+            return model_string
+        if "/" in model_string:
+            provider, model = model_string.split("/", 1)
+            return f"{provider}:/{model}"
+        return model_string
 
     @staticmethod
     def _convert_to_mlflow_format(trainset: list[dict]) -> list[dict]:
