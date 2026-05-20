@@ -59,6 +59,17 @@ class GEPABackend(Backend):
                              "aggregation", "enable_tracking", "gepa_kwargs"):
             algorithm_params.pop(mlflow_param, None)
 
+        # Handle api_base: set via litellm env var, not passed to optimize()
+        api_base = algorithm_params.pop("api_base", None)
+        if api_base is not None:
+            os.environ["OPENAI_API_BASE"] = api_base
+
+        # Default reflection_lm to task_lm if not provided
+        if algorithm_params.get("reflection_lm") is None:
+            task_lm = algorithm_params.get("task_lm")
+            if task_lm is not None:
+                algorithm_params["reflection_lm"] = task_lm
+
         # Build the optimize() kwargs from algorithm_params
         optimize_kwargs = {k: v for k, v in algorithm_params.items() if v is not None}
 
