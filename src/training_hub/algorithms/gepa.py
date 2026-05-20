@@ -691,6 +691,14 @@ def gepa(
         )
         print(result.best_candidate)
 
+        # With a local vLLM or OpenAI-compatible endpoint
+        result = gepa(
+            seed_candidate={"system_prompt": "Answer the question."},
+            task_lm="openai/my-model",
+            api_base="http://localhost:8000/v1",
+            data_path="qa_data.jsonl",
+        )
+
         # MLflow backend (requires mlflow>=3.5.0)
         import mlflow
         from mlflow.genai.scorers import Correctness
@@ -707,6 +715,19 @@ def gepa(
             scorers=[Correctness(model="openai:/gpt-4o")],
             data_path="qa_data.jsonl",
         )
+
+    .. note::
+        **Using local vLLM/OpenAI-compatible endpoints:**
+
+        Both backends support local models via ``api_base``. Model names use
+        litellm format (``openai/model-name``); the MLflow backend automatically
+        converts to MLflow URI format (``openai:/model-name``) internally.
+
+        For the MLflow backend with local endpoints, use custom ``@scorer``
+        functions rather than built-in scorers like
+        ``Correctness(model="openai:/...")``. The built-in MLflow scorers
+        hardcode the OpenAI API endpoint and do not route through
+        ``OPENAI_API_BASE``.
     """
     from . import create_algorithm
 
