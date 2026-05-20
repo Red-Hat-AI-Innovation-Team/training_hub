@@ -719,9 +719,17 @@ class ARTLoRAGRPOBackend(Backend):
         except SystemExit:
             pass  # os._exit from shutdown — results saved in _run_training
         except Exception as e:
-            with open(error_path, "w") as f:
+            if not os.path.exists(results_path):
+                with open(error_path, "w") as f:
+                    import traceback
+                    f.write(traceback.format_exc())
+            else:
                 import traceback
-                f.write(traceback.format_exc())
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Post-training cleanup error (training completed successfully):\n%s",
+                    traceback.format_exc(),
+                )
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
