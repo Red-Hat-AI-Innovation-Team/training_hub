@@ -157,8 +157,13 @@ class MLflowGEPABackend(Backend):
         except ImportError as err:
             raise ImportError(
                 "MLflow GEPA backend requires 'mlflow>=3.5.0' and 'gepa'. "
-                "Install with: pip install 'mlflow>=3.5.0' training-hub[gepa]"
+                "Install with: pip install training-hub[gepa-mlflow]"
             ) from err
+
+        # Handle api_base: set via litellm env var, not passed to MLflow
+        api_base = algorithm_params.pop("api_base", None)
+        if api_base is not None:
+            os.environ["OPENAI_API_BASE"] = api_base
 
         # Extract MLflow-specific required params
         predict_fn = algorithm_params.pop("predict_fn", None)
