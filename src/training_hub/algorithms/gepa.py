@@ -63,6 +63,10 @@ class GEPABackend(Backend):
         api_base = algorithm_params.pop("api_base", None)
         if api_base is not None:
             os.environ["OPENAI_API_BASE"] = api_base
+            # litellm requires an API key even for local endpoints;
+            # set a dummy value if none is configured
+            if not os.environ.get("OPENAI_API_KEY"):
+                os.environ["OPENAI_API_KEY"] = "dummy"
 
         # Default reflection_lm to task_lm if not provided
         if algorithm_params.get("reflection_lm") is None:
@@ -164,6 +168,10 @@ class MLflowGEPABackend(Backend):
         api_base = algorithm_params.pop("api_base", None)
         if api_base is not None:
             os.environ["OPENAI_API_BASE"] = api_base
+            # litellm requires an API key even for local endpoints;
+            # set a dummy value if none is configured
+            if not os.environ.get("OPENAI_API_KEY"):
+                os.environ["OPENAI_API_KEY"] = "dummy"
 
         # Extract MLflow-specific required params
         predict_fn = algorithm_params.pop("predict_fn", None)
