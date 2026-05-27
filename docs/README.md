@@ -270,12 +270,10 @@ git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git
 <summary><strong>Codex CLI</strong></summary>
 
 ```bash
-git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git ~/.codex/training-hub
-mkdir -p ~/.agents/skills
-ln -s ~/.codex/training-hub/.claude/skills ~/.agents/skills/training-hub
+codex plugin marketplace add Red-Hat-AI-Innovation-Team/plugins
 ```
 
-Restart Codex to discover the skills. See `.codex-plugin/INSTALL.md` for full instructions.
+Then install the plugin from the marketplace. See `.codex-plugin/INSTALL.md` for manual installation.
 </details>
 
 ### After Installing

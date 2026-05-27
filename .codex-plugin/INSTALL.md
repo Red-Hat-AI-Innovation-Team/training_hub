@@ -1,31 +1,36 @@
 # Installing training-hub for Codex
 
-Enable training-hub LLM training skills in Codex via native skill discovery.
+## Via Marketplace (Recommended)
 
-## Prerequisites
+```bash
+codex plugin marketplace add Red-Hat-AI-Innovation-Team/plugins
+```
 
-- Git
-- Python 3.11+ with uv or pip
-- [Codex CLI](https://github.com/openai/codex) installed
+Then install the plugin from the marketplace. The Python library will need to be installed separately:
 
-## Installation
+```bash
+pip install training-hub
+```
 
-1. **Clone the training-hub repository:**
+For GPU training, also install extras (sequentially):
+```bash
+pip install training-hub[lora]                          # LoRA support
+pip install training-hub[grpo,lora]                     # GRPO support
+pip install training-hub[cuda] --no-build-isolation     # CUDA kernels
+```
+
+## Manual Installation
+
+If you prefer to install manually:
+
+1. **Clone the repository:**
    ```bash
    git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git ~/.codex/training-hub
    ```
 
 2. **Install the Python library:**
    ```bash
-   cd ~/.codex/training-hub && uv sync --extra dev
-   ```
-   Or with pip:
-   ```bash
    pip install -e ~/.codex/training-hub
-   ```
-   For GPU support:
-   ```bash
-   pip install -e "~/.codex/training-hub[cuda]"
    ```
 
 3. **Create the skills symlink** (skills are in `.claude/skills/` — shared between Claude Code and Codex):
@@ -34,39 +39,18 @@ Enable training-hub LLM training skills in Codex via native skill discovery.
    ln -s ~/.codex/training-hub/.claude/skills ~/.agents/skills/training-hub
    ```
 
-   **Windows (PowerShell):**
-   ```powershell
-   New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agents\skills"
-   cmd /c mklink /J "$env:USERPROFILE\.agents\skills\training-hub" "$env:USERPROFILE\.codex\training-hub\.claude\skills"
-   ```
-
 4. **Restart Codex** to discover the skills.
-
-## Path Resolution
-
-When skills reference `${CLAUDE_PLUGIN_ROOT}/scripts/...`, use the clone path instead:
-```bash
-~/.codex/training-hub/scripts/
-```
-
-## Verify
-
-```bash
-ls -la ~/.agents/skills/training-hub
-```
-
-You should see a symlink pointing to the training-hub skills directory.
 
 ## Updating
 
+Marketplace installs update automatically. For manual installs:
 ```bash
 cd ~/.codex/training-hub && git pull
 ```
 
-Skills update instantly through the symlink.
-
 ## Uninstalling
 
+For manual installs:
 ```bash
 rm ~/.agents/skills/training-hub
 rm -rf ~/.codex/training-hub
