@@ -28,7 +28,7 @@ Enable training-hub LLM training skills in Codex via native skill discovery.
    pip install -e "~/.codex/training-hub[cuda]"
    ```
 
-3. **Create the skills symlink:**
+3. **Create the skills symlink** (skills are in `.claude/skills/` — shared between Claude Code and Codex):
    ```bash
    mkdir -p ~/.agents/skills
    ln -s ~/.codex/training-hub/.claude/skills ~/.agents/skills/training-hub

@@ -34,7 +34,24 @@ If `gpu=unavailable`, warn: "No GPU detected. Training requires CUDA-capable GPU
 
 Report GPU count if available.
 
-## Step 4: Collect Configuration
+## Step 4: Quick Setup or Custom
+
+If the user has a clear task ("fine-tune Llama on my data"), offer a fast path with sensible defaults:
+
+> "I detected N GPU(s). I can set up with these defaults:
+> - Algorithm: `lora_sft` (parameter-efficient, works on a single GPU)
+> - Learning rate: `1e-5`
+> - Epochs: `2`
+> - Batch size: `64`
+> - Max sequence length: `4096`
+>
+> You'll just need to provide your model path and data path. Accept these defaults, or customize?"
+
+If the user accepts, ask only for model path and data path, then skip to Step 7.
+
+**If the user wants to customize**, proceed with the full configuration.
+
+## Full Configuration
 
 Ask these questions **one at a time**:
 
