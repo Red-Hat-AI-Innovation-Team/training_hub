@@ -31,13 +31,13 @@ Enable training-hub LLM training skills in Codex via native skill discovery.
 3. **Create the skills symlink:**
    ```bash
    mkdir -p ~/.agents/skills
-   ln -s ~/.codex/training-hub/skills ~/.agents/skills/training-hub
+   ln -s ~/.codex/training-hub/.claude/skills ~/.agents/skills/training-hub
    ```
 
    **Windows (PowerShell):**
    ```powershell
    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agents\skills"
-   cmd /c mklink /J "$env:USERPROFILE\.agents\skills\training-hub" "$env:USERPROFILE\.codex\training-hub\skills"
+   cmd /c mklink /J "$env:USERPROFILE\.agents\skills\training-hub" "$env:USERPROFILE\.codex\training-hub\.claude\skills"
    ```
 
 4. **Restart Codex** to discover the skills.
@@ -46,9 +46,7 @@ Enable training-hub LLM training skills in Codex via native skill discovery.
 
 When skills reference `${CLAUDE_PLUGIN_ROOT}/scripts/...`, use the clone path instead:
 ```bash
-~/.codex/training-hub/scripts/th_detect.sh
-~/.codex/training-hub/scripts/th_train.sh
-~/.codex/training-hub/scripts/th_estimate.sh
+~/.codex/training-hub/scripts/
 ```
 
 ## Verify

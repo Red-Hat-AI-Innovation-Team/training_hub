@@ -272,7 +272,7 @@ git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git
 ```bash
 git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git ~/.codex/training-hub
 mkdir -p ~/.agents/skills
-ln -s ~/.codex/training-hub/skills ~/.agents/skills/training-hub
+ln -s ~/.codex/training-hub/.claude/skills ~/.agents/skills/training-hub
 ```
 
 Restart Codex to discover the skills. See `.codex-plugin/INSTALL.md` for full instructions.

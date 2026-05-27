@@ -4,5 +4,5 @@
   "author": {
     "name": "Red Hat AI Innovation Team"
   },
-  "skills": ["./skills", "./.claude/skills"]
+  "skills": "./.claude/skills"
 }
