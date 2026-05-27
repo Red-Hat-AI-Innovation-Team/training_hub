@@ -218,7 +218,22 @@ class MLflowGEPABackend(Backend):
 
         max_metric_calls = algorithm_params.pop("max_metric_calls", 100)
         display_progress_bar = algorithm_params.pop("display_progress_bar", False)
-        gepa_kwargs = algorithm_params.pop("gepa_kwargs", None)
+        gepa_kwargs = algorithm_params.pop("gepa_kwargs", None) or {}
+
+        # Forward GEPA-specific optimization params through gepa_kwargs
+        # These are accepted by gepa.optimize() but not by GepaPromptOptimizer directly
+        gepa_forward_params = [
+            "reflection_minibatch_size", "candidate_selection_strategy",
+            "frontier_type", "skip_perfect_score", "perfect_score", "seed",
+            "batch_sampler", "reflection_prompt_template",
+            "custom_candidate_proposer", "module_selector", "use_merge",
+            "stop_callbacks", "callbacks", "cache_evaluation",
+            "raise_on_exception",
+        ]
+        for param in gepa_forward_params:
+            value = algorithm_params.pop(param, None)
+            if value is not None:
+                gepa_kwargs.setdefault(param, value)
 
         # Convert litellm format (openai/model) to MLflow URI format (openai:/model)
         reflection_model = self._to_mlflow_uri(reflection_model)
@@ -227,7 +242,7 @@ class MLflowGEPABackend(Backend):
             reflection_model=reflection_model,
             max_metric_calls=max_metric_calls,
             display_progress_bar=display_progress_bar,
-            gepa_kwargs=gepa_kwargs,
+            gepa_kwargs=gepa_kwargs or None,
         )
 
         result = optimize_prompts(
