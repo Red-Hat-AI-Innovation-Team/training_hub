@@ -242,7 +242,7 @@ uv pip install -e . && uv pip install -e .[cuda] --no-build-isolation
 
 ## Coding Agent Plugin
 
-Training Hub is available as a plugin for four major coding agents, bringing LLM training capabilities directly into your coding workflow.
+Training Hub is available as a plugin for two coding agents, bringing LLM training capabilities directly into your coding workflow.
 
 <details>
 <summary><strong>Claude Code</strong></summary>
@@ -267,12 +267,6 @@ git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git
 </details>
 
 <details>
-<summary><strong>Cursor</strong></summary>
-
-Clone the repo and open it — Cursor discovers the plugin via `.cursor-plugin/plugin.json` automatically.
-</details>
-
-<details>
 <summary><strong>Codex CLI</strong></summary>
 
 ```bash
@@ -284,29 +278,15 @@ ln -s ~/.codex/training-hub/skills ~/.agents/skills/training-hub
 Restart Codex to discover the skills. See `.codex-plugin/INSTALL.md` for full instructions.
 </details>
 
-<details>
-<summary><strong>OpenCode</strong></summary>
-
-Add to your `opencode.json`:
-
-```json
-{
-  "plugin": ["training-hub@git+https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git"]
-}
-```
-
-Restart OpenCode. See `.opencode-plugin/INSTALL.md` for full instructions.
-</details>
-
 ### After Installing
 
-Run `/th-setup` (or invoke the `setup-guide` skill) to configure your training algorithm, model, and data.
+Invoke the `setup-guide` skill to configure your training algorithm, model, and data.
 
-| Command | Description |
+| Skill | Description |
 |---|---|
-| `/th-setup` | Guided first-time configuration |
-| `/th-train` | Run LLM training using saved configuration |
-| `/th-estimate` | Estimate GPU memory requirements |
+| `setup-guide` | Guided first-time configuration |
+| `training-guide` | Run LLM training or fine-tuning |
+| `memory-estimation` | Estimate GPU memory requirements |
 
 ## Getting Started
 

@@ -48,7 +48,7 @@ print(method_map.get(alg, 'basic'))
 " 2>/dev/null || echo "basic")
 fi
 
-[ -z "$MODEL_PATH" ] && die "No model path specified. Use --model or run /th-setup."
+[ -z "$MODEL_PATH" ] && die "No model path specified. Use --model or run setup-guide skill."
 [ -z "$METHOD" ] && METHOD="basic"
 [ -z "$GPUS" ] && GPUS="1"
 [ -z "$SEQ_LEN" ] && SEQ_LEN="4096"

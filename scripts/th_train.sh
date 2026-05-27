@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[ -f "$CONFIG_PATH" ] || die "Config not found at $CONFIG_PATH. Run /th-setup first."
+[ -f "$CONFIG_PATH" ] || die "Config not found at $CONFIG_PATH. Run setup-guide skill first."
 
 # Read config values via env vars to avoid shell injection
 [ -z "$ALGORITHM" ] && ALGORITHM=$(CONFIG_PATH="$CONFIG_PATH" $PYTHON -c "import json,os; print(json.load(open(os.environ['CONFIG_PATH'])).get('algorithm', ''))")
@@ -48,9 +48,9 @@ done
 [ -z "$OUTPUT_DIR" ] && OUTPUT_DIR=$(CONFIG_PATH="$CONFIG_PATH" $PYTHON -c "import json,os; print(json.load(open(os.environ['CONFIG_PATH'])).get('ckpt_output_dir', './output'))")
 [ -z "$GPUS" ] && GPUS=$(CONFIG_PATH="$CONFIG_PATH" $PYTHON -c "import json,os; print(json.load(open(os.environ['CONFIG_PATH'])).get('nproc_per_node', 1))")
 
-[ -z "$ALGORITHM" ] && die "No algorithm specified. Run /th-setup to configure."
-[ -z "$MODEL_PATH" ] && die "No model path specified. Run /th-setup to configure."
-[ -z "$DATA_PATH" ] && die "No data path specified. Run /th-setup to configure."
+[ -z "$ALGORITHM" ] && die "No algorithm specified. Run setup-guide skill to configure."
+[ -z "$MODEL_PATH" ] && die "No model path specified. Run setup-guide skill to configure."
+[ -z "$DATA_PATH" ] && die "No data path specified. Run setup-guide skill to configure."
 
 # Execute training
 TH_CONFIG="$CONFIG_PATH" TH_ALGORITHM="$ALGORITHM" TH_DATA="$DATA_PATH" \

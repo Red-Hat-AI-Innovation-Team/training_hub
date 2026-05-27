@@ -1,34 +1,30 @@
 ---
 name: training-guide
-description: "Use when the user wants to fine-tune or train a language model, run SFT/OSFT/LoRA training, estimate VRAM requirements, or interpret training results like loss curves. Applies to tasks like: full fine-tuning, parameter-efficient fine-tuning, reinforcement learning, continual learning, or GPU memory planning."
+description: "Use when the user wants to fine-tune or train a language model, run SFT/OSFT/LoRA training, or interpret training results like loss curves. Applies to tasks like: full fine-tuning, parameter-efficient fine-tuning, reinforcement learning, continual learning, or running a training job."
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/th_train.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/th_detect.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/th_estimate.sh:*)"]
 ---
 
 # LLM Training
 
 Help the user train or fine-tune a language model.
 
-## Detection
-
-First, check the environment:
+## Step 1: Check Environment
 
 ```!
 "${CLAUDE_PLUGIN_ROOT}/scripts/th_detect.sh"
 ```
 
-## Routing
+### If not ready
 
-Based on detection results:
+- `library=missing` and `config=missing`: invoke the `setup-guide` skill.
+- `library=installed` and `config=missing`: tell the user to run the `setup-guide` skill to configure.
+- `gpu=unavailable`: warn that training requires CUDA-capable GPUs.
 
-### Nothing available (`library=missing`, `config=missing`)
-Invoke the `setup-guide` skill to walk through installation and configuration.
+### If ready (`library=installed`, `config=found`)
 
-### Config missing but library installed (`library=installed`, `config=missing`)
-Ask the user to run `/th-setup` to configure, or invoke the `setup-guide` skill.
+Proceed to Step 2.
 
-### Ready (`library=installed`, `config=found`)
-Proceed based on the user's intent.
-
-## Algorithm Selection
+## Step 2: Algorithm Selection
 
 If the user hasn't specified an algorithm, help them choose:
 
@@ -40,24 +36,35 @@ If the user hasn't specified an algorithm, help them choose:
 | "GRPO", "reinforcement learning", "reward", "tool calling" | lora_grpo | RL with LoRA for efficiency |
 | "full GRPO", "large scale RL", "multi-GPU RL" | grpo | Full-weight RL on GPU clusters |
 
-## Memory Estimation
+### Memory Questions
 
-If the user asks about VRAM, memory, GPUs, or whether a model will fit, route to `/th-estimate`.
+If the user asks about VRAM, memory, GPUs, or whether a model will fit, invoke the `memory-estimation` skill instead.
 
-## Training Execution
+## Step 3: Execute Training
 
-For training requests, route to `/th-train`.
+Run the training script with any user-provided overrides:
 
-## Loss Interpretation
+```!
+"${CLAUDE_PLUGIN_ROOT}/scripts/th_train.sh" $ARGUMENTS
+```
 
-If the user asks about training progress, loss curves, or convergence:
-- Suggest `training_hub.plot_loss("<ckpt_output_dir>")` to visualize
-- Explain: loss should decrease over epochs; sudden spikes may indicate learning rate issues; plateaus suggest convergence
+## Step 4: Present Results
 
-## Common Issues
+1. **Training status** — Whether training completed successfully
+2. **Algorithm used** — Which algorithm and backend were used
+3. **Checkpoint location** — Where the trained model was saved
+4. **Loss summary** — If available, show final loss values
+
+If training failed, show the error and suggest troubleshooting:
 
 | Symptom | Suggestion |
 |---|---|
 | OOM error | Reduce batch size, seq length, or switch to LoRA |
 | Loss not decreasing | Check learning rate, data format, verify model path |
 | Slow training | Check GPU utilization with `nvidia-smi`, consider flash-attn |
+
+## Loss Interpretation
+
+If the user asks about training progress, loss curves, or convergence:
+- Suggest `training_hub.plot_loss("<ckpt_output_dir>")` to visualize
+- Explain: loss should decrease over epochs; sudden spikes may indicate learning rate issues; plateaus suggest convergence
