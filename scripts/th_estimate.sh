@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Estimate GPU memory requirements for a training configuration
+# Estimate GPU memory requirements for a training configuration.
+#
+# Usage: th_estimate.sh [--method METHOD] [--model PATH] [--gpus N]
+#                       [--seq-len N]
+# Output: JSON with low/mid/high VRAM estimates in GB.
+#
+# Methods: basic (SFT/GRPO), osft, lora, qlora.
+# Reads defaults from .training-hub/config.json if available.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"

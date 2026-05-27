@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Execute LLM training using saved configuration
+# Execute LLM training using saved configuration.
+#
+# Usage: th_train.sh [--algorithm ALG] [--data PATH] [--model PATH]
+#                    [--output DIR] [--gpus N]
+# Output: JSON with status, algorithm, and output_dir.
+#
+# Reads defaults from .training-hub/config.json (override via
+# TRAINING_HUB_CONFIG env var). CLI flags override config values.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"

@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Detect training_hub environment: library, installer, config, GPU
+# Detect training_hub environment: library, installer, config, GPU.
+#
+# Usage: th_detect.sh
+# Output: key=value pairs, one per line:
+#   library=installed|missing
+#   installer=uv|pip|none
+#   config=found|missing
+#   gpu=available|unavailable gpus=N
+#
+# Config path can be overridden via TRAINING_HUB_CONFIG env var.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
