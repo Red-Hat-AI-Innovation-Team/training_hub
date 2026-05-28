@@ -348,8 +348,23 @@ Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 
 - **transformers >= 4.58 required** for the `qwen3_5` model type. Also upgrade `huggingface_hub >= 1.0`.
 - **Force-reinstall `nvidia-nccl-cu12` after installing vLLM 0.19.** vLLM may leave a stale cu13 NCCL `.so` file even though pip shows cu12. Verify with `python -c "import ctypes; lib=ctypes.CDLL('path/to/libnccl.so.2'); v=ctypes.c_int(); lib.ncclGetVersion(ctypes.byref(v)); print(v.value)"`.
 
+### Kubeflow / RHOAI Integration
+
+- **Emit `max_steps` in training metrics for progress reporting.** The Kubeflow SDK metrics handler calculates `progressPercentage` from `max_steps`. Without it, GRPO jobs report progress as "unknown" (`None`). Set `max_steps` to `num_iterations` in both rollout and train phase entries of `training_metrics.jsonl`. This matches the pattern established for LoRA SFT.
+- **ART cleanup errors must not overwrite successful results.** ART's background health-check task throws `ConnectionRefusedError` after vLLM shuts down at the end of training. If this writes to `error_path`, Kubeflow restarts the pod even though training completed. Check `results_path` exists before treating a cleanup exception as a failure — if training finished, log the error as a warning instead.
+
+### Dependency Security
+
+- **Pin litellm upper bound at `<1.82.7` (TeamPCP supply chain attack).** litellm versions 1.82.7–1.82.8 were compromised in March 2026 — attackers hijacked the CI/CD pipeline and published malicious versions that harvested credentials. The `[grpo]` extra retains this cap. When updating the litellm floor, always preserve the upper cap. `openpipe-art` itself only requires `litellm>=1.71.1`, so the floor can be relaxed without security risk.
+
+### Multi-Node Training
+
+- **Gate console logging on `LOCAL_RANK`, not global rank.** Using `dist.get_rank() == 0` for log gating means only global rank 0 (node 0, GPU 0) prints training progress — worker nodes have zero visibility. Use `int(os.environ.get("LOCAL_RANK", 0)) == 0` so each node's local rank 0 prints progress. Keep experiment tracker logging (wandb/mlflow) gated on global rank 0 to avoid duplicate metric entries.
+
 ### Past Incidents (continued)
 
+- **ART async cleanup caused Kubeflow pod restart.** After training completed, vLLM shut down and ART's background health-check threw `ConnectionRefusedError`. The exception handler wrote to `error_path`, which Kubeflow interpreted as a training failure and restarted the pod. Fix: check if `results_path` exists before writing to `error_path` — if training completed, log the error as a warning. Lesson: cleanup errors in orchestrated environments (Kubeflow, K8s) must not be treated as training failures when results are already on disk.
+- **AdamW optimizer destroyed OSFT orthogonality.** AdamW's element-wise moment rescaling (`m̂_t / (√v̂_t + ε)`) breaks the orthogonal structure of projected gradients, causing parameter updates to leak into the frozen subspace over training steps. The drift is invisible without explicit orthogonality checks. Fix: add post-step parameter re-projection that guarantees `U_low` and `V_low` never drift into the frozen subspace, regardless of what the optimizer does internally. Lesson: when using constrained optimization (orthogonal subspace, manifold optimization), always verify that the optimizer preserves the constraint — standard optimizers like AdamW operate element-wise and will destroy geometric structure.
 - **Root filesystem filled by flash-attn JIT compilation.** CUDA compilation of flash-attn wrote hundreds of 125-140MB temp files to `/tmp` on a 100GB root partition. The build failed silently with "Error compiling objects for extension" and no disk space error. Fix: set `TMPDIR=/mnt/nvme0n1/tmp` before building. Lesson: always set TMPDIR to a large filesystem for CUDA compilation.
 - **Stale `libnccl.so` version after package reinstall.** `pip list` showed `nvidia-nccl-cu12==2.27.5` but the actual `.so` file was version 2.28.9 (from a prior cu13 install). Caused NCCL errors at runtime. Fix: `pip install nvidia-nccl-cu12==2.27.5 --force-reinstall`. Lesson: pip metadata and actual library files can diverge — verify with ctypes or ldd when debugging NCCL issues.
 - **vLLM `sample_tokens` timeout on GDN models.** Qwen3.5-9B with 29K+ token prompts exceeded the 300s default `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`. The vLLM worker appeared to hang and the engine reported `EngineDeadError`. Fix: increase timeout to 1200s. Lesson: GDN linear attention is slower per token than standard attention — timeout values calibrated for transformer models may be too low.
