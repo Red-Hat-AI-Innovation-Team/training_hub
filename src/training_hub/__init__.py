@@ -8,6 +8,7 @@ from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
+from .algorithms.its_rollout import ITSRollout
 from .visualization import plot_loss
 
 __all__ = [
@@ -42,5 +43,6 @@ __all__ = [
     'LoRAEstimator',
     'QLoRAEstimator',
     'estimate',
+    'ITSRollout',
     'plot_loss',
 ]
