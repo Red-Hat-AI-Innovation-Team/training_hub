@@ -61,6 +61,8 @@ class GEPABackend(Backend):
 
         # Handle api_base: set via litellm env var, not passed to optimize()
         api_base = algorithm_params.pop("api_base", None)
+        prev_api_base = os.environ.get("OPENAI_API_BASE")
+        prev_api_key = os.environ.get("OPENAI_API_KEY")
         if api_base is not None:
             os.environ["OPENAI_API_BASE"] = api_base
             # litellm requires an API key even for local endpoints;
@@ -77,10 +79,22 @@ class GEPABackend(Backend):
         # Build the optimize() kwargs from algorithm_params
         optimize_kwargs = {k: v for k, v in algorithm_params.items() if v is not None}
 
-        result = optimize(
-            trainset=trainset,
-            **optimize_kwargs,
-        )
+        try:
+            result = optimize(
+                trainset=trainset,
+                **optimize_kwargs,
+            )
+        finally:
+            # Restore previous environment state
+            if api_base is not None:
+                if prev_api_base is None:
+                    os.environ.pop("OPENAI_API_BASE", None)
+                else:
+                    os.environ["OPENAI_API_BASE"] = prev_api_base
+                if prev_api_key is None:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                else:
+                    os.environ["OPENAI_API_KEY"] = prev_api_key
 
         # Save results if output_dir specified
         if output_dir is not None:
@@ -166,6 +180,8 @@ class MLflowGEPABackend(Backend):
 
         # Handle api_base: set via litellm env var, not passed to MLflow
         api_base = algorithm_params.pop("api_base", None)
+        prev_api_base = os.environ.get("OPENAI_API_BASE")
+        prev_api_key = os.environ.get("OPENAI_API_KEY")
         if api_base is not None:
             os.environ["OPENAI_API_BASE"] = api_base
             # litellm requires an API key even for local endpoints;
@@ -235,6 +251,18 @@ class MLflowGEPABackend(Backend):
             if value is not None:
                 gepa_kwargs.setdefault(param, value)
 
+        # Warn about params that are silently ignored by the MLflow backend
+        ignored_params = {
+            k: v for k, v in algorithm_params.items()
+            if k not in ("output_dir",) and v is not None
+        }
+        if ignored_params:
+            logger.warning(
+                "MLflow backend does not use these parameters (they will be "
+                "ignored): %s",
+                list(ignored_params.keys()),
+            )
+
         # Convert litellm format (openai/model) to MLflow URI format (openai:/model)
         reflection_model = self._to_mlflow_uri(reflection_model)
 
@@ -245,15 +273,27 @@ class MLflowGEPABackend(Backend):
             gepa_kwargs=gepa_kwargs or None,
         )
 
-        result = optimize_prompts(
-            predict_fn=predict_fn,
-            train_data=train_data,
-            prompt_uris=prompt_uris,
-            optimizer=optimizer,
-            scorers=scorers,
-            aggregation=aggregation,
-            enable_tracking=enable_tracking,
-        )
+        try:
+            result = optimize_prompts(
+                predict_fn=predict_fn,
+                train_data=train_data,
+                prompt_uris=prompt_uris,
+                optimizer=optimizer,
+                scorers=scorers,
+                aggregation=aggregation,
+                enable_tracking=enable_tracking,
+            )
+        finally:
+            # Restore previous environment state
+            if api_base is not None:
+                if prev_api_base is None:
+                    os.environ.pop("OPENAI_API_BASE", None)
+                else:
+                    os.environ["OPENAI_API_BASE"] = prev_api_base
+                if prev_api_key is None:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                else:
+                    os.environ["OPENAI_API_KEY"] = prev_api_key
 
         # Save results if output_dir specified
         output_dir = algorithm_params.pop("output_dir", None)
@@ -282,7 +322,7 @@ class MLflowGEPABackend(Backend):
         """Convert GEPA data format to MLflow format if needed.
 
         GEPA format: {"input": ..., "answer": ..., "additional_context": ...}
-        MLflow format: {"inputs": {...}, "outputs": ...}
+        MLflow format: {"inputs": {...}, "expectations": {"expected_response": ...}}
 
         If data is already in MLflow format (has "inputs" key), pass through.
         """
@@ -297,7 +337,9 @@ class MLflowGEPABackend(Backend):
         for record in trainset:
             entry = {
                 "inputs": {"input": record["input"]},
-                "outputs": record.get("answer", ""),
+                "expectations": {
+                    "expected_response": record.get("answer", ""),
+                },
             }
             if record.get("additional_context"):
                 entry["inputs"]["additional_context"] = record["additional_context"]
@@ -339,7 +381,6 @@ class GEPAAlgorithm(Algorithm):
 
     def train(
         self,
-        *,
         seed_candidate: dict[str, str],
         task_lm: str,
         data_path: Optional[str] = None,
@@ -575,7 +616,6 @@ AlgorithmRegistry.register_backend("gepa", "mlflow", MLflowGEPABackend)
 
 
 def gepa(
-    *,
     seed_candidate: dict[str, str],
     task_lm: str,
     data_path: Optional[str] = None,
