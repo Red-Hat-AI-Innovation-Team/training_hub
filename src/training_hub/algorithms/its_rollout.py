@@ -7,6 +7,7 @@ lora_grpo() with the ART backend.
 Requires: its_hub (optional dependency, imported lazily)
 """
 
+import asyncio
 import logging
 from typing import Any, Callable, Optional
 
@@ -111,6 +112,17 @@ class ITSRollout:
         # Lazy-initialized after unpickling in ART's subprocess
         self._lm = None
         self._algorithm = None
+        self._init_lock = None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_lm"] = None
+        state["_algorithm"] = None
+        state["_init_lock"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
 
     async def __call__(self, model, task) -> Any:
         """Run an ITS Hub algorithm and return an ART Trajectory.
@@ -124,10 +136,21 @@ class ITSRollout:
             ``art.Trajectory`` with ``.reward`` set.
         """
         import art
+        from openai.types.chat.chat_completion import Choice
+        from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
         if self._lm is None:
-            self._init_its_hub(model)
+            if self._init_lock is None:
+                self._init_lock = asyncio.Lock()
+            async with self._init_lock:
+                if self._lm is None:
+                    self._init_its_hub(model)
 
+        if self.message_key not in task:
+            raise KeyError(
+                f"Task is missing key '{self.message_key}'. "
+                f"Available keys: {list(task.keys())}"
+            )
         messages = task[self.message_key]
 
         try:
@@ -139,6 +162,11 @@ class ITSRollout:
             )
 
             selected = result.the_one
+            if selected is None:
+                raise ValueError(
+                    "ITS Hub algorithm returned no selected candidate "
+                    "(result.the_one is None)"
+                )
             choice = _dict_to_choice(selected)
             response_text = selected.get("content") or ""
 
@@ -148,13 +176,17 @@ class ITSRollout:
             trajectory.reward = float(self.reward_fn(response_text, task))
             return trajectory
 
-        except Exception as e:
-            logger.warning("ITS Hub rollout failed: %s", e)
+        except (ConnectionError, TimeoutError) as e:
+            logger.warning("ITS Hub rollout failed (retriable): %s", e)
+            fallback_choice = Choice(
+                index=0,
+                finish_reason="stop",
+                message=ChatCompletionMessage(
+                    role="assistant", content="[rollout failed]"
+                ),
+            )
             trajectory = art.Trajectory(
-                messages_and_choices=[
-                    {"role": "system", "content": "failed"},
-                    {"role": "user", "content": "failed"},
-                ],
+                messages_and_choices=list(messages) + [fallback_choice],
             )
             trajectory.reward = 0.0
             return trajectory

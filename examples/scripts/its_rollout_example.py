@@ -60,7 +60,7 @@ ALGORITHM_FACTORIES = {
 
 def contains_answer_reward(response_text, task):
     """Simple reward: 1.0 if ground truth appears in response, else 0.0."""
-    ground_truth = task.get("answer", task.get("ground_truth", ""))
+    ground_truth = str(task.get("answer", task.get("ground_truth", "")))
     if not ground_truth:
         return 0.0
     return 1.0 if ground_truth.lower() in response_text.lower() else 0.0
@@ -129,7 +129,7 @@ def load_tasks(data_path):
     """Load tasks from JSONL file."""
     import json
     tasks = []
-    with open(data_path) as f:
+    with open(data_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
