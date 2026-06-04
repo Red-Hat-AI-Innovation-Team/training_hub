@@ -369,7 +369,32 @@ class SpeculatorsBackend(Backend):
         self._wait_for_server(health_url, timeout=params.get("vllm_startup_timeout", 600))
         logger.info("vLLM server ready at %s", endpoint)
 
+        # Warmup request to trigger model compilation before training starts
+        self._warmup_vllm(endpoint, verifier)
+
         return proc, endpoint
+
+    @staticmethod
+    def _warmup_vllm(endpoint: str, model: str) -> None:
+        """Send a small warmup request to trigger vLLM model compilation."""
+        import urllib.request
+
+        logger.info("Sending warmup request to vLLM...")
+        payload = json.dumps({
+            "model": model,
+            "prompt": "Hello",
+            "max_tokens": 1,
+        }).encode()
+        req = urllib.request.Request(
+            f"{endpoint}/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=300)
+            logger.info("vLLM warmup complete")
+        except Exception as e:
+            logger.warning("vLLM warmup request failed (may still work): %s", e)
 
     @staticmethod
     def _find_free_port() -> int:
@@ -659,6 +684,8 @@ class SpeculatorsBackend(Backend):
         # -- Datasets --
         noise_transform = AddUniformNoise(std=noise_std)
 
+        request_timeout = params.get("request_timeout", 300 if on_missing == "generate" else 120)
+
         train_dataset = ArrowDataset(
             datapath=data_output_dir,
             max_len=total_seq_len,
@@ -669,6 +696,7 @@ class SpeculatorsBackend(Backend):
             split_ratio=0.9,
             model=verifier if on_missing == "generate" else None,
             hidden_states_dtype=hidden_states_dtype,
+            request_timeout=request_timeout,
         )
         val_dataset = ArrowDataset(
             datapath=data_output_dir,
@@ -679,6 +707,7 @@ class SpeculatorsBackend(Backend):
             split_ratio=-0.1,
             model=verifier if on_missing == "generate" else None,
             hidden_states_dtype=hidden_states_dtype,
+            request_timeout=request_timeout,
         )
 
         # -- Dataloaders --
