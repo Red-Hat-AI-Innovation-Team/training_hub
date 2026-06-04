@@ -90,9 +90,13 @@ class SpeculatorsBackend(Backend):
         os.makedirs(data_output_dir, exist_ok=True)
         os.makedirs(hidden_states_path, exist_ok=True)
 
-        # Stage 1: Prepare data
+        # Stage 1: Prepare data (skip if already done)
         t0 = time.time()
-        self._prepare_data(params, verifier, data_output_dir)
+        arrow_marker = os.path.join(data_output_dir, "dataset_info.json")
+        if not os.path.exists(arrow_marker):
+            self._prepare_data(params, verifier, data_output_dir)
+        else:
+            logger.info("Skipping data prep — Arrow dataset already exists at %s", data_output_dir)
         stage_times["prepare_data"] = time.time() - t0
         logger.info("Data preparation complete (%.1fs)", stage_times["prepare_data"])
 
@@ -151,8 +155,12 @@ class SpeculatorsBackend(Backend):
         os.makedirs(data_output_dir, exist_ok=True)
         os.makedirs(hidden_states_path, exist_ok=True)
 
-        # Prepare data
-        self._prepare_data(params, verifier, data_output_dir)
+        # Prepare data (skip if Arrow dataset already exists)
+        arrow_marker = os.path.join(data_output_dir, "dataset_info.json")
+        if not os.path.exists(arrow_marker):
+            self._prepare_data(params, verifier, data_output_dir)
+        else:
+            logger.info("Skipping data prep — Arrow dataset already exists at %s", data_output_dir)
 
         # Train with on_missing="generate"
         train_result = self._run_training(
