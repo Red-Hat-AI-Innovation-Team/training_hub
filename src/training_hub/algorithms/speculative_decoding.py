@@ -140,13 +140,6 @@ class SpeculatorsBackend(Backend):
         """Online mode: prepare data, then train with on-demand hidden state gen."""
         t_start = time.time()
 
-        vllm_endpoint = params.get("vllm_endpoint")
-        if not vllm_endpoint:
-            raise ValueError(
-                "Online mode requires 'vllm_endpoint' pointing to a running vLLM "
-                "server with extract_hidden_states enabled."
-            )
-
         verifier = params["verifier_name_or_path"]
         ckpt_dir = params["ckpt_output_dir"]
         data_output_dir = params.get("data_output_dir") or os.path.join(ckpt_dir, "data")
@@ -162,12 +155,22 @@ class SpeculatorsBackend(Backend):
         else:
             logger.info("Skipping data prep — Arrow dataset already exists at %s", data_output_dir)
 
-        # Train with on_missing="generate"
-        train_result = self._run_training(
-            params, verifier, data_output_dir, hidden_states_path, ckpt_dir,
-            on_missing="generate",
-            vllm_endpoint=vllm_endpoint,
-        )
+        # Launch managed vLLM if no endpoint provided
+        vllm_endpoint = params.get("vllm_endpoint")
+        managed_proc = None
+        try:
+            if not vllm_endpoint:
+                managed_proc, vllm_endpoint = self._launch_vllm(params, verifier, hidden_states_path)
+
+            # Train with on_missing="generate"
+            train_result = self._run_training(
+                params, verifier, data_output_dir, hidden_states_path, ckpt_dir,
+                on_missing="generate",
+                vllm_endpoint=vllm_endpoint,
+            )
+        finally:
+            if managed_proc is not None:
+                self._stop_vllm(managed_proc)
 
         return {
             "status": "success",
@@ -301,10 +304,11 @@ class SpeculatorsBackend(Backend):
 
         Returns (process, endpoint_url).
         """
-        import socket
-
         port = self._find_free_port()
+        vllm_gpu_ids = params.get("vllm_gpu_ids")
         num_gpus = params.get("num_gpus", 1)
+        if vllm_gpu_ids:
+            num_gpus = len(vllm_gpu_ids)
         gpu_mem_util = params.get("vllm_gpu_memory_utilization", 0.9)
         trust_remote_code = params.get("trust_remote_code", False)
 
@@ -346,11 +350,18 @@ class SpeculatorsBackend(Backend):
         if trust_remote_code:
             cmd.append("--trust-remote-code")
 
+        # Set GPU visibility for managed vLLM subprocess
+        env = os.environ.copy()
+        if vllm_gpu_ids:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in vllm_gpu_ids)
+            logger.info("vLLM GPUs: %s", env["CUDA_VISIBLE_DEVICES"])
+
         logger.info("Launching vLLM server: %s", " ".join(cmd))
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=env,
         )
 
         endpoint = f"http://localhost:{port}/v1"
@@ -723,6 +734,12 @@ class SpeculatorsBackend(Backend):
             "loss_fn": loss_fn,
         }
 
+        # -- GPU selection for training --
+        training_gpu_id = params.get("training_gpu_id", 0)
+        import torch as _torch
+        _torch.cuda.set_device(training_gpu_id)
+        logger.info("Training on GPU %d", training_gpu_id)
+
         # -- Run training --
         trainer_config = TrainerConfig(
             num_epochs=epochs,
@@ -730,7 +747,7 @@ class SpeculatorsBackend(Backend):
             lr=lr,
             resume_from_checkpoint=not params.get("no_resume", False),
             is_distributed=False,  # Single GPU by default
-            local_rank=0,
+            local_rank=training_gpu_id,
             train_call_kwargs=train_call_kwargs,
             val_call_kwargs=val_call_kwargs,
             scheduler_type=scheduler_type,
@@ -806,9 +823,12 @@ class SpeculativeDecodingAlgorithm(Algorithm):
         max_samples: Optional[int] = None,
         datagen_concurrency: Optional[int] = None,
         # vLLM server config
+        vllm_gpu_ids: Optional[List[int]] = None,
         vllm_gpu_memory_utilization: Optional[float] = None,
         vllm_startup_timeout: Optional[int] = None,
         trust_remote_code: Optional[bool] = None,
+        # Training GPU
+        training_gpu_id: Optional[int] = None,
         # Model config
         norm_before_residual: Optional[bool] = None,
         norm_before_fc: Optional[bool] = None,
@@ -860,9 +880,19 @@ class SpeculativeDecodingAlgorithm(Algorithm):
                 vllm_endpoint: URL of a running vLLM server. If not provided,
                     a managed server is launched and stopped automatically.
                 num_gpus: Number of GPUs for vLLM data-parallel generation (default: 1).
+                    Ignored if vllm_gpu_ids is set.
                 hidden_states_path: Path to pre-generated hidden states (for train_only).
                 data_output_dir: Directory for intermediate data (Arrow dataset, token freqs).
                 max_samples: Maximum samples to use from dataset.
+
+            GPU Allocation:
+                vllm_gpu_ids: GPU device IDs for managed vLLM server (e.g. [0, 1]).
+                    Sets CUDA_VISIBLE_DEVICES on the vLLM subprocess. Also sets
+                    num_gpus automatically. If not provided, vLLM uses whatever
+                    GPUs are visible.
+                training_gpu_id: GPU device ID for training (default: 0).
+                    In online mode with managed vLLM, use this together with
+                    vllm_gpu_ids to avoid GPU contention.
 
         Returns:
             Dict with training results including checkpoint_path, timing, and metrics.
@@ -894,9 +924,11 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "data_output_dir": data_output_dir,
             "max_samples": max_samples,
             "datagen_concurrency": datagen_concurrency,
+            "vllm_gpu_ids": vllm_gpu_ids,
             "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
             "vllm_startup_timeout": vllm_startup_timeout,
             "trust_remote_code": trust_remote_code,
+            "training_gpu_id": training_gpu_id,
             "norm_before_residual": norm_before_residual,
             "norm_before_fc": norm_before_fc,
             "embed_requires_grad": embed_requires_grad,
@@ -945,9 +977,11 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "data_output_dir": str,
             "max_samples": int,
             "datagen_concurrency": int,
+            "vllm_gpu_ids": list,
             "vllm_gpu_memory_utilization": float,
             "vllm_startup_timeout": int,
             "trust_remote_code": bool,
+            "training_gpu_id": int,
             "norm_before_residual": bool,
             "norm_before_fc": bool,
             "embed_requires_grad": bool,
