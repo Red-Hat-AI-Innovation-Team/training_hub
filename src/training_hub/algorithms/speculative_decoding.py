@@ -742,10 +742,21 @@ class SpeculatorsBackend(Backend):
         trainer = Trainer(draft_model, trainer_config, train_loader, val_loader)
         trainer.run_training()
 
+        # Read validation metrics from best checkpoint
+        val_metrics = {}
+        best_link = Path(ckpt_dir) / "checkpoint_best"
+        if best_link.exists():
+            best_target = best_link.resolve()
+            val_metrics_file = best_target / "val_metrics.json"
+            if val_metrics_file.exists():
+                with open(val_metrics_file) as f:
+                    val_metrics = json.load(f)
+
         return {
             "speculator_type": speculator_type,
             "verifier_model": verifier,
             "epochs_completed": epochs,
+            "val_metrics": val_metrics,
         }
 
 
