@@ -489,7 +489,8 @@ class SpeculatorsBackend(Backend):
 
         # Locate data_generation_offline.py script.
         # The script is in speculators' scripts/ directory, which is only present
-        # in source installs (not pip wheels). We search multiple candidate paths.
+        # in source installs (not pip wheels). Check user-provided path, env var,
+        # then search common locations relative to the installed package.
         import speculators as _spec
         spec_pkg_dir = Path(_spec.__file__).parent  # .../src/speculators/
         candidate_paths = [
@@ -497,13 +498,20 @@ class SpeculatorsBackend(Backend):
             spec_pkg_dir.parent / "scripts" / "data_generation_offline.py",          # flat layout
             Path(sys.prefix) / "scripts" / "data_generation_offline.py",             # venv scripts/
         ]
+
+        # Allow explicit path via param or env var
+        explicit = params.get("speculators_scripts_path") or os.environ.get("SPECULATORS_SCRIPTS_PATH")
+        if explicit:
+            candidate_paths.insert(0, Path(explicit) / "data_generation_offline.py")
+
         script_path = next((p for p in candidate_paths if p.exists()), None)
 
         if script_path is None:
             raise RuntimeError(
                 "Could not locate speculators data_generation_offline.py script. "
-                "Ensure speculators is installed from source (editable mode) so the "
-                "scripts/ directory is available. Searched:\n"
+                "Set speculators_scripts_path or SPECULATORS_SCRIPTS_PATH env var "
+                "to the speculators scripts/ directory, or install speculators from "
+                "source (editable mode). Searched:\n"
                 + "\n".join(f"  - {p}" for p in candidate_paths)
             )
 
