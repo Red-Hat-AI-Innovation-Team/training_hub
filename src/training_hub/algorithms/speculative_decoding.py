@@ -294,6 +294,31 @@ class SpeculatorsBackend(Backend):
         dataset.save_to_disk(data_output_dir)
         logger.info("Saved preprocessed dataset to %s (%d samples)", data_output_dir, len(dataset))
 
+    @staticmethod
+    def _resolve_target_layer_ids(
+        params: Dict[str, Any],
+        verifier: str,
+    ) -> List[int]:
+        """Resolve target layer IDs, computing defaults from verifier config.
+
+        The resolved list is stored back into params so both extraction and
+        training stages use the same layers.
+        """
+        target_layer_ids = params.get("target_layer_ids")
+        if target_layer_ids:
+            return target_layer_ids
+
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            verifier, trust_remote_code=params.get("trust_remote_code", False),
+        )
+        if hasattr(config, "text_config"):
+            config = config.text_config
+        n_layers = config.num_hidden_layers
+        resolved = [2, n_layers // 2, n_layers - 3, n_layers]
+        params["target_layer_ids"] = resolved
+        return resolved
+
     def _launch_vllm(
         self,
         params: Dict[str, Any],
@@ -312,15 +337,7 @@ class SpeculatorsBackend(Backend):
         gpu_mem_util = params.get("vllm_gpu_memory_utilization", 0.9)
         trust_remote_code = params.get("trust_remote_code", False)
 
-        # Resolve target layer IDs
-        target_layer_ids = params.get("target_layer_ids")
-        if not target_layer_ids:
-            from transformers import AutoConfig
-            config = AutoConfig.from_pretrained(verifier, trust_remote_code=trust_remote_code)
-            if hasattr(config, "text_config"):
-                config = config.text_config
-            n_layers = config.num_hidden_layers
-            target_layer_ids = [2, n_layers // 2, n_layers - 3, n_layers]
+        target_layer_ids = self._resolve_target_layer_ids(params, verifier)
 
         speculative_config = {
             "method": "extract_hidden_states",
@@ -367,7 +384,11 @@ class SpeculatorsBackend(Backend):
         endpoint = f"http://localhost:{port}/v1"
         health_url = f"http://localhost:{port}/health"
         try:
-            self._wait_for_server(health_url, timeout=params.get("vllm_startup_timeout", 600))
+            self._wait_for_server(
+                health_url,
+                proc=proc,
+                timeout=params.get("vllm_startup_timeout", 600),
+            )
             logger.info("vLLM server ready at %s", endpoint)
 
             # Warmup request to trigger model compilation before training starts
@@ -408,13 +429,22 @@ class SpeculatorsBackend(Backend):
             return s.getsockname()[1]
 
     @staticmethod
-    def _wait_for_server(health_url: str, timeout: int = 600) -> None:
+    def _wait_for_server(
+        health_url: str,
+        proc: Optional[subprocess.Popen] = None,
+        timeout: int = 600,
+    ) -> None:
         """Poll health endpoint until server is ready."""
         import urllib.request
         import urllib.error
 
         deadline = time.time() + timeout
         while time.time() < deadline:
+            # Fail fast if the managed process has already exited
+            if proc is not None and proc.poll() is not None:
+                raise RuntimeError(
+                    f"vLLM exited before becoming ready (exit code {proc.returncode})."
+                )
             try:
                 req = urllib.request.urlopen(health_url, timeout=5)
                 if req.status == 200:
@@ -543,7 +573,7 @@ class SpeculatorsBackend(Backend):
         draft_vocab_size = params.get("draft_vocab_size")
         num_layers = params.get("num_layers", 1)
         ttt_steps = params.get("ttt_steps", 3)
-        target_layer_ids = params.get("target_layer_ids")
+        target_layer_ids = self._resolve_target_layer_ids(params, verifier)
         noise_std = params.get("noise_std", 0.05)
         loss_fn_name = params.get("loss_fn", "kl_div")
         scheduler_type = params.get("scheduler_type", "linear")
