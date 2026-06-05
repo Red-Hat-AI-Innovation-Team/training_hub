@@ -281,14 +281,19 @@ class SpeculatorsBackend(Backend):
         trust_remote_code = params.get("trust_remote_code", False)
         token_freq_path = os.path.join(data_output_dir, "token_freq.pt")
 
-        dataset, processor = load_and_preprocess_dataset(
-            target_model_path=verifier,
-            train_data_paths=train_data_paths,
-            seq_length=seq_length,
-            max_samples=max_samples,
-            token_freq_path=token_freq_path,
-            trust_remote_code=trust_remote_code,
-        )
+        preprocess_kwargs = {
+            "target_model_path": verifier,
+            "train_data_paths": train_data_paths,
+            "seq_length": seq_length,
+            "max_samples": max_samples,
+            "token_freq_path": token_freq_path,
+        }
+        # trust_remote_code added in speculators > 0.5.0
+        import inspect
+        if "trust_remote_code" in inspect.signature(load_and_preprocess_dataset).parameters:
+            preprocess_kwargs["trust_remote_code"] = trust_remote_code
+
+        dataset, processor = load_and_preprocess_dataset(**preprocess_kwargs)
 
         # Save Arrow dataset to disk
         dataset.save_to_disk(data_output_dir)
@@ -554,13 +559,17 @@ class SpeculatorsBackend(Backend):
     ) -> Dict[str, Any]:
         """Stage 4: Train the draft model using speculators' Trainer."""
         import argparse
+        import inspect
 
         import torch
         from transformers import AutoConfig
 
         from speculators.model import SpeculatorModel
         from speculators.models.eagle3.data import shift_batch
-        from speculators.models.metrics import resolve_loss_fn
+        try:
+            from speculators.models.metrics import resolve_loss_fn
+        except ImportError:
+            resolve_loss_fn = None  # Not available in speculators <= 0.5.0
         from speculators.train.data import ArrowDataset, create_collate_fn
         from speculators.train.distributed_batch_sampler import (
             MultipackDistributedBatchSamplerV2,
@@ -691,11 +700,14 @@ class SpeculatorsBackend(Backend):
 
         model_class = registry[speculator_type]
 
+        mask_kwargs = {}
+        if "trust_remote_code" in inspect.signature(resolve_mask_token_id).parameters:
+            mask_kwargs["trust_remote_code"] = trust_remote_code
         mask_token_id = resolve_mask_token_id(
             verifier,
             transformer_layer_config.vocab_size,
             None,
-            trust_remote_code=trust_remote_code,
+            **mask_kwargs,
         )
 
         if from_pretrained:
@@ -774,12 +786,20 @@ class SpeculatorsBackend(Backend):
             loader_kwargs["prefetch_factor"] = 4
             loader_kwargs["persistent_workers"] = True
 
+        # create_collate_fn signature varies: v0.5.0 has (max_len, hidden_size, preprocess),
+        # later versions add hidden_states_dtype as 3rd positional arg.
+        collate_sig = inspect.signature(create_collate_fn)
+        if "dtype" in collate_sig.parameters or len(collate_sig.parameters) > 3:
+            collate = create_collate_fn(total_seq_len, hidden_size, hidden_states_dtype, preprocess)
+        else:
+            collate = create_collate_fn(total_seq_len, hidden_size, preprocess)
+
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
             num_workers=num_workers,
             pin_memory=True,
-            collate_fn=create_collate_fn(total_seq_len, hidden_size, hidden_states_dtype, preprocess),
+            collate_fn=collate,
             **loader_kwargs,
         )
         val_loader = DataLoader(
@@ -787,24 +807,26 @@ class SpeculatorsBackend(Backend):
             batch_sampler=val_sampler,
             num_workers=num_workers,
             pin_memory=True,
-            collate_fn=create_collate_fn(total_seq_len, hidden_size, hidden_states_dtype, preprocess),
+            collate_fn=collate,
             **loader_kwargs,
         )
 
         # -- Trainer kwargs --
-        loss_fn = resolve_loss_fn(loss_fn_name)
         train_call_kwargs = {
             "use_off_policy_tokens": params.get("use_off_policy_tokens", False),
             "ttt_steps": ttt_steps,
             "ttt_step_loss_decay": params.get("ttt_step_loss_decay", 1.0),
-            "loss_fn": loss_fn,
         }
         val_call_kwargs = {
             "use_off_policy_tokens": False,
             "ttt_steps": ttt_steps,
             "ttt_step_loss_decay": params.get("ttt_step_loss_decay", 1.0),
-            "loss_fn": loss_fn,
         }
+        # loss_fn support added in speculators > 0.5.0
+        if resolve_loss_fn is not None:
+            loss_fn = resolve_loss_fn(loss_fn_name)
+            train_call_kwargs["loss_fn"] = loss_fn
+            val_call_kwargs["loss_fn"] = loss_fn
 
         # -- GPU selection for training --
         training_gpu_id = params.get("training_gpu_id", 0)
