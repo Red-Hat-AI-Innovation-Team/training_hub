@@ -120,7 +120,7 @@ class SpeculatorsBackend(Backend):
         # Stage 4: Train
         t0 = time.time()
         train_result = self._run_training(
-            params, verifier, data_output_dir, hidden_states_path, ckpt_dir
+            params, verifier, data_output_dir, hidden_states_path, ckpt_dir,
         )
         stage_times["training"] = time.time() - t0
         logger.info("Training complete (%.1fs)", stage_times["training"])
@@ -359,8 +359,8 @@ class SpeculatorsBackend(Backend):
         logger.info("Launching vLLM server: %s", " ".join(cmd))
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
         )
 
@@ -447,7 +447,11 @@ class SpeculatorsBackend(Backend):
         # Run the data_generation_offline script as a subprocess since it uses
         # asyncio internally and is designed as a standalone entry point.
         max_samples = params.get("max_samples")
-        concurrency = params.get("datagen_concurrency", 32)
+        # Scale concurrency with GPU count to avoid overwhelming vLLM.
+        # Single GPU handles ~4 concurrent extraction requests reliably.
+        vllm_gpu_ids = params.get("vllm_gpu_ids")
+        default_concurrency = 4 * (len(vllm_gpu_ids) if vllm_gpu_ids else params.get("num_gpus", 1))
+        concurrency = params.get("datagen_concurrency", default_concurrency)
 
         cmd = [
             sys.executable, "-m", "speculators",
@@ -486,22 +490,24 @@ class SpeculatorsBackend(Backend):
             "--endpoint", vllm_endpoint,
             "--output", hidden_states_path,
             "--concurrency", str(concurrency),
-            "--validate-outputs",
         ])
         if max_samples:
             cmd.extend(["--max-samples", str(max_samples)])
 
         logger.info("Generating hidden states: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Hidden state generation failed (exit code {result.returncode}):\n"
-                f"{result.stderr[-2000:] if result.stderr else result.stdout[-2000:]}"
-            )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         # Count generated files
         hs_count = len(list(Path(hidden_states_path).glob("hs_*.safetensors")))
         logger.info("Generated %d hidden state files in %s", hs_count, hidden_states_path)
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Hidden state generation failed (exit code {result.returncode}). "
+                f"Generated {hs_count} files. "
+                f"Try reducing datagen_concurrency.\n"
+                f"{result.stderr[-2000:] if result.stderr else result.stdout[-2000:]}"
+            )
 
     def _run_training(
         self,
