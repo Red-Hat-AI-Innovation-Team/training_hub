@@ -366,11 +366,15 @@ class SpeculatorsBackend(Backend):
 
         endpoint = f"http://localhost:{port}/v1"
         health_url = f"http://localhost:{port}/health"
-        self._wait_for_server(health_url, timeout=params.get("vllm_startup_timeout", 600))
-        logger.info("vLLM server ready at %s", endpoint)
+        try:
+            self._wait_for_server(health_url, timeout=params.get("vllm_startup_timeout", 600))
+            logger.info("vLLM server ready at %s", endpoint)
 
-        # Warmup request to trigger model compilation before training starts
-        self._warmup_vllm(endpoint, verifier)
+            # Warmup request to trigger model compilation before training starts
+            self._warmup_vllm(endpoint, verifier)
+        except Exception:
+            self._stop_vllm(proc)
+            raise
 
         return proc, endpoint
 
@@ -453,37 +457,27 @@ class SpeculatorsBackend(Backend):
         default_concurrency = 4 * (len(vllm_gpu_ids) if vllm_gpu_ids else params.get("num_gpus", 1))
         concurrency = params.get("datagen_concurrency", default_concurrency)
 
-        cmd = [
-            sys.executable, "-m", "speculators",
-        ]
-
-        # Fall back to running the script directly since speculators may not
-        # expose data_generation_offline as a CLI subcommand.
-        # Use the scripts path from the speculators package.
+        # Locate data_generation_offline.py script.
+        # The script is in speculators' scripts/ directory, which is only present
+        # in source installs (not pip wheels). We search multiple candidate paths.
         import speculators as _spec
-        spec_root = Path(_spec.__file__).parent.parent.parent  # src/speculators -> src -> package root
-        script_path = spec_root / "scripts" / "data_generation_offline.py"
+        spec_pkg_dir = Path(_spec.__file__).parent  # .../src/speculators/
+        candidate_paths = [
+            spec_pkg_dir.parent.parent / "scripts" / "data_generation_offline.py",  # editable: src/../scripts/
+            spec_pkg_dir.parent / "scripts" / "data_generation_offline.py",          # flat layout
+            Path(sys.prefix) / "scripts" / "data_generation_offline.py",             # venv scripts/
+        ]
+        script_path = next((p for p in candidate_paths if p.exists()), None)
 
-        if not script_path.exists():
-            # Try installed package location
-            import importlib.resources
-            # Fall back to a direct import approach
-            script_path = None
-
-        cmd = [sys.executable]
-        if script_path and script_path.exists():
-            cmd.append(str(script_path))
-        else:
-            # Use the module path relative to speculators install
-            cmd.extend(["-c", (
-                "from speculators.data_generation.offline import *; "
-                "raise NotImplementedError('Direct import not available, use scripts/')"
-            )])
+        if script_path is None:
             raise RuntimeError(
                 "Could not locate speculators data_generation_offline.py script. "
-                "Ensure speculators is installed from source or the scripts/ directory "
-                "is accessible."
+                "Ensure speculators is installed from source (editable mode) so the "
+                "scripts/ directory is available. Searched:\n"
+                + "\n".join(f"  - {p}" for p in candidate_paths)
             )
+
+        cmd = [sys.executable, str(script_path)]
 
         cmd.extend([
             "--preprocessed-data", data_output_dir,
@@ -494,8 +488,9 @@ class SpeculatorsBackend(Backend):
         if max_samples:
             cmd.extend(["--max-samples", str(max_samples)])
 
+        datagen_timeout = params.get("datagen_timeout")  # None = no limit
         logger.info("Generating hidden states: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=datagen_timeout)
 
         # Count generated files
         hs_count = len(list(Path(hidden_states_path).glob("hs_*.safetensors")))
@@ -735,23 +730,27 @@ class SpeculatorsBackend(Backend):
 
         from torch.utils.data import DataLoader
 
+        # prefetch_factor and persistent_workers require num_workers > 0
+        loader_kwargs: dict = {}
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 4
+            loader_kwargs["persistent_workers"] = True
+
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
             num_workers=num_workers,
-            prefetch_factor=4,
             pin_memory=True,
             collate_fn=create_collate_fn(total_seq_len, hidden_size, hidden_states_dtype, preprocess),
-            persistent_workers=True,
+            **loader_kwargs,
         )
         val_loader = DataLoader(
             val_dataset,
             batch_sampler=val_sampler,
             num_workers=num_workers,
-            prefetch_factor=4,
             pin_memory=True,
             collate_fn=create_collate_fn(total_seq_len, hidden_size, hidden_states_dtype, preprocess),
-            persistent_workers=True,
+            **loader_kwargs,
         )
 
         # -- Trainer kwargs --
