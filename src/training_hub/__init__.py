@@ -4,6 +4,7 @@ from .algorithms.osft import OSFTAlgorithm, MiniTrainerOSFTBackend, osft
 from .algorithms.lora import lora_sft, LoRASFTAlgorithm, UnslothLoRABackend
 from .algorithms.lora_grpo import lora_grpo, grpo, LoRAGRPOAlgorithm, ARTLoRAGRPOBackend
 from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
+from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
@@ -28,6 +29,10 @@ __all__ = [
     'LoRAGRPOAlgorithm',
     'ARTLoRAGRPOBackend',
     'VeRLLoRAGRPOBackend',
+    'gepa',
+    'GEPAAlgorithm',
+    'GEPABackend',
+    'MLflowGEPABackend',
     'tool_call_reward',
     'binary_reward',
     'welcome',
