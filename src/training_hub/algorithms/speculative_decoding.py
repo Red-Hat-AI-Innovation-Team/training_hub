@@ -828,19 +828,28 @@ class SpeculatorsBackend(Backend):
             train_call_kwargs["loss_fn"] = loss_fn
             val_call_kwargs["loss_fn"] = loss_fn
 
-        # -- GPU selection for training --
+        # -- GPU selection and training mode --
+        training_gpu_ids = params.get("training_gpu_ids")
         training_gpu_id = params.get("training_gpu_id", 0)
+
+        if training_gpu_ids and len(training_gpu_ids) > 1:
+            # Multi-GPU: run via torchrun subprocess
+            return self._run_training_distributed(
+                params, training_gpu_ids, verifier, data_output_dir,
+                hidden_states_path, ckpt_dir, on_missing, vllm_endpoint,
+            )
+
+        # Single GPU: run in-process
         import torch as _torch
         _torch.cuda.set_device(training_gpu_id)
         logger.info("Training on GPU %d", training_gpu_id)
 
-        # -- Run training --
         trainer_config = TrainerConfig(
             num_epochs=epochs,
             save_path=ckpt_dir,
             lr=lr,
             resume_from_checkpoint=not params.get("no_resume", False),
-            is_distributed=False,  # Single GPU by default
+            is_distributed=False,
             local_rank=training_gpu_id,
             train_call_kwargs=train_call_kwargs,
             val_call_kwargs=val_call_kwargs,
@@ -868,6 +877,120 @@ class SpeculatorsBackend(Backend):
             "verifier_model": verifier,
             "epochs_completed": epochs,
             "val_metrics": val_metrics,
+        }
+
+    def _run_training_distributed(
+        self,
+        params: Dict[str, Any],
+        training_gpu_ids: List[int],
+        verifier: str,
+        data_output_dir: str,
+        hidden_states_path: str,
+        ckpt_dir: str,
+        on_missing: str = "raise",
+        vllm_endpoint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run training via torchrun for multi-GPU FSDP.
+
+        Uses speculators' train.py script with torchrun, which handles
+        distributed setup, FSDP wrapping, and distributed checkpointing.
+        """
+        # Locate train.py script (same search as data_generation_offline.py)
+        import speculators as _spec
+        spec_pkg_dir = Path(_spec.__file__).parent
+        candidate_paths = [
+            spec_pkg_dir.parent.parent / "scripts" / "train.py",
+            spec_pkg_dir.parent / "scripts" / "train.py",
+        ]
+        explicit = params.get("speculators_scripts_path") or os.environ.get("SPECULATORS_SCRIPTS_PATH")
+        if explicit:
+            candidate_paths.insert(0, Path(explicit) / "train.py")
+        train_script = next((p for p in candidate_paths if p.exists()), None)
+        if train_script is None:
+            raise RuntimeError(
+                "Could not locate speculators train.py script for distributed training. "
+                "Set speculators_scripts_path or SPECULATORS_SCRIPTS_PATH env var."
+            )
+
+        num_gpus = len(training_gpu_ids)
+
+        # Build torchrun command
+        torchrun_bin = os.path.join(os.path.dirname(sys.executable), "torchrun")
+        cmd = [
+            torchrun_bin,
+            "--standalone",
+            "--nproc_per_node", str(num_gpus),
+            str(train_script),
+            "--verifier-name-or-path", verifier,
+            "--data-path", data_output_dir,
+            "--hidden-states-path", hidden_states_path,
+            "--save-path", ckpt_dir,
+            "--epochs", str(params.get("epochs", 3)),
+            "--lr", str(params.get("lr", 1e-4)),
+            "--total-seq-len", str(params.get("total_seq_len", 2048)),
+            "--speculator-type", params.get("speculator_type", "eagle3"),
+            "--num-layers", str(params.get("num_layers", 1)),
+            "--ttt-steps", str(params.get("ttt_steps", 3)),
+            "--noise-std", str(params.get("noise_std", 0.05)),
+            "--scheduler-type", params.get("scheduler_type", "linear"),
+            "--hidden-states-dtype", params.get("hidden_states_dtype", "bfloat16"),
+            "--on-missing", on_missing,
+        ]
+
+        if params.get("draft_vocab_size"):
+            cmd.extend(["--draft-vocab-size", str(params["draft_vocab_size"])])
+        if params.get("target_layer_ids"):
+            cmd.extend(["--target-layer-ids"] + [str(x) for x in params["target_layer_ids"]])
+        if params.get("checkpoint_freq"):
+            cmd.extend(["--checkpoint-freq", str(params["checkpoint_freq"])])
+        if params.get("log_freq"):
+            cmd.extend(["--log-freq", str(params["log_freq"])])
+        if params.get("trust_remote_code"):
+            cmd.append("--trust-remote-code")
+        if params.get("from_pretrained"):
+            cmd.extend(["--from-pretrained", params["from_pretrained"]])
+        if params.get("no_resume"):
+            cmd.append("--no-resume-from-checkpoint")
+        if vllm_endpoint:
+            cmd.extend(["--vllm-endpoint", vllm_endpoint])
+
+        # Set GPU visibility — only override if not already restricted by caller
+        env = os.environ.copy()
+        if "CUDA_VISIBLE_DEVICES" not in os.environ:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in training_gpu_ids)
+
+        logger.info(
+            "Launching distributed training on GPUs %s: %s",
+            training_gpu_ids, " ".join(cmd),
+        )
+        result = subprocess.run(
+            cmd, env=env,
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            err_output = result.stderr[-2000:] if result.stderr else result.stdout[-2000:]
+            raise RuntimeError(
+                f"Distributed training failed (exit code {result.returncode}).\n"
+                f"{err_output}"
+            )
+
+        # Read val metrics from best checkpoint
+        val_metrics = {}
+        best_link = Path(ckpt_dir) / "checkpoint_best"
+        if best_link.exists():
+            best_target = best_link.resolve()
+            val_metrics_file = best_target / "val_metrics.json"
+            if val_metrics_file.exists():
+                with open(val_metrics_file) as f:
+                    val_metrics = json.load(f)
+
+        return {
+            "speculator_type": params.get("speculator_type", "eagle3"),
+            "verifier_model": verifier,
+            "epochs_completed": params.get("epochs", 3),
+            "val_metrics": val_metrics,
+            "distributed": True,
+            "num_gpus": num_gpus,
         }
 
 
@@ -923,6 +1046,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
         trust_remote_code: Optional[bool] = None,
         # Training GPU
         training_gpu_id: Optional[int] = None,
+        training_gpu_ids: Optional[List[int]] = None,
         # Model config
         norm_before_residual: Optional[bool] = None,
         norm_before_fc: Optional[bool] = None,
@@ -984,9 +1108,10 @@ class SpeculativeDecodingAlgorithm(Algorithm):
                     Sets CUDA_VISIBLE_DEVICES on the vLLM subprocess. Also sets
                     num_gpus automatically. If not provided, vLLM uses whatever
                     GPUs are visible.
-                training_gpu_id: GPU device ID for training (default: 0).
-                    In online mode with managed vLLM, use this together with
-                    vllm_gpu_ids to avoid GPU contention.
+                training_gpu_id: GPU device ID for single-GPU training (default: 0).
+                training_gpu_ids: GPU device IDs for multi-GPU FSDP training
+                    (e.g. [2, 3]). When set with >1 GPU, training runs via
+                    torchrun with FSDP. Overrides training_gpu_id.
 
         Returns:
             Dict with training results including checkpoint_path, timing, and metrics.
@@ -1023,6 +1148,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "vllm_startup_timeout": vllm_startup_timeout,
             "trust_remote_code": trust_remote_code,
             "training_gpu_id": training_gpu_id,
+            "training_gpu_ids": training_gpu_ids,
             "norm_before_residual": norm_before_residual,
             "norm_before_fc": norm_before_fc,
             "embed_requires_grad": embed_requires_grad,
@@ -1076,6 +1202,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "vllm_startup_timeout": int,
             "trust_remote_code": bool,
             "training_gpu_id": int,
+            "training_gpu_ids": list,
             "norm_before_residual": bool,
             "norm_before_fc": bool,
             "embed_requires_grad": bool,
