@@ -27,6 +27,9 @@ pip install -e .[lora]
 # Install with GRPO support (includes ART + verl backends)
 pip install -e .[grpo,lora]
 
+# Install with GEPA prompt optimization support
+pip install -e .[gepa]
+
 # Install with CUDA support (install sequentially after other extras)
 pip install -e .[cuda] --no-build-isolation
 
@@ -55,6 +58,7 @@ src/training_hub/
 │   ├── sft.py               # Supervised Fine-Tuning
 │   ├── osft.py              # Orthogonal Subspace Fine-Tuning
 │   ├── lora.py              # LoRA + SFT
+│   ├── gepa.py              # GEPA prompt optimization (gepa + mlflow backends)
 │   ├── lora_grpo.py         # LoRA + GRPO and GRPO (ART backend, algorithm, convenience fns)
 │   ├── lora_grpo_verl.py    # verl backend for LoRA + GRPO and GRPO
 │   ├── rewards.py           # Reward functions (tool_call_reward, binary_reward)
@@ -260,7 +264,7 @@ These are hard-won lessons from development on this codebase. Follow them carefu
 
 ### Dependency Security
 
-- **Check for known supply chain compromises when relaxing dependency version ranges.** litellm 1.82.7-1.82.8 were compromised by the TeamPCP attack (March 24, 2026) — they harvest credentials at import time. The upper cap `<1.82.7` exists specifically for this. When widening version ranges, search for CVEs and supply chain advisories in the expanded range before merging.
+- **Check for known supply chain compromises when relaxing dependency version ranges.** litellm 1.82.7-1.82.8 were compromised by the TeamPCP attack (March 24, 2026) — they harvest credentials at import time. The `[grpo]` extra uses `!=1.82.7,!=1.82.8` to exclude only the compromised versions while allowing 1.82.9+. When widening version ranges, search for CVEs and supply chain advisories in the expanded range before merging.
 - **When a dependency is transitive (not imported directly), match the floor to the library that imports it.** Training Hub doesn't import litellm — `openpipe-art` does. The floor should match ART's declared minimum (`>=1.71.1`), not an arbitrary recent version.
 - **Test dependency floors against RHOAI AIPCC indexes.** RHOAI ships pinned package versions (e.g., litellm 1.74.15/1.75.8, numba 0.61.2). If training_hub's floor is higher than what RHOAI ships, pip resolution fails at install time. When setting minimum versions, check what the target deployment platform actually provides.
 
@@ -375,6 +379,14 @@ Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 
 - **vLLM `sample_tokens` timeout on GDN models.** Qwen3.5-9B with 29K+ token prompts exceeded the 300s default `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`. The vLLM worker appeared to hang and the engine reported `EngineDeadError`. Fix: increase timeout to 1200s. Lesson: GDN linear attention is slower per token than standard attention — timeout values calibrated for transformer models may be too low.
 - **FLA fused kernels crash without `tilelang` on Hopper.** `RuntimeError: Triton >= 3.4.0 on Hopper GPUs produces incorrect results for gated chunk_bwd_dqkwg (see #640). Please install tilelang`. The error message is clear and actionable — just `pip install tilelang`.
 - **21 min/step without FLA vs 3.3 min/step with FLA.** The `[transformers] The fast path is not available because one of the required library is not installed` warning is easy to miss. Without FLA, GDN layers use a decomposed fallback that is 10-50x slower. Always install `flash-linear-attention` when training GDN/Qwen3.5 models.
+- **`kernels==0.15.1` incompatible with `transformers==5.9.0`.** The `kernels` package constructs `LayerRepository` without the required `revision`/`version` argument added in transformers 5.9.0, causing `TypeError` at model load. Fix: `pip uninstall kernels`. The package provides optional optimized attention kernels — removing it falls back to standard implementations with no functional loss. Lesson: when upgrading `transformers` major versions, check for breaking API changes in optional kernel libraries.
+
+### Notebook Development
+
+- **Free model from GPU before launching subprocess evaluation.** When a notebook trains a model and then launches `lm_eval` (or any evaluation subprocess), the trained model remains on GPU memory. The subprocess loads its own copy, causing OOM on cards with limited headroom. Add `del trained_model; del trained_tokenizer; gc.collect(); torch.cuda.empty_cache()` before the eval cell. Also use `sys.executable` instead of `"python"` in `subprocess.run` to match the kernel's interpreter/venv.
+- **Verify `lm-evaluation-harness` task names before adding benchmarks.** Task names like `gpqa_diamond` are not valid — use specific variants like `gpqa_diamond_zeroshot` or the group task `gpqa`. Check valid task names with `lm_eval --tasks list`.
+- **`lm_eval` output uses timestamped filenames in model subdirectories.** Results are written to `<output_path>/<sanitized_model_name>/results_<timestamp>.json`, not `<output_path>/results.json`. Use `glob.glob("**/results*.json", recursive=True)` to find them. A hardcoded path silently produces empty results, and `all([])` evaluates to `True`, causing false-positive retention checks.
+- **Templated notebook defaults must fit single-GPU.** If a notebook's default configuration (`model_path` + `num_gpus=1`) exceeds available VRAM, the notebook fails on first use without any user error. Use a smaller default model or default to `num_gpus >= 2` when the target model requires it. Found during validation of the templated OSFT notebook (Llama-3.1-8B + 1 GPU OOM'd on A100-80GB with OSFT memory overhead).
 
 ### verl Backend Reference Configuration
 
