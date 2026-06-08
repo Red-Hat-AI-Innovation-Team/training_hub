@@ -183,6 +183,81 @@ result = osft(
 
 For general memory management, adjust `max_tokens_per_gpu`, `effective_batch_size`, or `max_seq_len`.
 
+## On-Demand Checkpointing
+
+Training Hub supports **on-demand full-state checkpointing** for OSFT, designed for environments like Kubernetes/OpenShift AI and SLURM where training jobs can be preempted at any time.
+
+When enabled, the training process catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and saves complete training state — including OSFT decomposed factors (not reconstructed dense weights), optimizer, LR scheduler, and per-rank RNG states — using DCP sharded saves. Each rank saves its own shard with no gathering to rank 0, minimizing communication overhead.
+
+### Enabling On-Demand Checkpointing
+
+```python
+from training_hub import osft
+
+result = osft(
+    model_path="meta-llama/Llama-3.1-8B-Instruct",
+    data_path="./medical_qa.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=2048,
+    learning_rate=2e-5,
+    on_demand_checkpointing=True,  # Enable signal-driven checkpointing
+)
+```
+
+### Resume Behavior
+
+When a checkpoint saved by on-demand checkpointing is found in `ckpt_output_dir`, training **automatically resumes** from where it was interrupted — no additional parameters needed. Simply re-run the same training command and the backend auto-detects the latest checkpoint.
+
+If you need to resume from a specific checkpoint (e.g., not the latest), you can override auto-detection with an explicit path:
+
+```python
+result = osft(
+    model_path="meta-llama/Llama-3.1-8B-Instruct",
+    data_path="./medical_qa.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=2048,
+    learning_rate=2e-5,
+    on_demand_checkpointing=True,
+    resume_from_full_state_checkpoint="./checkpoints/full_state_checkpoints/step_0",
+)
+```
+
+The explicit path must point to the specific **step subdirectory** (e.g., `full_state_checkpoints/step_0`), not the parent `full_state_checkpoints` directory.
+
+On resume, the model structure is initialized normally (with SVD computation), then all parameters are overwritten with checkpoint values via DCP in-place load — ensuring **bit-identical optimization trajectories** after resumption.
+
+### Manually Triggering a Checkpoint
+
+You can trigger a checkpoint without sending a signal by writing the trigger file directly (useful for debugging or custom orchestration):
+
+```bash
+touch /dev/shm/checkpoint_requested
+```
+
+To use a custom trigger filename, set the `CHECKPOINT_TRIGGER_FILENAME` environment variable before launching training:
+
+```bash
+export CHECKPOINT_TRIGGER_FILENAME=my_custom_trigger
+touch /dev/shm/my_custom_trigger
+```
+
+### Kubernetes Configuration
+
+To give workers enough time to save a checkpoint before the hard SIGKILL, increase `terminationGracePeriodSeconds` in your pod spec:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 300  # 5 minutes
+```
+
+See the [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing) for complete details on multi-node behavior, trigger file mechanics, and Kubernetes/OpenShift configuration.
+
 ## Advanced Usage
 
 ### Using the Factory Pattern
@@ -282,9 +357,11 @@ if 'mini-trainer' in AlgorithmRegistry.list_backends('osft'):
 - [SFT Algorithm](/algorithms/sft) - Standard fine-tuning alternative
 - [Data Formats](/api/data-formats) - Detailed data format specifications
 - [Distributed Training Guide](/guides/distributed-training) - Multi-node training setup
+- [On-Demand Checkpointing Guide](/guides/on-demand-checkpointing) - Signal-driven checkpointing for preemptible environments
 
 **Research:**
 - [Original OSFT Paper](https://arxiv.org/abs/2504.07097) - Nayak et al. (2025) - Mathematical foundations and empirical results
 
 **Working examples:**
 - Check the [examples directory](/examples/) for Jupyter notebooks and scripts demonstrating OSFT in action
+

@@ -80,9 +80,9 @@ class SFTAlgorithm(Algorithm):
         self.backend = backend
         self.config = kwargs
     
-    def train(self, 
+    def train(self,
               model_path: str,
-              data_path: str, 
+              data_path: str,
               ckpt_output_dir: str,
               # Training parameters (defaults from TrainingArgs)
               num_epochs: Optional[int] = None,
@@ -98,6 +98,8 @@ class SFTAlgorithm(Algorithm):
               is_pretraining: Optional[bool] = None,
               block_size: Optional[int] = None,
               document_column_name: Optional[str] = None,
+              # On-demand checkpointing
+              on_demand_checkpointing: Optional[bool] = None,
               # AdamW optimizer parameters
               beta1: Optional[float] = None,
               beta2: Optional[float] = None,
@@ -139,6 +141,11 @@ class SFTAlgorithm(Algorithm):
             is_pretraining: Enable document-style continual pretraining mode.
             block_size: Required when `is_pretraining=True`. Token length of each document block.
             document_column_name: Column name containing raw documents when `is_pretraining=True` (defaults to "document").
+            on_demand_checkpointing: Enable signal-driven full-state checkpointing. When True, the
+                training process catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and
+                saves complete training state (model, optimizer, scheduler) before exiting. On
+                restart, training automatically resumes from the checkpoint found in ckpt_output_dir.
+                Designed for Kubernetes/OpenShift/SLURM environments where jobs can be preempted.
             beta1: AdamW optimizer beta1 coefficient (momentum).
             beta2: AdamW optimizer beta2 coefficient (RMSprop).
             eps: AdamW optimizer epsilon for numerical stability.
@@ -180,6 +187,8 @@ class SFTAlgorithm(Algorithm):
             'is_pretraining': is_pretraining,
             'block_size': block_size,
             'document_column_name': document_column_name,
+            # On-demand checkpointing
+            'on_demand_checkpointing': on_demand_checkpointing,
             # AdamW optimizer parameters
             'beta1': beta1,
             'beta2': beta2,
@@ -237,6 +246,8 @@ class SFTAlgorithm(Algorithm):
             'is_pretraining': bool,
             'block_size': int,
             'document_column_name': str,
+            # On-demand checkpointing
+            'on_demand_checkpointing': bool,
             # AdamW optimizer parameters
             'beta1': float,
             'beta2': float,
@@ -266,8 +277,8 @@ AlgorithmRegistry.register_algorithm('sft', SFTAlgorithm)
 AlgorithmRegistry.register_backend('sft', 'instructlab-training', InstructLabTrainingSFTBackend)
 
 
-def sft(model_path: str, 
-        data_path: str, 
+def sft(model_path: str,
+        data_path: str,
         ckpt_output_dir: str,
         backend: str = "instructlab-training",
         # Training parameters (defaults from TrainingArgs)
@@ -284,6 +295,8 @@ def sft(model_path: str,
         is_pretraining: Optional[bool] = None,
         block_size: Optional[int] = None,
         document_column_name: Optional[str] = None,
+        # On-demand checkpointing
+        on_demand_checkpointing: Optional[bool] = None,
         # AdamW optimizer parameters
         beta1: Optional[float] = None,
         beta2: Optional[float] = None,
@@ -326,6 +339,11 @@ def sft(model_path: str,
         is_pretraining: Enable document-style continual pretraining mode.
         block_size: Required when `is_pretraining=True`. Token length of each document block.
         document_column_name: Column name containing raw documents when `is_pretraining=True`.
+        on_demand_checkpointing: Enable signal-driven full-state checkpointing. When True, the
+            training process catches termination signals (SIGTERM, SIGINT, SIGUSR1, etc.) and
+            saves complete training state (model, optimizer, scheduler) before exiting. On
+            restart, training automatically resumes from the checkpoint found in ckpt_output_dir.
+            Designed for Kubernetes/OpenShift/SLURM environments where jobs can be preempted.
         beta1: AdamW optimizer beta1 coefficient (momentum).
         beta2: AdamW optimizer beta2 coefficient (RMSprop).
         eps: AdamW optimizer epsilon for numerical stability.
@@ -369,6 +387,7 @@ def sft(model_path: str,
         is_pretraining=is_pretraining,
         block_size=block_size,
         document_column_name=document_column_name,
+        on_demand_checkpointing=on_demand_checkpointing,
         beta1=beta1,
         beta2=beta2,
         eps=eps,
