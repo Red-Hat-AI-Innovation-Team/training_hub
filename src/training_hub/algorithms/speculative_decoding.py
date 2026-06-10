@@ -367,7 +367,11 @@ class SpeculatorsBackend(Backend):
         ]
 
         if num_gpus > 1:
-            cmd.extend(["--data-parallel-size", str(num_gpus)])
+            parallel_mode = params.get("vllm_parallel_mode", "tp")
+            if parallel_mode == "dp":
+                cmd.extend(["--data-parallel-size", str(num_gpus)])
+            else:
+                cmd.extend(["--tensor-parallel-size", str(num_gpus)])
 
         if trust_remote_code:
             cmd.append("--trust-remote-code")
@@ -489,7 +493,13 @@ class SpeculatorsBackend(Backend):
         # Scale concurrency with GPU count to avoid overwhelming vLLM.
         # Single GPU handles ~4 concurrent extraction requests reliably.
         vllm_gpu_ids = params.get("vllm_gpu_ids")
-        default_concurrency = 4 * (len(vllm_gpu_ids) if vllm_gpu_ids else params.get("num_gpus", 1))
+        parallel_mode = params.get("vllm_parallel_mode", "tp")
+        # DP scales concurrency with GPU count (separate instances); TP does not
+        if parallel_mode == "dp":
+            vllm_gpu_count = len(vllm_gpu_ids) if vllm_gpu_ids else params.get("num_gpus", 1)
+        else:
+            vllm_gpu_count = 1  # TP is a single instance across GPUs
+        default_concurrency = 4 * vllm_gpu_count
         concurrency = params.get("datagen_concurrency", default_concurrency)
 
         # Locate data_generation_offline.py script.
@@ -1041,6 +1051,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
         datagen_concurrency: Optional[int] = None,
         # vLLM server config
         vllm_gpu_ids: Optional[List[int]] = None,
+        vllm_parallel_mode: Optional[str] = None,
         vllm_gpu_memory_utilization: Optional[float] = None,
         vllm_startup_timeout: Optional[int] = None,
         trust_remote_code: Optional[bool] = None,
@@ -1108,6 +1119,10 @@ class SpeculativeDecodingAlgorithm(Algorithm):
                     Sets CUDA_VISIBLE_DEVICES on the vLLM subprocess. Also sets
                     num_gpus automatically. If not provided, vLLM uses whatever
                     GPUs are visible.
+                vllm_parallel_mode: Multi-GPU mode for vLLM - "tp" (tensor
+                    parallel, default) or "dp" (data parallel). TP shards one
+                    model across GPUs (needed for large models). DP runs
+                    separate instances per GPU (higher throughput for small models).
                 training_gpu_id: GPU device ID for single-GPU training (default: 0).
                 training_gpu_ids: GPU device IDs for multi-GPU FSDP training
                     (e.g. [2, 3]). When set with >1 GPU, training runs via
@@ -1144,6 +1159,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "max_samples": max_samples,
             "datagen_concurrency": datagen_concurrency,
             "vllm_gpu_ids": vllm_gpu_ids,
+            "vllm_parallel_mode": vllm_parallel_mode,
             "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
             "vllm_startup_timeout": vllm_startup_timeout,
             "trust_remote_code": trust_remote_code,
@@ -1198,6 +1214,7 @@ class SpeculativeDecodingAlgorithm(Algorithm):
             "max_samples": int,
             "datagen_concurrency": int,
             "vllm_gpu_ids": list,
+            "vllm_parallel_mode": str,
             "vllm_gpu_memory_utilization": float,
             "vllm_startup_timeout": int,
             "trust_remote_code": bool,
