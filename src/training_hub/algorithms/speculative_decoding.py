@@ -304,10 +304,11 @@ class SpeculatorsBackend(Backend):
         params: Dict[str, Any],
         verifier: str,
     ) -> List[int]:
-        """Resolve target layer IDs, computing defaults from verifier config.
+        """Resolve auxiliary target layer IDs for the draft model.
 
-        The resolved list is stored back into params so both extraction and
-        training stages use the same layers.
+        Returns the 3 intermediate layer IDs that the draft model uses as
+        input (NOT the last layer, which is only needed for extraction).
+        The resolved list is stored back into params.
         """
         target_layer_ids = params.get("target_layer_ids")
         if target_layer_ids:
@@ -320,7 +321,10 @@ class SpeculatorsBackend(Backend):
         if hasattr(config, "text_config"):
             config = config.text_config
         n_layers = config.num_hidden_layers
-        resolved = [2, n_layers // 2, n_layers - 3, n_layers]
+        # 3 auxiliary layers only — the last layer (n_layers) is used for
+        # target logit computation during training and is appended separately
+        # for vLLM extraction in _launch_vllm.
+        resolved = [2, n_layers // 2, n_layers - 3]
         params["target_layer_ids"] = resolved
         return resolved
 
@@ -344,11 +348,21 @@ class SpeculatorsBackend(Backend):
 
         target_layer_ids = self._resolve_target_layer_ids(params, verifier)
 
+        # Extraction needs the aux layers PLUS the last layer (for verifier
+        # target logits). The last layer is not part of the draft model config.
+        from transformers import AutoConfig as _AC
+        _cfg = _AC.from_pretrained(verifier, trust_remote_code=trust_remote_code)
+        if hasattr(_cfg, "text_config"):
+            _cfg = _cfg.text_config
+        extraction_layer_ids = list(target_layer_ids)
+        if _cfg.num_hidden_layers not in extraction_layer_ids:
+            extraction_layer_ids.append(_cfg.num_hidden_layers)
+
         speculative_config = {
             "method": "extract_hidden_states",
             "num_speculative_tokens": 1,
             "draft_model_config": {
-                "hf_config": {"eagle_aux_hidden_state_layer_ids": target_layer_ids}
+                "hf_config": {"eagle_aux_hidden_state_layer_ids": extraction_layer_ids}
             },
         }
         kv_transfer_config = {
