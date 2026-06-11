@@ -24,21 +24,17 @@
 
 **New to Training Hub?** Read our comprehensive introduction: [Get Started with Language Model Post-Training Using Training Hub](https://developers.redhat.com/articles/2025/11/19/get-started-language-model-post-training-using-training-hub)
 
-## Support Matrix
+## Algorithms
 
-| Algorithm | InstructLab-Training | RHAI Innovation Mini-Trainer | PEFT | Unsloth | verl | Status |
-|-----------|----------------------|------------------------------|------|---------|------|--------|
-| **Supervised Fine-tuning (SFT)** | ✅ | - | - | - | - | Implemented |
-| Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | - | Implemented |
-| **Low-Rank Adaptation (LoRA) + SFT** | - | - | - | ✅ | - | Implemented |
-| **LoRA + GRPO (Adapter-Based RLVR)** | - | - | - | ✅ | ✅ | Implemented |
-| **GRPO (Full Fine-Tuning RLVR)** | - | - | - | - | ✅ | Implemented |
-| Direct Preference Optimization (DPO) | - | - | - | - | 🔄 | Planned |
-
-**Legend:**
-- ✅ Implemented and tested
-- 🔄 Planned for future implementation
-- \- Not applicable or not planned
+| Algorithm | Backends | GPU Support | Install Extra |
+|-----------|----------|-------------|---------------|
+| **SFT** | InstructLab-Training | Multi-GPU, multi-node | base |
+| **OSFT** | Mini-Trainer | Multi-GPU, multi-node | base |
+| **LoRA + SFT** | Unsloth | Single-GPU, multi-GPU, multi-node | `[lora]` |
+| **LoRA + GRPO** | ART + Unsloth, verl | Single-GPU (ART), multi-GPU, multi-node (verl) | `[grpo,lora]` |
+| **GRPO** | verl | Multi-GPU, multi-node | `[grpo]` |
+| **GEPA** | GEPA, MLflow | CPU | `[gepa]` |
+| **Speculative Decoding** | Speculators | Single-GPU, multi-GPU | `[speculative-decoding]` |
 
 ## Implemented Algorithms
 
@@ -73,14 +69,12 @@ existing behavior to preserve. Currently we have support for:
 - Configurable training parameters (epochs, batch size, learning rate, etc.)
 - RHAI Innovation Mini-Trainer backend integration
 
-Here's a quick and minimal way to get started with OSFT:
-
 ```python
 from training_hub import osft
 
 result = osft(
     model_path="/path/to/model",
-    data_path="/path/to/data.jsonl", 
+    data_path="/path/to/data.jsonl",
     ckpt_output_dir="/path/to/outputs",
     unfreeze_rank_ratio=0.25,
     effective_batch_size=16,
@@ -91,7 +85,6 @@ result = osft(
 ```
 
 ### [Low-Rank Adaptation (LoRA) + SFT](./algorithms/lora)
-
 
 Parameter-efficient fine-tuning using LoRA with supervised fine-tuning. Features:
 - Memory-efficient training with significantly reduced VRAM requirements
@@ -110,16 +103,15 @@ result = lora_sft(
     lora_r=16,
     lora_alpha=32,
     num_epochs=3,
-    learning_rate=2e-4
+    learning_rate=2e-4,
 )
 ```
-
 
 ### [LoRA + GRPO (Adapter-Based RLVR)](./algorithms/lora_grpo)
 
 Train LoRA adapters on tool-calling agents using Group Relative Policy Optimization with reinforcement learning from verifiable rewards. Features:
 - Single-turn and multi-turn tool-call verification with automatic per-turn decomposition
-- Two backends: OpenPipe ART + Unsloth GRPO (single-GPU, fast iteration) and verl (multi-GPU, scales to 70B+)
+- Two backends: OpenPipe ART + Unsloth GRPO (single-GPU, fast iteration) and verl (multi-GPU/multi-node, scales to 70B+)
 - Built-in reward functions for tool-call correctness, or bring your own
 - Zero API cost training using ground-truth trace decomposition
 
@@ -163,6 +155,53 @@ result = grpo(
 )
 ```
 
+### [GEPA (Genetic-Pareto Prompt Optimization)](./algorithms/gepa)
+
+Gradient-free prompt optimization using genetic algorithms with Pareto-optimal selection. Evolves system prompts to maximize task performance without modifying model weights. Features:
+- Multi-objective optimization (accuracy, cost, latency)
+- Works with any LLM via LiteLLM (OpenAI, Anthropic, local models)
+- MLflow experiment tracking integration
+- No GPU required — optimizes prompts, not weights
+
+```python
+from training_hub import gepa
+
+result = gepa(
+    model_path="gpt-4o-mini",
+    data_path="./eval_data.jsonl",
+    ckpt_output_dir="./gepa_output",
+    population_size=10,
+    generations=5,
+)
+```
+
+### [Speculative Decoding (Draft Model Training)](./algorithms/speculative_decoding)
+
+Train lightweight draft models (Eagle3, DFlash, MTP, PEagle) for speculative decoding inference acceleration using the [speculators](https://github.com/vllm-project/speculators) library. Features:
+- Four pipeline modes: `offline` (bulk extract then train), `online` (extract on-demand), `train_only`, `data_only`
+- Managed vLLM lifecycle or user-provided endpoints for hidden state extraction
+- Tensor parallel or data parallel vLLM for multi-GPU extraction
+- Single-GPU or multi-GPU training via torchrun
+- GPU allocation controls (`vllm_gpu_ids`, `training_gpu_ids`)
+
+```python
+from training_hub import train_speculator
+
+# Fully automated: data prep, hidden state extraction, training
+result = train_speculator(
+    verifier_name_or_path="Qwen/Qwen3-8B",
+    ckpt_output_dir="./eagle3_output",
+    data_path="sharegpt",
+    speculator_type="eagle3",
+    vllm_gpu_ids=[0, 1],       # vLLM for hidden state extraction
+    training_gpu_ids=[2, 3],   # FSDP training
+    epochs=3,
+    draft_vocab_size=32000,
+)
+```
+
+See [examples/speculative_decoding_examples.py](./examples/speculative_decoding_examples.py) for all configurations (offline/online, managed/endpoint, single/multi-GPU).
+
 ## Installation
 
 ### Basic Installation
@@ -182,21 +221,16 @@ pip install -e .
 
 **For developers:** See the [Development Guide](./DEVELOPING.md) for detailed instructions on setting up your development environment, running local documentation, and contributing to Training Hub.
 
-
 ### LoRA Support
 For LoRA training with optimized dependencies:
 ```bash
-pip install training-hub[lora]
-# or for development
-pip install -e .[lora]
+pip install 'training-hub[lora]'
 ```
-
-**Note:** The LoRA extras include Unsloth optimizations and PyTorch-optimized xformers for better performance and compatibility.
 
 ### GRPO Support
 For LoRA + GRPO training (both ART and verl backends):
 ```bash
-pip install training-hub[grpo,lora]
+pip install 'training-hub[grpo,lora]'
 ```
 
 > **Note:** When combining `[grpo]` with `[cuda]` extras, install them sequentially
@@ -205,39 +239,35 @@ pip install training-hub[grpo,lora]
 > pip install training-hub[grpo,lora]
 > pip install training-hub[cuda]
 > ```
-> The `[grpo]` extras constrain torch, vllm, and transformers versions for verl
-> compatibility, which may conflict with versions pulled by `[cuda]`. Sequential
-> installation lets the solver pick compatible versions.
+
+### GEPA Support
+For gradient-free prompt optimization:
+```bash
+pip install 'training-hub[gepa]'
+```
+
+### Speculative Decoding Support
+For Eagle3 draft model training:
+```bash
+pip install 'training-hub[speculative-decoding]'
+```
 
 ### CUDA Support
 For GPU training with CUDA support:
 ```bash
 pip install training-hub[cuda] --no-build-isolation
-# or for development
-pip install -e .[cuda] --no-build-isolation
 ```
 
 **Note:** If you encounter build issues with flash-attn, install the base package first:
 ```bash
-# Install base package (provides torch, packaging, wheel, ninja)
 pip install training-hub
-# Then install with CUDA extras
 pip install training-hub[cuda] --no-build-isolation
-
-# For development installation:
-pip install -e . && pip install -e .[cuda] --no-build-isolation
 ```
 
 If you're using uv, you can use the following commands to install the package:
 
 ```bash
-# Installs training-hub from PyPI
 uv pip install training-hub && uv pip install training-hub[cuda] --no-build-isolation
-
-# For development:
-git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub
-cd training_hub
-uv pip install -e . && uv pip install -e .[cuda] --no-build-isolation
 ```
 
 ## Coding Agent Plugin
