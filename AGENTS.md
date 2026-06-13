@@ -353,6 +353,21 @@ These lessons apply to models larger than Qwen3-4B on 80GB H100s with co-located
 - **OSFT V-projection uses factored form (not Gram matrix).** The original `dV -= dV @ (V_high^T @ V_high)` was replaced with `dV -= (dV @ V_high^T) @ V_high` (mini_trainer PR #74). Under FSDP2, this replaces an (M, M) all-reduce with a (k_high, M) all-gather — up to 25% speedup on 8B models. Optional caching of the all-gathered V_high is available via `OSFT_CACHE_V=1` (off by default).
 - **OSFT supports on-demand checkpointing and auto-resume.** With `on_demand_checkpointing=True`, the training loop responds to termination signals (SIGTERM, SIGUSR1/2, etc.) by saving full state via `torch.distributed.checkpoint`. On restart, if no explicit `resume_from_full_state_checkpoint` is provided, it auto-detects the latest valid checkpoint from `{output_dir}/full_state_checkpoints/step_*/training_state.pt`.
 - **The checkpoint trigger file is now product-agnostic.** Changed from `mini_trainer_checkpoint_trigger` to `checkpoint_requested`. Customizable via `CHECKPOINT_TRIGGER_FILENAME` env var.
+- **`osft_output_dtype` was removed — use `train_dtype` instead.** The separate output dtype parameter was always falling back to `train_dtype` when unset (which was the common case). It was removed to simplify the API. Users control precision via `osft_upcast_dtype` (computation), `train_dtype` (training/output), and `save_dtype` (checkpoint).
+
+### Notebook Development
+
+These lessons apply to the Jupyter notebooks in `examples/notebooks/`.
+
+- **Default configurations must work on available hardware.** The OSFT templated notebook shipped with `Llama-3.1-8B-Instruct` and `num_gpus=1`, which requires >80GB VRAM and fails on all single-GPU setups including 80GB A100/H100. Either use a smaller default model (e.g., `Llama-3.2-1B-Instruct`) or set `num_gpus=2` so the defaults work out of the box.
+- **Free GPU memory before launching evaluation subprocesses.** Keeping the trained model resident while spawning `lm_eval` as a subprocess causes OOM because the subprocess loads a second copy of the model. Add `del trained_model; del trained_tokenizer; gc.collect(); torch.cuda.empty_cache()` before evaluation cells.
+- **Use `sys.executable` instead of `"python"` in subprocess calls.** `subprocess.run(["python", "-m", "lm_eval", ...])` resolves against `PATH`, not the Jupyter kernel's interpreter. In a venv, this can invoke a different Python that lacks `lm_eval` or the trained checkpoint's dependencies. Use `sys.executable` to match the kernel's environment.
+- **Handle `subprocess.TimeoutExpired` in evaluation cells.** `subprocess.run(..., timeout=3600)` raises `TimeoutExpired` rather than returning a non-zero code. Without a try/except, the cell aborts with no diagnostic, masking partial progress from the evaluation run.
+
+### API Design Conventions
+
+- **Always restore environment variables after mutation.** When a backend sets `os.environ` (e.g., `OPENAI_API_BASE` for GEPA), save the previous value and restore it in a `finally` block. Without cleanup, one training run can silently change the endpoint used by subsequent runs in the same process.
+- **Enforce keyword-only parameters on training entrypoints.** Use `*` after `self` in `.train()` methods and as the first parameter in convenience functions (e.g., `def gepa(*, seed_candidate=..., task_lm=...)`). This prevents positional argument misuse and matches the convention established by `sft()`, `osft()`, and `lora_sft()`. This was flagged repeatedly in GEPA review (training_hub PR #77).
 
 ### Qwen3.5 (GatedDeltaNet) Specific
 
