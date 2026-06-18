@@ -711,6 +711,12 @@ class ARTLoRAGRPOBackend(Backend):
         # Pass results_path into params so _run_training can save before shutdown
         algorithm_params["_results_path"] = results_path
         try:
+            # Import unsloth first to apply vLLM/TRL compatibility patches
+            # (e.g. GuidedDecodingParams shim for older vLLM versions)
+            try:
+                import unsloth  # noqa: F401
+            except ImportError:
+                pass
             import art
             from art.local.backend import LocalBackend
             asyncio.run(
@@ -832,6 +838,8 @@ class ARTLoRAGRPOBackend(Backend):
         # appear here (not just in init_args) because ART reads it from
         # engine_args when constructing AsyncEngineArgs for vLLM.
         engine_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
+        if params.get("enforce_eager"):
+            engine_kwargs["enforce_eager"] = True
         effective_max_lora_rank = max_lora_rank if max_lora_rank else lora_r
         if effective_max_lora_rank > 16:
             engine_kwargs["max_lora_rank"] = effective_max_lora_rank
@@ -1292,6 +1300,7 @@ class LoRAGRPOAlgorithm(Algorithm):
         # vLLM configuration
         gpu_memory_utilization: Optional[float] = None,
         max_lora_rank: Optional[int] = None,
+        enforce_eager: Optional[bool] = None,
         # Multi-GPU/multi-node configuration (verl backend)
         n_gpus: Optional[int] = None,
         nnodes: Optional[int] = None,
@@ -1409,6 +1418,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             "max_grad_norm": max_grad_norm,
             "gpu_memory_utilization": gpu_memory_utilization,
             "max_lora_rank": max_lora_rank,
+            "enforce_eager": enforce_eager,
             "n_gpus": n_gpus,
             "nnodes": nnodes,
             "tensor_parallel_size": tensor_parallel_size,
@@ -1466,6 +1476,7 @@ class LoRAGRPOAlgorithm(Algorithm):
             # vLLM
             "gpu_memory_utilization": float,
             "max_lora_rank": int,
+            "enforce_eager": bool,
             "n_gpus": int,
             "nnodes": int,
             "tensor_parallel_size": int,
@@ -1526,6 +1537,7 @@ def lora_grpo(
     # vLLM configuration
     gpu_memory_utilization: float = 0.45,
     max_lora_rank: Optional[int] = None,
+    enforce_eager: bool = False,
     # Multi-GPU/multi-node configuration (verl backend)
     n_gpus: int = 1,
     nnodes: int = 1,
@@ -1688,6 +1700,7 @@ def lora_grpo(
         max_grad_norm=max_grad_norm,
         gpu_memory_utilization=gpu_memory_utilization,
         max_lora_rank=max_lora_rank,
+        enforce_eager=enforce_eager,
         n_gpus=n_gpus,
         nnodes=nnodes,
         tensor_parallel_size=tensor_parallel_size,
