@@ -371,7 +371,7 @@ def _load_yaml_config(path: str) -> dict[str, Any]:
         )
         sys.exit(1)
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if not isinstance(data, dict):
