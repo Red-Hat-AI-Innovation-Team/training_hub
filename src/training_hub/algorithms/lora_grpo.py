@@ -722,13 +722,10 @@ class ARTLoRAGRPOBackend(Backend):
             try:
                 import vllm.entrypoints.utils  # noqa: F401
             except ModuleNotFoundError:
+                from vllm.entrypoints.serve.utils.api_utils import listen_for_disconnect
                 import types, sys, vllm.entrypoints
                 mod = types.ModuleType("vllm.entrypoints.utils")
-                try:
-                    from vllm.entrypoints.serve.utils.api_utils import listen_for_disconnect
-                    mod.listen_for_disconnect = listen_for_disconnect
-                except ImportError:
-                    pass
+                mod.listen_for_disconnect = listen_for_disconnect
                 sys.modules["vllm.entrypoints.utils"] = mod
                 vllm.entrypoints.utils = mod
 
