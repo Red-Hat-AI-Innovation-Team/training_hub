@@ -183,7 +183,6 @@ class UnslothLoRABackend(Backend):
                 train_dataset=train_dataset,
                 args=training_args,
                 max_seq_length=training_params.get('max_seq_len', 2048),
-                packing=False,
                 data_collator=data_collator,
             )
         else:
@@ -193,7 +192,6 @@ class UnslothLoRABackend(Backend):
                 train_dataset=train_dataset,
                 args=training_args,
                 max_seq_length=training_params.get('max_seq_len', 2048),
-                packing=training_params.get('sample_packing', True),
             )
 
         # Add custom callback for JSONL logging (consistent with SFT/OSFT backends)
@@ -556,9 +554,17 @@ class UnslothLoRABackend(Backend):
             # Multi-GPU / DDP configuration (required by Unsloth for multi-GPU)
             ddp_find_unused_parameters=False,  # Required for Unsloth DDP
 
+            # Packing configuration — must be in SFTConfig (not SFTTrainer kwargs)
+            # so trl 1.x validates padding_free + packing together correctly
+            packing=False if is_vlm else params.get('sample_packing', True),
+            packing_strategy="bfd",
+
             # Chat template and conversation handling
             dataset_text_field="" if is_vlm else "text",
-            assistant_only_loss=False if is_vlm else True,
+            # assistant_only_loss requires a conversational dataset (messages format).
+            # Our backend pre-renders messages to a "text" column via apply_chat_template,
+            # so the dataset is no longer conversational — TRL 1.x rejects True here.
+            assistant_only_loss=False,
 
             # Logging configuration - use loggers list if provided, otherwise fallback to wandb_project
             report_to=self._get_report_to(params),
