@@ -717,6 +717,21 @@ class ARTLoRAGRPOBackend(Backend):
                 import unsloth  # noqa: F401
             except ImportError:
                 pass
+
+            # vLLM 0.23+ moved entrypoints.utils; ART 0.5.17 still imports the old path
+            try:
+                import vllm.entrypoints.utils  # noqa: F401
+            except ModuleNotFoundError:
+                import types, sys, vllm.entrypoints
+                mod = types.ModuleType("vllm.entrypoints.utils")
+                try:
+                    from vllm.entrypoints.serve.utils.api_utils import listen_for_disconnect
+                    mod.listen_for_disconnect = listen_for_disconnect
+                except ImportError:
+                    pass
+                sys.modules["vllm.entrypoints.utils"] = mod
+                vllm.entrypoints.utils = mod
+
             import art
             from art.local.backend import LocalBackend
             asyncio.run(
