@@ -82,6 +82,11 @@ gepa = [
     "mlflow>=3.5.0",
 ]
 
+speculative-decoding = [
+    "speculators>=0.5.0",
+    "vllm>=0.20.0",
+]
+
 dev = [
     "ipykernel",
     "ipython",
