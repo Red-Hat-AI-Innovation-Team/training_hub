@@ -119,6 +119,15 @@ Loggers are automatically enabled when their configuration parameters are set:
 | `wandb_run_name`         | `str` | `None`                     | W&B run name.                                                                   |
 | `tensorboard_log_dir`    | `str` | `None`                     | TensorBoard log directory. Enables TensorBoard.                                 |
 
+#### Validation Loss
+
+Validation loss is supported via `**kwargs`. See the [Validation Loss Guide](/guides/validation-loss) for full details.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
+| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
+
 #### Additional Parameters
 
 | Parameter | Type | Default | Description |

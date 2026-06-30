@@ -42,7 +42,8 @@ Note: W&B, MLflow, and TensorBoard logging are now first-class parameters on all
 - **Config definitions**: https://github.com/instructlab/training/blob/main/src/instructlab/training/config.py
 - **Training entry point**: https://github.com/instructlab/training/blob/main/src/instructlab/training/main_ds.py
 
-Note: The SFT backend does not currently support validation loss (planned for future release).
+Notable hidden options:
+- Validation loss configuration (`validation_split`, `validation_frequency`) for convergence monitoring
 
 ### LoRA (Unsloth)
 
@@ -56,12 +57,12 @@ Note: W&B, MLflow, and TensorBoard logging are now first-class parameters on all
 
 ## Validation loss
 
-For determining optimal training duration, validation loss is more reliable than train loss.
+For determining optimal training duration, validation loss is more reliable than train loss. See the [Validation Loss Guide](/guides/validation-loss) for full documentation.
 
 | Backend | Validation loss support | How to enable |
 |---------|------------------------|---------------|
-| SFT (instructlab-training) | Not yet supported | Planned |
-| OSFT (mini-trainer) | Supported | Pass appropriate kwargs from `TrainingArgs` (see mini-trainer source) |
-| LoRA (Unsloth/TRL) | Supported | Configure via `SFTTrainer` evaluation kwargs |
+| SFT (instructlab-training) | Supported | Pass `validation_split` and `validation_frequency` as kwargs |
+| OSFT (mini-trainer) | Supported | Pass `validation_split` and `validation_frequency` as kwargs. Also supports `save_best_val_loss` and `val_loss_improvement_threshold` |
+| LoRA (Unsloth/TRL) | Not supported | No eval dataset is provided to the SFTTrainer |
 
 When validation loss is available, look for the point where it stops decreasing or begins increasing. Training beyond this point leads to overfitting: the train loss continues to drop but the model's actual performance degrades.

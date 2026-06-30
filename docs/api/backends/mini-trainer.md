@@ -119,6 +119,42 @@ The Mini-Trainer backend supports all standard OSFT parameters. See the [`osft()
 | `rdzv_endpoint` | Master node endpoint |
 
 
+## Validation Loss
+
+The Mini-Trainer backend supports validation loss monitoring with optional best-val-loss checkpointing.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
+| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
+| `save_best_val_loss` | `bool` | `False` | Save a checkpoint whenever validation loss improves. |
+| `val_loss_improvement_threshold` | `float` | `0.0` | Minimum improvement in validation loss required to trigger a best-val-loss checkpoint save. |
+
+Pass these as kwargs through `osft()`:
+
+```python
+osft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=1024,
+    learning_rate=5e-6,
+    num_epochs=5,
+    validation_split=0.1,
+    validation_frequency=100,
+    save_best_val_loss=True,
+)
+```
+
+Validation metrics (`val_loss`, `val_num_samples`, `val_num_loss_counted_tokens`, `val_num_batches`) are logged to JSONL, wandb, and MLflow alongside training metrics.
+
+See the [Validation Loss Guide](/guides/validation-loss) for details.
+
+## Additional Parameters
+
 Beyond the parameters listed above, the Mini-Trainer backend supports many additional parameters beyond those documented above. For a complete list of all available parameters, refer to the [`TrainingArgs` class in the Mini-Trainer source code](https://github.com/Red-Hat-AI-Innovation-Team/mini_trainer/blob/main/src/mini_trainer/training_types.py).
 
 The package provides many other useful parameters which we avoid documenting so our docs do not go out of sync with the package. 

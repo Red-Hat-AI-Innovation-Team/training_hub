@@ -134,6 +134,17 @@ Loggers are automatically enabled when their configuration parameters are set:
 
 > **Note:** OSFT does not support TensorBoard logging.
 
+#### Validation Loss
+
+Validation loss is supported via `**kwargs`. See the [Validation Loss Guide](/guides/validation-loss) for full details.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
+| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
+| `save_best_val_loss` | `bool` | `False` | Save a checkpoint whenever validation loss improves. |
+| `val_loss_improvement_threshold` | `float` | `0.0` | Minimum improvement required to trigger a best-val-loss checkpoint save. |
+
 #### Additional Parameters
 
 | Parameter | Type | Default | Description |

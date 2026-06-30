@@ -102,6 +102,36 @@ The InstructLab Training backend supports all standard SFT parameters. See the [
 | `rdzv_endpoint` | Master node endpoint (host:port) |
 
 
+## Validation Loss
+
+The InstructLab Training backend supports validation loss monitoring. When enabled, a fraction of the training data is held out and the model is periodically evaluated on it.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
+| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
+
+Pass these as kwargs through `sft()`:
+
+```python
+sft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    num_epochs=3,
+    effective_batch_size=32,
+    learning_rate=2e-5,
+    max_seq_len=2048,
+    max_tokens_per_gpu=45000,
+    validation_split=0.1,
+    validation_frequency=50,
+)
+```
+
+Validation metrics (`val_loss`, `val_num_tokens`) are logged to JSONL, TensorBoard, wandb, and MLflow alongside training metrics.
+
+See the [Validation Loss Guide](/guides/validation-loss) for details.
+
 ## Additional Parameters
 
 The InstructLab Training backend supports many additional parameters beyond those documented above. For a complete list of all available parameters, refer to the [`TrainingArgs` class in the InstructLab Training source code](https://github.com/instructlab/training/blob/main/src/instructlab/training/config.py).

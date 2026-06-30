@@ -45,6 +45,7 @@
 
 * Guides
   * [Experiment Tracking & Logging](/guides/logging)
+  * [Validation Loss](/guides/validation-loss)
   * [Distributed Training](/guides/distributed-training)
   * [Data Preparation](/guides/data-preparation)
   * [Continual Pretraining](/guides/continual-pretraining)
