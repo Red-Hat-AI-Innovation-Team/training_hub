@@ -95,6 +95,15 @@ Executes the supervised fine-tuning process.
 | `warmup_steps` | `int` | Backend default | Number of warmup steps for the learning rate scheduler. |
 | `max_tokens_per_gpu` | `int` | Maximum number of tokens that can be on a single GPU at once. |
 
+###### Optimizer (AdamW) Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient — controls the exponential decay rate for the first moment estimates (momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient — controls the exponential decay rate for the second moment estimates (RMSprop). Note: the backend default is `0.95`, not PyTorch's standard `0.999`. |
+| `eps` | `float` | `1e-8` | AdamW epsilon — a small constant added to the denominator for numerical stability. |
+| `weight_decay` | `float` | `0.0` | AdamW weight decay coefficient (L2 regularization). `0.0` means no weight decay. |
+
 ###### Data Processing
 
 | Parameter | Type | Default | Description |
@@ -151,7 +160,7 @@ Loggers are automatically enabled when their configuration parameters are set:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `**kwargs` | `Any` | - | Additional backend-specific parameters passed directly to `instructlab.training.TrainingArgs`. Examples include optimizer settings (e.g., `weight_decay`, `adam_beta1`), gradient clipping, and DeepSpeed configuration. |
+| `**kwargs` | `Any` | - | Additional backend-specific parameters passed directly to `instructlab.training.TrainingArgs`. Examples include gradient clipping and DeepSpeed configuration. |
 
 #### Default Behavior
 
@@ -238,6 +247,10 @@ This method is useful for discovering available configuration options programmat
     "node_rank": int,
     "rdzv_id": int,
     "rdzv_endpoint": str,
+    "beta1": float,
+    "beta2": float,
+    "eps": float,
+    "weight_decay": float,
     # Plus additional backend-specific parameters via **kwargs
 }
 ```

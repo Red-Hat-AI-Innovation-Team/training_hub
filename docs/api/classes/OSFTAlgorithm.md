@@ -127,6 +127,15 @@ Executes the OSFT training process.
 | `use_liger` | `bool` | Backend default | Whether to use Liger kernels for improved performance. Requires `liger-kernel` package. |
 | `seed` | `int` | Backend default | Random seed for reproducibility. |
 
+###### Optimizer (AdamW) Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient — controls the exponential decay rate for the first moment estimates (momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient — controls the exponential decay rate for the second moment estimates (RMSprop). Note: the backend default is `0.95`, not PyTorch's standard `0.999`. |
+| `eps` | `float` | `1e-8` | AdamW epsilon — a small constant added to the denominator for numerical stability. |
+| `weight_decay` | `float` | `0.0` | AdamW weight decay coefficient (L2 regularization). `0.0` means no weight decay. |
+
 ###### Checkpointing
 
 | Parameter | Type | Default | Description |
@@ -251,6 +260,10 @@ Returns the optional parameters for OSFT.
     "node_rank": int,
     "rdzv_id": int,
     "rdzv_endpoint": str,
+    "beta1": float,
+    "beta2": float,
+    "eps": float,
+    "weight_decay": float,
     # Plus additional backend-specific parameters via **kwargs
 }
 ```
