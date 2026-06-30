@@ -108,6 +108,19 @@ The Mini-Trainer backend supports all standard OSFT parameters. See the [`osft()
 | `checkpoint_at_epoch` | Save checkpoint after each epoch |
 | `save_final_checkpoint` | Save final model |
 
+### Optimizer (AdamW) Parameters
+
+The Mini-Trainer backend uses the AdamW optimizer. Training Hub exposes these hyperparameters as first-class parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient (first moment / momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient (second moment / RMSprop). Note: default is `0.95`, not PyTorch's `0.999`. |
+| `eps` | `float` | `1e-8` | Epsilon for numerical stability. |
+| `weight_decay` | `float` | `0.0` | Weight decay (L2 regularization). |
+
+These parameter names match the mini-trainer `TrainingArgs` dataclass fields directly.
+
 ### Distributed Training Parameters
 
 | Parameter | Description |

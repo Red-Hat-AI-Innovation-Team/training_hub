@@ -32,6 +32,10 @@ def osft(
     checkpoint_at_epoch: bool | None = None,
     save_final_checkpoint: bool | None = None,
     num_epochs: int | None = None,
+    beta1: float | None = None,
+    beta2: float | None = None,
+    eps: float | None = None,
+    weight_decay: float | None = None,
     nproc_per_node: int | None = None,
     nnodes: int | None = None,
     node_rank: int | None = None,
@@ -96,6 +100,17 @@ def osft(
 | `lr_scheduler_kwargs` | `dict[str, str]` | `None` | Additional keyword arguments for the learning rate scheduler. |
 | `use_liger` | `bool` | Backend default | Whether to use Liger kernels for improved performance. Requires `liger-kernel` package. |
 | `seed` | `int` | Backend default | Random seed for reproducibility. |
+
+#### Optimizer (AdamW) Parameters
+
+The mini-trainer backend uses the AdamW optimizer. These parameters control its behavior:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient — controls the exponential decay rate for the first moment estimates (momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient — controls the exponential decay rate for the second moment estimates (RMSprop). Note: the backend default is `0.95`, not PyTorch's standard `0.999`. |
+| `eps` | `float` | `1e-8` | AdamW epsilon — a small constant added to the denominator for numerical stability. |
+| `weight_decay` | `float` | `0.0` | AdamW weight decay coefficient (L2 regularization). `0.0` means no weight decay. |
 
 #### Checkpointing
 

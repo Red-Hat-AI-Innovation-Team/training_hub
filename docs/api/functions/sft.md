@@ -25,6 +25,10 @@ def sft(
     is_pretraining: Optional[bool] = None,
     block_size: Optional[int] = None,
     document_column_name: Optional[str] = None,
+    beta1: Optional[float] = None,
+    beta2: Optional[float] = None,
+    eps: Optional[float] = None,
+    weight_decay: Optional[float] = None,
     nproc_per_node: Optional[int] = None,
     nnodes: Optional[int] = None,
     node_rank: Optional[int] = None,
@@ -66,6 +70,17 @@ def sft(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `warmup_steps` | `int` | Backend default | Number of warmup steps for the learning rate scheduler. |
+
+#### Optimizer (AdamW) Parameters
+
+Both backends use the AdamW optimizer. These parameters control its behavior:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient — controls the exponential decay rate for the first moment estimates (momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient — controls the exponential decay rate for the second moment estimates (RMSprop). Note: the backend default is `0.95`, not PyTorch's standard `0.999`. |
+| `eps` | `float` | `1e-8` | AdamW epsilon — a small constant added to the denominator for numerical stability. |
+| `weight_decay` | `float` | `0.0` | AdamW weight decay coefficient (L2 regularization). `0.0` means no weight decay. |
 
 #### Data Processing
 

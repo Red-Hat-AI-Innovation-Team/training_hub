@@ -91,6 +91,19 @@ The InstructLab Training backend supports all standard SFT parameters. See the [
 | `checkpoint_at_epoch` | Save checkpoint after each epoch |
 | `accelerate_full_state_at_epoch` | Save full state for resumption |
 
+### Optimizer (AdamW) Parameters
+
+The InstructLab Training backend uses the AdamW optimizer. Training Hub exposes these hyperparameters as first-class parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta1` | `float` | `0.9` | AdamW beta1 coefficient (first moment / momentum). |
+| `beta2` | `float` | `0.95` | AdamW beta2 coefficient (second moment / RMSprop). Note: default is `0.95`, not PyTorch's `0.999`. |
+| `eps` | `float` | `1e-8` | Epsilon for numerical stability. |
+| `weight_decay` | `float` | `0.0` | Weight decay (L2 regularization). |
+
+Training Hub translates these to the backend's native parameter names (`adamw_betas`, `adamw_eps`, `adamw_weight_decay`) automatically.
+
 ### Distributed Training Parameters
 
 | Parameter | Description |
