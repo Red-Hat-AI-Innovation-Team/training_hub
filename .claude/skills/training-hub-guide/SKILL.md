@@ -190,8 +190,8 @@ plot_loss(["./run1", "./run2"], labels=["baseline", "tuned"], ema=True)
 
 - **Train loss alone is insufficient.** A model can converge on train loss forever while overfitting badly.
 - **Validation loss is the real signal.** Look for where validation loss stops decreasing or starts increasing (optimal training regime vs overfitting).
-- SFT backend does not currently support validation loss (planned). OSFT and LoRA do support it but it must be explicitly enabled via backend kwargs. See [backend-kwargs.md](backend-kwargs.md).
-- When validation loss is unavailable, rely on downstream evaluation to gauge actual model quality.
+- SFT and OSFT backends support validation loss via `validation_split` and `validation_frequency` kwargs. OSFT also supports `save_best_val_loss`. See [backend-kwargs.md](backend-kwargs.md) and the [Validation Loss Guide](/guides/validation-loss).
+- When validation loss is unavailable (LoRA, GRPO), rely on downstream evaluation to gauge actual model quality.
 
 ## Backend kwargs passthrough
 
