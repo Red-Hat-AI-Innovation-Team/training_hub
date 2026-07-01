@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 from typing import Any, Callable, Optional
 
@@ -581,8 +582,56 @@ def main(argv: Optional[list[str]] = None) -> None:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    _upload_mlflow_artifacts(final_kwargs)
+
     if isinstance(result, dict):
         print(json.dumps(result, indent=2, default=str))
+
+
+def _upload_mlflow_artifacts(config: dict[str, Any]) -> None:
+    """Upload training output to MLflow artifact store if tracking is configured."""
+    tracking_uri = config.get("mlflow_tracking_uri") or os.environ.get(
+        "MLFLOW_TRACKING_URI"
+    )
+    if not tracking_uri:
+        return
+
+    ckpt_dir = config.get("ckpt_output_dir") or config.get("output_dir")
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return
+
+    try:
+        import mlflow
+
+        mlflow.set_tracking_uri(tracking_uri)
+
+        active_run = mlflow.active_run()
+        if active_run:
+            mlflow.log_artifacts(ckpt_dir, "model")
+            print(f"Uploaded {ckpt_dir} to MLflow artifacts")
+            return
+
+        experiment_name = config.get(
+            "mlflow_experiment_name"
+        ) or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+        if experiment_name:
+            experiment = mlflow.get_experiment_by_name(experiment_name)
+            if experiment:
+                runs = mlflow.search_runs(
+                    experiment_ids=[experiment.experiment_id],
+                    order_by=["start_time DESC"],
+                    max_results=1,
+                )
+                if not runs.empty:
+                    run_id = runs.iloc[0]["run_id"]
+                    with mlflow.start_run(run_id=run_id):
+                        mlflow.log_artifacts(ckpt_dir, "model")
+                    print(f"Uploaded {ckpt_dir} to MLflow run {run_id}")
+    except Exception as e:
+        print(
+            f"Warning: Failed to upload artifacts to MLflow: {e}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
