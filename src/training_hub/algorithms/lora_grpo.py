@@ -710,6 +710,7 @@ class ARTLoRAGRPOBackend(Backend):
         # vLLM V1's eager add_lora validation finds a valid adapter on disk.
         # Pass results_path into params so _run_training can save before shutdown
         algorithm_params["_results_path"] = results_path
+        exit_code = 0
         try:
             # Import unsloth first to apply vLLM/TRL compatibility patches
             # (e.g. GuidedDecodingParams shim for older vLLM versions)
@@ -736,11 +737,12 @@ class ARTLoRAGRPOBackend(Backend):
             )
         except SystemExit:
             pass  # os._exit from shutdown — results saved in _run_training
-        except Exception as e:
+        except Exception:
             if not os.path.exists(results_path):
                 with open(error_path, "w") as f:
                     import traceback
                     f.write(traceback.format_exc())
+                exit_code = 1
             else:
                 import traceback
                 import logging
@@ -750,7 +752,7 @@ class ARTLoRAGRPOBackend(Backend):
                 )
         # vLLM 0.21+ spawns EngineCore/APIServer as non-daemon threads that
         # can prevent the subprocess from exiting. Results are already on disk.
-        os._exit(0)
+        os._exit(exit_code)
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
