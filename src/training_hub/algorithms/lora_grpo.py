@@ -710,6 +710,7 @@ class ARTLoRAGRPOBackend(Backend):
         # vLLM V1's eager add_lora validation finds a valid adapter on disk.
         # Pass results_path into params so _run_training can save before shutdown
         algorithm_params["_results_path"] = results_path
+        exit_code = 0
         try:
             # Import unsloth first to apply vLLM/TRL compatibility patches
             # (e.g. GuidedDecodingParams shim for older vLLM versions)
@@ -736,11 +737,12 @@ class ARTLoRAGRPOBackend(Backend):
             )
         except SystemExit:
             pass  # os._exit from shutdown — results saved in _run_training
-        except Exception as e:
+        except Exception:
             if not os.path.exists(results_path):
                 with open(error_path, "w") as f:
                     import traceback
                     f.write(traceback.format_exc())
+                exit_code = 1
             else:
                 import traceback
                 import logging
@@ -748,6 +750,9 @@ class ARTLoRAGRPOBackend(Backend):
                     "Post-training cleanup error (training completed successfully):\n%s",
                     traceback.format_exc(),
                 )
+        # vLLM 0.21+ spawns EngineCore/APIServer as non-daemon threads that
+        # can prevent the subprocess from exiting. Results are already on disk.
+        os._exit(exit_code)
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
@@ -938,8 +943,7 @@ class ARTLoRAGRPOBackend(Backend):
             )
             return result
         finally:
-            # Save results BEFORE shutdown — _shutdown_art_backend calls
-            # os._exit() which kills the process immediately.
+            # Save results BEFORE shutdown so they survive os._exit below.
             results_path = params.get("_results_path")
             if results_path and result is not None:
                 try:
@@ -951,6 +955,9 @@ class ARTLoRAGRPOBackend(Backend):
 
             logger.info("Shutting down ART backend...")
             await _shutdown_art_backend(backend)
+            if result is not None:
+                logger.info("ART backend shut down — force-exiting subprocess")
+                os._exit(0)
             logger.info("ART backend shut down")
 
     async def _run_training_loop(
