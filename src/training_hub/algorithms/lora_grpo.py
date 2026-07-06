@@ -748,6 +748,9 @@ class ARTLoRAGRPOBackend(Backend):
                     "Post-training cleanup error (training completed successfully):\n%s",
                     traceback.format_exc(),
                 )
+        # vLLM 0.21+ spawns EngineCore/APIServer as non-daemon threads that
+        # can prevent the subprocess from exiting. Results are already on disk.
+        os._exit(0)
 
     async def _run_training(self, params: Dict[str, Any], art, LocalBackend) -> Dict[str, Any]:
         """Async training loop."""
@@ -938,8 +941,7 @@ class ARTLoRAGRPOBackend(Backend):
             )
             return result
         finally:
-            # Save results BEFORE shutdown — _shutdown_art_backend calls
-            # os._exit() which kills the process immediately.
+            # Save results BEFORE shutdown so they survive os._exit below.
             results_path = params.get("_results_path")
             if results_path and result is not None:
                 try:
@@ -951,6 +953,9 @@ class ARTLoRAGRPOBackend(Backend):
 
             logger.info("Shutting down ART backend...")
             await _shutdown_art_backend(backend)
+            if result is not None:
+                logger.info("ART backend shut down — force-exiting subprocess")
+                os._exit(0)
             logger.info("ART backend shut down")
 
     async def _run_training_loop(
