@@ -31,6 +31,14 @@ class InstructLabTrainingSFTBackend(Backend):
         if 'max_tokens_per_gpu' in training_params:
             training_params['max_batch_len'] = training_params.pop('max_tokens_per_gpu')
 
+        if 'data_output_dir' not in training_params:
+            training_params['data_output_dir'] = os.path.join(
+                training_params['ckpt_output_dir'], 'data'
+            )
+
+        if 'max_batch_len' not in training_params:
+            training_params['max_batch_len'] = training_params.get('max_seq_len', 60000)
+
         # AdamW parameter translation
         if 'beta1' in training_params and 'beta2' in training_params:
             training_params['adamw_betas'] = (
