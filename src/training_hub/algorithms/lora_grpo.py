@@ -207,6 +207,11 @@ def _install_megatron_bridge_stub():
     class _StubMeta(type):
         """Metaclass that returns a new stub for any attribute access."""
         def __getattr__(cls, name):
+            logger.warning(
+                "megatron stub: attribute %s.%s accessed — stubs are import-only "
+                "placeholders; actual megatron functionality is not available",
+                cls.__name__, name,
+            )
             return type(name, (), {"__init__": lambda self, *a, **kw: None})
 
     class _Stub(metaclass=_StubMeta):
@@ -216,7 +221,7 @@ def _install_megatron_bridge_stub():
 
     def _make_stub_module(fqn, attrs=None):
         mod = types.ModuleType(fqn)
-        mod.__package__ = fqn.rsplit(".", 1)[0] if "." in fqn else fqn
+        mod.__package__ = fqn
         mod.__path__ = []
         if attrs:
             for k, v in attrs.items():
@@ -226,6 +231,9 @@ def _install_megatron_bridge_stub():
 
     bridge = _make_stub_module("megatron.bridge")
 
+    # Sub-modules known to be imported by ART 0.5.18.
+    # If ART 0.5.19+ adds new megatron.bridge.* imports, update this list.
+    # To discover: grep -r 'from megatron.bridge' $(python -c "import art; print(art.__path__[0])")
     sub_modules = [
         "megatron.bridge.megatron_model",
         "megatron.bridge.megatron_model.qwen3_5",
@@ -268,9 +276,13 @@ def _install_megatron_bridge_stub():
 
     # Ensure megatron package itself and megatron.core exist as stubs if not
     # already installed (megatron-core --no-deps provides the real ones).
+    # Try real import first to avoid shadowing a real installation.
     for pkg in ("megatron", "megatron.core"):
         if pkg not in sys.modules:
-            _make_stub_module(pkg)
+            try:
+                __import__(pkg)
+            except ImportError:
+                _make_stub_module(pkg)
 
     logger.debug("Installed megatron.bridge stub modules for ART 0.5.18 compat")
 
