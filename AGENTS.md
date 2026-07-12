@@ -21,23 +21,17 @@ For the current list of supported algorithms, backends, and dependencies, see:
 # Install in editable mode (development)
 pip install -e .
 
-# Install with LoRA support (unsloth requires --no-deps, see note below)
-pip install -e ".[lora]"
-pip install unsloth unsloth_zoo --no-deps
+# Install with LoRA support
+pip install -e .[lora]
 
-# Install with GRPO support (ART backend)
-pip install -e ".[grpo,lora]"
-pip install unsloth unsloth_zoo --no-deps
-
-# Install with GRPO + verl backend
-pip install -e ".[grpo-verl,lora]"
-pip install unsloth unsloth_zoo --no-deps
+# Install with GRPO support (includes ART + verl backends)
+pip install -e .[grpo,lora]
 
 # Install with CUDA support (install sequentially after other extras)
-pip install -e ".[cuda]" --no-build-isolation
+pip install -e .[cuda] --no-build-isolation
 
 # Install with development dependencies
-pip install -e ".[dev]"
+pip install -e .[dev]
 
 # Run tests
 pytest tests/
@@ -45,11 +39,6 @@ pytest tests/
 # Serve documentation locally (requires docsify-cli)
 cd docs && docsify serve
 ```
-
-**Unsloth `--no-deps`:** Unsloth caps `transformers<=5.5.0`, conflicting with
-`transformers>=5.13.0` required by `kernels>=0.15.1`. The cap is overly
-conservative — unsloth works correctly with transformers 5.13.x. Always install
-unsloth with `--no-deps` after the main install.
 
 See `pyproject.toml` for the full list of optional dependency groups.
 
@@ -193,13 +182,11 @@ Each algorithm has validation logic in its `train()` method. Read the method doc
 
 ### Installation
 
-Install extras sequentially — `[grpo]`/`[grpo-verl]` and `[cuda]` have conflicting
-transitive dependencies that the solver can resolve when installed in order.
-Unsloth must be installed separately with `--no-deps` (see Quick Commands note):
+Install extras sequentially — `[grpo]` and `[cuda]` have conflicting transitive
+dependencies that the solver can resolve when installed in order:
 ```bash
-pip install -e ".[grpo,lora]"           # GRPO with ART backend
-pip install -e ".[cuda]" --no-build-isolation  # CUDA kernels (after grpo)
-pip install unsloth unsloth_zoo --no-deps  # Unsloth (bypass transformers cap)
+pip install -e .[grpo,lora]           # GRPO backends (ART + verl)
+pip install -e .[cuda] --no-build-isolation  # CUDA kernels (after grpo)
 ```
 
 ### Testing

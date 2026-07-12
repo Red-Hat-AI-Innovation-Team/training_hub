@@ -57,13 +57,14 @@ cuda = [
     "rhai-innovation-mini-trainer[cuda]>=0.6.0",
     "flash-attn>=2.8",
     "einops>=0.8",
-    "kernels>=0.15.1",
+    "kernels>=0.9.0",
     "bitsandbytes>=0.47.0",
     "liger-kernel>=0.5.10",
     "mamba-ssm[causal-conv1d]>=2.2.5",
 ]
 
 lora = [
+    "unsloth>=2026.1.1",
     "trl>=0.18.0",
     "xformers>=0.0.33.post1",
 ]

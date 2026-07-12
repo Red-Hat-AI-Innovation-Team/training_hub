@@ -187,62 +187,57 @@ pip install -e .
 For LoRA training with optimized dependencies:
 ```bash
 pip install training-hub[lora]
-pip install unsloth unsloth_zoo --no-deps
-```
-
-For development:
-```bash
+# or for development
 pip install -e .[lora]
-pip install unsloth unsloth_zoo --no-deps
 ```
 
-> **Why `--no-deps`?** Unsloth caps `transformers<=5.5.0`, which conflicts with
-> `transformers>=5.13.0` required by `kernels>=0.15.1` (CUDA extras). The cap is
-> overly conservative — unsloth works correctly with transformers 5.13.x.
-> Installing with `--no-deps` bypasses this conflict.
+**Note:** The LoRA extras include Unsloth optimizations and PyTorch-optimized xformers for better performance and compatibility.
 
 ### GRPO Support
-For LoRA + GRPO training with the ART backend:
+For LoRA + GRPO training (both ART and verl backends):
 ```bash
 pip install training-hub[grpo,lora]
-pip install unsloth unsloth_zoo --no-deps
 ```
 
-For the verl backend (multi-GPU FSDP), add the `grpo-verl` extra:
-```bash
-pip install training-hub[grpo-verl,lora]
-pip install unsloth unsloth_zoo --no-deps
-```
-
-> **Note:** Install `[cuda]` extras sequentially after `[grpo]`/`[grpo-verl]` to
-> avoid dependency solver conflicts.
+> **Note:** When combining `[grpo]` with `[cuda]` extras, install them sequentially
+> to avoid dependency solver conflicts:
+> ```bash
+> pip install training-hub[grpo,lora]
+> pip install training-hub[cuda]
+> ```
+> The `[grpo]` extras constrain torch, vllm, and transformers versions for verl
+> compatibility, which may conflict with versions pulled by `[cuda]`. Sequential
+> installation lets the solver pick compatible versions.
 
 ### CUDA Support
-For GPU training with CUDA support (install after other extras):
+For GPU training with CUDA support:
 ```bash
 pip install training-hub[cuda] --no-build-isolation
 # or for development
 pip install -e .[cuda] --no-build-isolation
 ```
 
-### Full Install (recommended order)
-
+**Note:** If you encounter build issues with flash-attn, install the base package first:
 ```bash
-# 1. Base + algorithm extras
-pip install -e ".[grpo,lora,dev]"
+# Install base package (provides torch, packaging, wheel, ninja)
+pip install training-hub
+# Then install with CUDA extras
+pip install training-hub[cuda] --no-build-isolation
 
-# 2. CUDA extras (must come after step 1)
-pip install -e ".[cuda]" --no-build-isolation
-
-# 3. Unsloth (must use --no-deps to bypass transformers cap)
-pip install unsloth unsloth_zoo --no-deps
+# For development installation:
+pip install -e . && pip install -e .[cuda] --no-build-isolation
 ```
 
-With uv:
+If you're using uv, you can use the following commands to install the package:
+
 ```bash
-uv pip install -e ".[grpo,lora,dev]"
-uv pip install -e ".[cuda]" --no-build-isolation
-uv pip install unsloth unsloth_zoo --no-deps
+# Installs training-hub from PyPI
+uv pip install training-hub && uv pip install training-hub[cuda] --no-build-isolation
+
+# For development:
+git clone https://github.com/Red-Hat-AI-Innovation-Team/training_hub
+cd training_hub
+uv pip install -e . && uv pip install -e .[cuda] --no-build-isolation
 ```
 
 ## Coding Agent Plugin
