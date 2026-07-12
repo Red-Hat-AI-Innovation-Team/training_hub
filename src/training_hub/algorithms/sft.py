@@ -37,6 +37,7 @@ class InstructLabTrainingSFTBackend(Backend):
             )
 
         if 'max_batch_len' not in training_params:
+            # max_seq_len is required by TrainingArgs, so the 60000 fallback is a defensive default
             training_params['max_batch_len'] = training_params.get('max_seq_len', 60000)
 
         # AdamW parameter translation
@@ -230,13 +231,13 @@ class SFTAlgorithm(Algorithm):
             'effective_batch_size': int,
             'learning_rate': float,
             'max_seq_len': int,
-            'max_batch_len': int,
         }
 
     def get_optional_params(self) -> Dict[str, Type]:
         """Return optional parameters for SFT."""
         return {
             'max_tokens_per_gpu': int,
+            'max_batch_len': int,
             'data_output_dir': str,
             'save_samples': int,
             'warmup_steps': int,
