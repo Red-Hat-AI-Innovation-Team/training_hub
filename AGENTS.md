@@ -24,8 +24,11 @@ pip install -e .
 # Install with LoRA support
 pip install -e .[lora]
 
-# Install with GRPO support (includes ART + verl backends)
+# Install with GRPO support (ART backend)
 pip install -e .[grpo,lora]
+
+# Install with GRPO + verl backend
+pip install -e .[grpo-verl,lora]
 
 # Install with CUDA support (install sequentially after other extras)
 pip install -e .[cuda] --no-build-isolation
@@ -182,10 +185,11 @@ Each algorithm has validation logic in its `train()` method. Read the method doc
 
 ### Installation
 
-Install extras sequentially — `[grpo]` and `[cuda]` have conflicting transitive
-dependencies that the solver can resolve when installed in order:
+Install extras sequentially — `[grpo]`/`[grpo-verl]` and `[cuda]` have conflicting
+transitive dependencies that the solver can resolve when installed in order:
 ```bash
-pip install -e .[grpo,lora]           # GRPO backends (ART + verl)
+pip install -e .[grpo,lora]           # GRPO with ART backend
+pip install -e .[grpo-verl,lora]      # GRPO with ART + verl backends
 pip install -e .[cuda] --no-build-isolation  # CUDA kernels (after grpo)
 ```
 

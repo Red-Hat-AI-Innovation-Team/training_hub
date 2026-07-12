@@ -75,8 +75,8 @@ grpo = [
 ]
 
 grpo-verl = [
+    "training_hub[grpo]",
     "verl>=0.7",
-    "litellm>=1.71.1,!=1.82.7,!=1.82.8",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24)
 ]
 
 gepa = [
