@@ -188,7 +188,7 @@ class UnslothLoRABackend(Backend):
         else:
             trainer = SFTTrainer(
                 model=model,
-                tokenizer=tokenizer_or_processor,
+                processing_class=tokenizer_or_processor,
                 train_dataset=train_dataset,
                 args=training_args,
                 max_seq_length=training_params.get('max_seq_len', 2048),

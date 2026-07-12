@@ -57,7 +57,7 @@ cuda = [
     "rhai-innovation-mini-trainer[cuda]>=0.6.0",
     "flash-attn>=2.8",
     "einops>=0.8",
-    "kernels>=0.9.0",
+    "kernels>=0.15.1",
     "bitsandbytes>=0.47.0",
     "liger-kernel>=0.5.10",
     "mamba-ssm[causal-conv1d]>=2.2.5",
@@ -70,10 +70,13 @@ lora = [
 ]
 
 grpo = [
-    "openpipe-art<=0.5.17",  # 0.5.18 unconditionally imports megatron at startup
-    "verl>=0.7",  # no [vllm] extra — verl works with ART's vllm 0.15+ despite its conservative cap
+    "openpipe-art>=0.5.17",
     "litellm>=1.71.1,!=1.82.7,!=1.82.8",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24)
-    "transformers>=4.51.3,<=5.3.0",  # 5.4+ breaks unsloth (auto_docstring NameError)
+]
+
+grpo-verl = [
+    "verl>=0.7",
+    "litellm>=1.71.1,!=1.82.7,!=1.82.8",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24)
 ]
 
 gepa = [
