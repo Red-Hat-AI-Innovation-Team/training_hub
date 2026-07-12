@@ -38,6 +38,7 @@ dependencies = [
     "regex>=2025.0",
     "llvmlite>=0.42",
     "psutil>=6.0",
+    "pyyaml>=6.0",
     "urllib3>=2.4",
     "frozenlist>=1.7",
     "xxhash>=3.0",
@@ -92,6 +93,9 @@ dev = [
     "mistral-common>=1.5.0",
     "sentencepiece>=0.2.0",
 ]
+
+[project.scripts]
+thub = "training_hub.cli:main"
 
 [project.urls]
 homepage = "https://ai-innovation.team/"
