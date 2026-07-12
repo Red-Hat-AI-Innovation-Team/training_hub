@@ -178,6 +178,104 @@ def _create_seed_lora_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Megatron bridge stub for ART 0.5.18+
+# ---------------------------------------------------------------------------
+
+def _install_megatron_bridge_stub():
+    """Install stub modules for megatron.bridge so ART 0.5.18 can import.
+
+    ART 0.5.18 added Qwen3.5 Megatron support with module-level imports from
+    megatron.core and megatron.bridge that fire even when using the Unsloth
+    (non-Megatron) backend. megatron-core can be installed with --no-deps
+    (~2 MB) to provide the real megatron.core module, but megatron.bridge is
+    not available as a standalone package.
+
+    This function injects placeholder modules into sys.modules so that
+    ``from megatron.bridge.<submodule> import <name>`` succeeds at import
+    time. The stub classes/functions are never instantiated at runtime when
+    using the Unsloth backend — they exist only to satisfy the import graph.
+
+    Remove this stub when ART makes the megatron import lazy, or when
+    megatron-core is added to the AIPCC index with bridge support.
+    """
+    import sys
+    import types
+
+    if "megatron.bridge" in sys.modules:
+        return
+
+    class _StubMeta(type):
+        """Metaclass that returns a new stub for any attribute access."""
+        def __getattr__(cls, name):
+            return type(name, (), {"__init__": lambda self, *a, **kw: None})
+
+    class _Stub(metaclass=_StubMeta):
+        """A class whose attributes are all no-op classes."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def _make_stub_module(fqn, attrs=None):
+        mod = types.ModuleType(fqn)
+        mod.__package__ = fqn.rsplit(".", 1)[0] if "." in fqn else fqn
+        mod.__path__ = []
+        if attrs:
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+        sys.modules[fqn] = mod
+        return mod
+
+    bridge = _make_stub_module("megatron.bridge")
+
+    sub_modules = [
+        "megatron.bridge.megatron_model",
+        "megatron.bridge.megatron_model.qwen3_5",
+        "megatron.bridge.pipeline",
+        "megatron.bridge.pipeline.megatron_pipeline",
+        "megatron.bridge.utils",
+        "megatron.bridge.utils.config",
+        "megatron.bridge.utils.weight_converter",
+    ]
+    for fqn in sub_modules:
+        _make_stub_module(fqn)
+
+    # Attach sub-package references so dotted access works
+    bridge.megatron_model = sys.modules["megatron.bridge.megatron_model"]
+    bridge.pipeline = sys.modules["megatron.bridge.pipeline"]
+    bridge.utils = sys.modules["megatron.bridge.utils"]
+
+    sys.modules["megatron.bridge.megatron_model"].qwen3_5 = (
+        sys.modules["megatron.bridge.megatron_model.qwen3_5"]
+    )
+    sys.modules["megatron.bridge.pipeline"].megatron_pipeline = (
+        sys.modules["megatron.bridge.pipeline.megatron_pipeline"]
+    )
+    sys.modules["megatron.bridge.utils"].config = (
+        sys.modules["megatron.bridge.utils.config"]
+    )
+    sys.modules["megatron.bridge.utils"].weight_converter = (
+        sys.modules["megatron.bridge.utils.weight_converter"]
+    )
+
+    # Populate commonly imported names with stubs
+    for fqn in sub_modules:
+        mod = sys.modules[fqn]
+        mod.__dict__.setdefault("__all__", [])
+        mod.__class__ = type(
+            mod.__class__.__name__,
+            (type(mod),),
+            {"__getattr__": lambda self, name: _Stub},
+        )
+
+    # Ensure megatron package itself and megatron.core exist as stubs if not
+    # already installed (megatron-core --no-deps provides the real ones).
+    for pkg in ("megatron", "megatron.core"):
+        if pkg not in sys.modules:
+            _make_stub_module(pkg)
+
+    logger.debug("Installed megatron.bridge stub modules for ART 0.5.18 compat")
+
+
+# ---------------------------------------------------------------------------
 # Built-in dataset loading (Toucan-style tool-call data)
 # ---------------------------------------------------------------------------
 
@@ -729,6 +827,9 @@ class ARTLoRAGRPOBackend(Backend):
                 mod.listen_for_disconnect = listen_for_disconnect
                 sys.modules["vllm.entrypoints.utils"] = mod
                 vllm.entrypoints.utils = mod
+
+            # ART 0.5.18 has module-level megatron imports for Qwen3.5 support
+            _install_megatron_bridge_stub()
 
             import art
             from art.local.backend import LocalBackend
