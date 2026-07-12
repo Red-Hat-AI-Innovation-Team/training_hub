@@ -219,10 +219,11 @@ def _install_megatron_bridge_stub():
         def __init__(self, *args, **kwargs):
             pass
 
-    def _make_stub_module(fqn, attrs=None):
+    def _make_stub_module(fqn, is_package=True, attrs=None):
         mod = types.ModuleType(fqn)
         mod.__package__ = fqn
-        mod.__path__ = []
+        if is_package:
+            mod.__path__ = []
         if attrs:
             for k, v in attrs.items():
                 setattr(mod, k, v)
@@ -234,17 +235,21 @@ def _install_megatron_bridge_stub():
     # Sub-modules known to be imported by ART 0.5.18.
     # If ART 0.5.19+ adds new megatron.bridge.* imports, update this list.
     # To discover: grep -r 'from megatron.bridge' $(python -c "import art; print(art.__path__[0])")
-    sub_modules = [
+    sub_packages = [
         "megatron.bridge.megatron_model",
-        "megatron.bridge.megatron_model.qwen3_5",
         "megatron.bridge.pipeline",
-        "megatron.bridge.pipeline.megatron_pipeline",
         "megatron.bridge.utils",
+    ]
+    leaf_modules = [
+        "megatron.bridge.megatron_model.qwen3_5",
+        "megatron.bridge.pipeline.megatron_pipeline",
         "megatron.bridge.utils.config",
         "megatron.bridge.utils.weight_converter",
     ]
-    for fqn in sub_modules:
-        _make_stub_module(fqn)
+    for fqn in sub_packages:
+        _make_stub_module(fqn, is_package=True)
+    for fqn in leaf_modules:
+        _make_stub_module(fqn, is_package=False)
 
     # Attach sub-package references so dotted access works
     bridge.megatron_model = sys.modules["megatron.bridge.megatron_model"]
@@ -265,14 +270,16 @@ def _install_megatron_bridge_stub():
     )
 
     # Populate commonly imported names with stubs
-    for fqn in sub_modules:
+    class _StubModuleType(types.ModuleType):
+        def __getattr__(self, name):
+            if name.startswith("__") and name.endswith("__"):
+                raise AttributeError(name)
+            return _Stub
+
+    for fqn in sub_packages + leaf_modules:
         mod = sys.modules[fqn]
         mod.__dict__.setdefault("__all__", [])
-        mod.__class__ = type(
-            mod.__class__.__name__,
-            (type(mod),),
-            {"__getattr__": lambda self, name: _Stub},
-        )
+        mod.__class__ = _StubModuleType
 
     # Ensure megatron package itself and megatron.core exist as stubs if not
     # already installed (megatron-core --no-deps provides the real ones).
@@ -281,7 +288,11 @@ def _install_megatron_bridge_stub():
         if pkg not in sys.modules:
             try:
                 __import__(pkg)
-            except ImportError:
+            except Exception as exc:
+                logger.warning(
+                    "Could not import %s (%s: %s), falling back to stub",
+                    pkg, type(exc).__name__, exc,
+                )
                 _make_stub_module(pkg)
 
     logger.debug("Installed megatron.bridge stub modules for ART 0.5.18 compat")
