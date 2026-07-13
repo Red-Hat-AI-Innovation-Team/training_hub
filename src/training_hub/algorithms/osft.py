@@ -488,11 +488,12 @@ class MiniTrainerOSFTBackend(Backend):
         )
 
         # Process eval data if a separate eval dataset is provided
-        validation_data_path = algorithm_params.get('validation_data_path', None)
-        if validation_data_path is not None:
+        validation_ready_data_path = None
+        raw_validation_data_path = algorithm_params.get('validation_data_path', None)
+        if raw_validation_data_path is not None:
             eval_output_dir = os.path.join(data_output_dir, '_eval_data')
-            validation_data_path = self._process_data(
-                data_path=validation_data_path,
+            validation_ready_data_path = self._process_data(
+                data_path=raw_validation_data_path,
                 model_name_or_path=algorithm_params['model_name_or_path'],
                 output_dir=eval_output_dir,
                 max_seq_len=algorithm_params['max_seq_len'],
@@ -502,11 +503,12 @@ class MiniTrainerOSFTBackend(Backend):
                 is_pretraining=algorithm_params.get('is_pretraining', False),
                 document_column_name=algorithm_params.get('document_column_name'),
             )
-            algorithm_params['validation_data_path'] = validation_data_path
 
         # adjust arguments to align with the API definition
         training_args_pre = {k: v for k, v in algorithm_params.items() if k in training_args_fields and v is not None}
         training_args_pre['data_path'] = training_ready_data_path  # replaces raw data path with processed
+        if validation_ready_data_path is not None:
+            training_args_pre['validation_data_path'] = validation_ready_data_path
 
         # Construct PretrainingConfig for mini-trainer if pretraining mode
         if algorithm_params.get('is_pretraining', False):
