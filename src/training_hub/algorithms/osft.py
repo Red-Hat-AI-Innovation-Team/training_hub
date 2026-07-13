@@ -198,6 +198,11 @@ class OSFTAlgorithm(Algorithm):
                 'Provide one or the other, not both.'
             )
 
+        if eval_data_path is not None and (validation_frequency is None or validation_frequency <= 0):
+            raise ValueError(
+                'validation_frequency must be provided and positive when eval_data_path is set.'
+            )
+
         if not is_pretraining and block_size is not None:
             warnings.warn('block_size only valid with is_pretraining=True', stacklevel=2)
 
