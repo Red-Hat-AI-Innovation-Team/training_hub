@@ -182,16 +182,14 @@ class UnslothLoRABackend(Backend):
                 processing_class=tokenizer_or_processor,
                 train_dataset=train_dataset,
                 args=training_args,
-                max_seq_length=training_params.get('max_seq_len', 2048),
                 data_collator=data_collator,
             )
         else:
             trainer = SFTTrainer(
                 model=model,
-                tokenizer=tokenizer_or_processor,
+                processing_class=tokenizer_or_processor,
                 train_dataset=train_dataset,
                 args=training_args,
-                max_seq_length=training_params.get('max_seq_len', 2048),
             )
 
         # Add custom callback for JSONL logging (consistent with SFT/OSFT backends)
@@ -528,6 +526,7 @@ class UnslothLoRABackend(Backend):
 
         training_args = SFTConfig(
             output_dir=params['ckpt_output_dir'],
+            max_length=params.get('max_seq_len', 2048),
             num_train_epochs=num_epochs,
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
