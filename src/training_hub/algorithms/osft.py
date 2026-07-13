@@ -153,10 +153,10 @@ class OSFTAlgorithm(Algorithm):
             document_column_name (str | None):
                 Column name containing raw documents when `is_pretraining=True`.
                 Defaults to "document" when not provided.
-            eval_data_path (str): Path to a separate evaluation/validation dataset (JSONL).
+            eval_data_path (str | None): Path to a separate evaluation/validation dataset (JSONL).
                 When provided, this dataset is loaded independently for validation instead of
                 splitting the training data. Mutually exclusive with validation_split.
-            validation_frequency (int): Frequency of validation evaluation in training steps.
+            validation_frequency (int | None): Frequency of validation evaluation in training steps.
                 Required when eval_data_path is provided.
             nproc_per_node (Literal['auto', 'gpu'] | int): Number of processes (GPUs) per node for distributed training.
             nnodes (int): Total number of nodes for distributed training.
@@ -190,6 +190,12 @@ class OSFTAlgorithm(Algorithm):
         if is_pretraining and unmask_messages:
             raise ValueError(
                 'Cannot use both is_pretraining=True and unmask_messages=True. These are mutually exclusive modes.'
+            )
+
+        if eval_data_path is not None and kwargs.get('validation_split', 0.0) > 0.0:
+            raise ValueError(
+                'eval_data_path and validation_split are mutually exclusive. '
+                'Provide one or the other, not both.'
             )
 
         if not is_pretraining and block_size is not None:
@@ -477,11 +483,11 @@ class MiniTrainerOSFTBackend(Backend):
         )
 
         # Process eval data if a separate eval dataset is provided
-        eval_data_path = algorithm_params.get('validation_data_path', None)
-        if eval_data_path is not None:
+        validation_data_path = algorithm_params.get('validation_data_path', None)
+        if validation_data_path is not None:
             eval_output_dir = os.path.join(data_output_dir, '_eval_data')
-            eval_data_path = self._process_data(
-                data_path=eval_data_path,
+            validation_data_path = self._process_data(
+                data_path=validation_data_path,
                 model_name_or_path=algorithm_params['model_name_or_path'],
                 output_dir=eval_output_dir,
                 max_seq_len=algorithm_params['max_seq_len'],
@@ -491,7 +497,7 @@ class MiniTrainerOSFTBackend(Backend):
                 is_pretraining=algorithm_params.get('is_pretraining', False),
                 document_column_name=algorithm_params.get('document_column_name'),
             )
-            algorithm_params['validation_data_path'] = eval_data_path
+            algorithm_params['validation_data_path'] = validation_data_path
 
         # adjust arguments to align with the API definition
         training_args_pre = {k: v for k, v in algorithm_params.items() if k in training_args_fields and v is not None}
@@ -707,7 +713,8 @@ def osft(
             Defaults to the backend's document-column default when not provided.
         eval_data_path: Path to a separate evaluation/validation dataset (JSONL).
             When provided, this dataset is loaded independently for validation
-            instead of splitting the training data.
+            instead of splitting the training data. Mutually exclusive with
+            ``validation_split``.
         validation_frequency: Frequency of validation evaluation in training steps.
             Required when eval_data_path is provided.
         lr_scheduler: Name of the PyTorch learning-rate scheduler to use.
