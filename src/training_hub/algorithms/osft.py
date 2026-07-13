@@ -60,6 +60,9 @@ class OSFTAlgorithm(Algorithm):
         is_pretraining: bool | None = None,
         block_size: int | None = None,
         document_column_name: str | None = None,
+        # Validation parameters
+        eval_data_path: str | None = None,
+        validation_frequency: int | None = None,
         # Torchrun parameters for multi-node support
         nproc_per_node: Literal['auto', 'gpu'] | int | None = None,
         nnodes: int | None = None,
@@ -150,6 +153,11 @@ class OSFTAlgorithm(Algorithm):
             document_column_name (str | None):
                 Column name containing raw documents when `is_pretraining=True`.
                 Defaults to "document" when not provided.
+            eval_data_path (str | None): Path to a separate evaluation/validation dataset (JSONL).
+                When provided, this dataset is loaded independently for validation instead of
+                splitting the training data. Mutually exclusive with validation_split.
+            validation_frequency (int | None): Frequency of validation evaluation in training steps.
+                Required when eval_data_path is provided.
             nproc_per_node (Literal['auto', 'gpu'] | int): Number of processes (GPUs) per node for distributed training.
             nnodes (int): Total number of nodes for distributed training.
             node_rank (int): Rank of this node (0 to nnodes-1) for distributed training.
@@ -184,6 +192,17 @@ class OSFTAlgorithm(Algorithm):
                 'Cannot use both is_pretraining=True and unmask_messages=True. These are mutually exclusive modes.'
             )
 
+        if eval_data_path is not None and kwargs.get('validation_split', 0.0) > 0.0:
+            raise ValueError(
+                'eval_data_path and validation_split are mutually exclusive. '
+                'Provide one or the other, not both.'
+            )
+
+        if eval_data_path is not None and (validation_frequency is None or validation_frequency <= 0):
+            raise ValueError(
+                'validation_frequency must be provided and positive when eval_data_path is set.'
+            )
+
         if not is_pretraining and block_size is not None:
             warnings.warn('block_size only valid with is_pretraining=True', stacklevel=2)
 
@@ -208,6 +227,9 @@ class OSFTAlgorithm(Algorithm):
             'is_pretraining': is_pretraining,
             'block_size': block_size,
             'document_column_name': document_column_name,
+            # validation params
+            'eval_data_path': eval_data_path,
+            'validation_frequency': validation_frequency,
             # scheduler params
             'lr_scheduler': lr_scheduler,
             'lr_scheduler_kwargs': lr_scheduler_kwargs,
@@ -295,6 +317,8 @@ class OSFTAlgorithm(Algorithm):
             'is_pretraining': bool,
             'block_size': int,
             'document_column_name': str,
+            'eval_data_path': str,
+            'validation_frequency': int,
             'nproc_per_node': Literal['auto', 'gpu'] | int,
             'nnodes': int,
             'node_rank': int,
@@ -412,6 +436,7 @@ class MiniTrainerOSFTBackend(Backend):
             'num_epochs': 'max_epochs',
             'effective_batch_size': 'batch_size',
             'ckpt_output_dir': 'output_dir',
+            'eval_data_path': 'validation_data_path',
         }
 
         # Rename parameters before sending to backend
@@ -462,9 +487,28 @@ class MiniTrainerOSFTBackend(Backend):
             document_column_name=algorithm_params.get('document_column_name'),
         )
 
+        # Process eval data if a separate eval dataset is provided
+        validation_ready_data_path = None
+        raw_validation_data_path = algorithm_params.get('validation_data_path', None)
+        if raw_validation_data_path is not None:
+            eval_output_dir = os.path.join(data_output_dir, '_eval_data')
+            validation_ready_data_path = self._process_data(
+                data_path=raw_validation_data_path,
+                model_name_or_path=algorithm_params['model_name_or_path'],
+                output_dir=eval_output_dir,
+                max_seq_len=algorithm_params['max_seq_len'],
+                num_cpu_procs=8,
+                use_processed_dataset=algorithm_params.get('use_processed_dataset', False),
+                unmask_messages=algorithm_params.get('unmask_messages', False),
+                is_pretraining=algorithm_params.get('is_pretraining', False),
+                document_column_name=algorithm_params.get('document_column_name'),
+            )
+
         # adjust arguments to align with the API definition
         training_args_pre = {k: v for k, v in algorithm_params.items() if k in training_args_fields and v is not None}
         training_args_pre['data_path'] = training_ready_data_path  # replaces raw data path with processed
+        if validation_ready_data_path is not None:
+            training_args_pre['validation_data_path'] = validation_ready_data_path
 
         # Construct PretrainingConfig for mini-trainer if pretraining mode
         if algorithm_params.get('is_pretraining', False):
@@ -586,6 +630,8 @@ def osft(
     is_pretraining: bool | None = None,
     block_size: int | None = None,
     document_column_name: str | None = None,
+    eval_data_path: str | None = None,
+    validation_frequency: int | None = None,
     lr_scheduler: str | None = None,
     warmup_steps: int | None = None,
     lr_scheduler_kwargs: dict[str, str] | None = None,
@@ -672,6 +718,12 @@ def osft(
             `is_pretraining` is True. Passed to mini-trainer for block-based sampling.
         document_column_name: Column containing raw documents when pretraining.
             Defaults to the backend's document-column default when not provided.
+        eval_data_path: Path to a separate evaluation/validation dataset (JSONL).
+            When provided, this dataset is loaded independently for validation
+            instead of splitting the training data. Mutually exclusive with
+            ``validation_split``.
+        validation_frequency: Frequency of validation evaluation in training steps.
+            Required when eval_data_path is provided.
         lr_scheduler: Name of the PyTorch learning-rate scheduler to use.
         warmup_steps: Number of warmup steps for the learning-rate scheduler.
         lr_scheduler_kwargs: Additional keyword arguments passed to the scheduler.
@@ -731,6 +783,8 @@ def osft(
         is_pretraining=is_pretraining,
         block_size=block_size,
         document_column_name=document_column_name,
+        eval_data_path=eval_data_path,
+        validation_frequency=validation_frequency,
         lr_scheduler=lr_scheduler,
         warmup_steps=warmup_steps,
         lr_scheduler_kwargs=lr_scheduler_kwargs,
