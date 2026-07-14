@@ -24,8 +24,11 @@ pip install -e .
 # Install with LoRA support
 pip install -e .[lora]
 
-# Install with GRPO support (includes ART + verl backends)
+# Install with GRPO support (ART backend only — suitable for AIPCC index)
 pip install -e .[grpo,lora]
+
+# Install with GRPO verl backend (requires verl, not on AIPCC index)
+pip install -e .[grpo-verl,lora]
 
 # Install with CUDA support (install sequentially after other extras)
 pip install -e .[cuda] --no-build-isolation
@@ -297,6 +300,9 @@ These are process lessons — not what broke, but what could have been done bett
 - **ART has two sets of config: `init_args` (Unsloth) and `engine_args` (vLLM).** Parameters that affect vLLM (like `gpu_memory_utilization`) must be set in `engine_args`, not just `init_args`. ART reads `engine_args` directly when constructing `AsyncEngineArgs` for vLLM. If a parameter is missing from `engine_args`, vLLM uses its default (e.g., `gpu_memory_utilization=0.9`), which will OOM when Unsloth already holds model weights on the same GPU.
 - **vLLM V1 is the only engine in vLLM 0.15+.** The `VLLM_USE_V1=0` env var was removed in vLLM ~0.12. Do not attempt to force the V0 engine — it does not exist. vLLM V1 eagerly validates LoRA adapter paths on `add_lora`; if a checkpoint doesn't exist yet, create a seed adapter (see `_create_seed_lora_checkpoint`).
 - **vLLM engine core errors are hidden in subprocess logs.** When `AsyncLLM.from_engine_args` fails with `RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}`, the actual error is in the EngineCore subprocess stderr, NOT the parent process. To find it, grep for `EngineCore_DP0.*ERROR` in the full output. Common causes: flashinfer version mismatch, GPU memory exhaustion, incompatible torch version for compiled extensions.
+- **trl 1.x renames `tokenizer` to `processing_class` in `SFTTrainer`.** trl 1.x follows the same rename as `transformers.Trainer`. Code passing `tokenizer=...` as a `SFTTrainer` kwarg must change to `processing_class=...`. The VLM path may already use `processing_class` — verify both text-only and VLM branches when upgrading trl.
+- **ART 0.5.18 unconditional megatron imports require stub injection.** ART 0.5.18 added Qwen3.5 Megatron support with module-level imports from `megatron.core` and `megatron.bridge` that fire even when using the non-Megatron Unsloth backend. Install `megatron-core` with `--no-deps` (~2 MB) for the real module, and inject stub modules for `megatron.bridge.*` into `sys.modules` before `import art` in `_subprocess_entry`. The stub should be removed when ART makes the megatron import lazy.
+- **verl is in a separate `[grpo-verl]` extra, not `[grpo]`.** verl is not available on the AIPCC package index, so the `[grpo]` extra only installs the ART backend. Use `pip install -e .[grpo-verl]` when the verl backend is needed. This split enables `[grpo]` to resolve against constrained enterprise indexes that don't carry verl.
 
 ### Past Incidents (reference for future debugging)
 
@@ -377,6 +383,7 @@ Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 
 - **vLLM `sample_tokens` timeout on GDN models.** Qwen3.5-9B with 29K+ token prompts exceeded the 300s default `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`. The vLLM worker appeared to hang and the engine reported `EngineDeadError`. Fix: increase timeout to 1200s. Lesson: GDN linear attention is slower per token than standard attention — timeout values calibrated for transformer models may be too low.
 - **FLA fused kernels crash without `tilelang` on Hopper.** `RuntimeError: Triton >= 3.4.0 on Hopper GPUs produces incorrect results for gated chunk_bwd_dqkwg (see #640). Please install tilelang`. The error message is clear and actionable — just `pip install tilelang`.
 - **21 min/step without FLA vs 3.3 min/step with FLA.** The `[transformers] The fast path is not available because one of the required library is not installed` warning is easy to miss. Without FLA, GDN layers use a decomposed fallback that is 10-50x slower. Always install `flash-linear-attention` when training GDN/Qwen3.5 models.
+- **ART 0.5.18 `ModuleNotFoundError: No module named 'megatron.bridge'`:** ART 0.5.18 added unconditional module-level imports from `megatron.core` and `megatron.bridge` for Qwen3.5 Megatron support. These fire even on the Unsloth (non-Megatron) backend path. `megatron-core` can be installed standalone (`--no-deps`, ~2 MB), but `megatron.bridge` has no standalone package. Fix: inject placeholder stub modules into `sys.modules` before `import art` in `_subprocess_entry`. Lesson: when a dependency adds unconditional imports for a feature you don't use, stub injection in the subprocess is safer than trying to install the full dependency tree — but tie the stub list to the specific version and plan to remove it when the import becomes lazy.
 
 ### verl Backend Reference Configuration
 
