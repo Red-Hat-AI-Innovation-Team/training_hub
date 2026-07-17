@@ -24,8 +24,11 @@ pip install -e .
 # Install with LoRA support
 pip install -e .[lora]
 
-# Install with GRPO support (includes ART + verl backends)
+# Install with GRPO support (ART backend)
 pip install -e .[grpo,lora]
+
+# Install with GRPO + verl backend
+pip install -e .[grpo-verl,lora]
 
 # Install with CUDA support (install sequentially after other extras)
 pip install -e .[cuda] --no-build-isolation
@@ -185,7 +188,8 @@ Each algorithm has validation logic in its `train()` method. Read the method doc
 Install extras sequentially — `[grpo]` and `[cuda]` have conflicting transitive
 dependencies that the solver can resolve when installed in order:
 ```bash
-pip install -e .[grpo,lora]           # GRPO backends (ART + verl)
+pip install -e .[grpo,lora]           # GRPO ART backend
+pip install -e .[grpo-verl,lora]      # GRPO ART + verl backends (verl is separate extra)
 pip install -e .[cuda] --no-build-isolation  # CUDA kernels (after grpo)
 ```
 
@@ -297,6 +301,9 @@ These are process lessons — not what broke, but what could have been done bett
 - **ART has two sets of config: `init_args` (Unsloth) and `engine_args` (vLLM).** Parameters that affect vLLM (like `gpu_memory_utilization`) must be set in `engine_args`, not just `init_args`. ART reads `engine_args` directly when constructing `AsyncEngineArgs` for vLLM. If a parameter is missing from `engine_args`, vLLM uses its default (e.g., `gpu_memory_utilization=0.9`), which will OOM when Unsloth already holds model weights on the same GPU.
 - **vLLM V1 is the only engine in vLLM 0.15+.** The `VLLM_USE_V1=0` env var was removed in vLLM ~0.12. Do not attempt to force the V0 engine — it does not exist. vLLM V1 eagerly validates LoRA adapter paths on `add_lora`; if a checkpoint doesn't exist yet, create a seed adapter (see `_create_seed_lora_checkpoint`).
 - **vLLM engine core errors are hidden in subprocess logs.** When `AsyncLLM.from_engine_args` fails with `RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}`, the actual error is in the EngineCore subprocess stderr, NOT the parent process. To find it, grep for `EngineCore_DP0.*ERROR` in the full output. Common causes: flashinfer version mismatch, GPU memory exhaustion, incompatible torch version for compiled extensions.
+- **ART 0.5.18+ has unconditional megatron imports that require stubs.** ART 0.5.18 added Qwen3.5 Megatron support with module-level imports from `megatron.core` and `megatron.bridge` that fire even on the non-Megatron Unsloth backend. `megatron-core` can be installed with `--no-deps`, but `megatron.bridge` is not available standalone. Training Hub installs placeholder stubs into `sys.modules` in `_subprocess_entry` (before `import art`) to satisfy the import graph. The stubs try `__import__` first to avoid shadowing real installs. If ART adds new megatron sub-module imports in future versions, update the stub list (grep: `grep -r 'from megatron.bridge' /path/to/art/`).
+- **trl 1.x renamed `tokenizer` to `processing_class` in SFTTrainer and `max_seq_length` to `max_length` in SFTConfig.** The `tokenizer` parameter was removed in TRL 0.16.0; `max_seq_length` was renamed to `max_length` in TRL 0.16+ and the old name removed in TRL 0.20+. When upgrading trl, check both SFTTrainer constructor args and SFTConfig fields. The VLM branch may need different handling from the text-only branch.
+- **ODH Unsloth fork is required for transformers 5.13.x+.** Upstream Unsloth is incompatible with transformers 5.13.x. Install the ODH fork with `--no-deps`: `uv pip install unsloth@git+https://github.com/opendatahub-io/unsloth@v2026.6.9+rhaiv.1 --no-deps` + `uv pip install unsloth_zoo --no-deps`.
 
 ### Past Incidents (reference for future debugging)
 
@@ -355,6 +362,7 @@ These lessons apply to models larger than Qwen3-4B on 80GB H100s with co-located
 - **OSFT V-projection uses factored form (not Gram matrix).** The original `dV -= dV @ (V_high^T @ V_high)` was replaced with `dV -= (dV @ V_high^T) @ V_high` (mini_trainer PR #74). Under FSDP2, this replaces an (M, M) all-reduce with a (k_high, M) all-gather — up to 25% speedup on 8B models. Optional caching of the all-gathered V_high is available via `OSFT_CACHE_V=1` (off by default).
 - **OSFT supports on-demand checkpointing and auto-resume.** With `on_demand_checkpointing=True`, the training loop responds to termination signals (SIGTERM, SIGUSR1/2, etc.) by saving full state via `torch.distributed.checkpoint`. On restart, if no explicit `resume_from_full_state_checkpoint` is provided, it auto-detects the latest valid checkpoint from `{output_dir}/full_state_checkpoints/step_*/training_state.pt`.
 - **The checkpoint trigger file is now product-agnostic.** Changed from `mini_trainer_checkpoint_trigger` to `checkpoint_requested`. Customizable via `CHECKPOINT_TRIGGER_FILENAME` env var.
+- **Do not convert state dict dtypes based on meta-device parameters.** `nn.Embedding` defaults to float32 on meta device regardless of `config.torch_dtype`. In the OSFT distributed loading path, rank 0 loads the model with `torch_dtype=train_dtype` (bfloat16), but the meta-device model captures `embed_tokens.weight` as float32 in the parameter registry. If `post_fsdp2_wrap_synchronize_state_dict_across_procs` converts state dict values to match the registry, it reverts bfloat16 back to float32, breaking FSDP2 training. The state dict from rank 0 is already in the correct training dtype — do not convert it based on meta-device dtypes.
 
 ### Qwen3.5 (GatedDeltaNet) Specific
 
@@ -377,6 +385,9 @@ Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 
 - **vLLM `sample_tokens` timeout on GDN models.** Qwen3.5-9B with 29K+ token prompts exceeded the 300s default `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS`. The vLLM worker appeared to hang and the engine reported `EngineDeadError`. Fix: increase timeout to 1200s. Lesson: GDN linear attention is slower per token than standard attention — timeout values calibrated for transformer models may be too low.
 - **FLA fused kernels crash without `tilelang` on Hopper.** `RuntimeError: Triton >= 3.4.0 on Hopper GPUs produces incorrect results for gated chunk_bwd_dqkwg (see #640). Please install tilelang`. The error message is clear and actionable — just `pip install tilelang`.
 - **21 min/step without FLA vs 3.3 min/step with FLA.** The `[transformers] The fast path is not available because one of the required library is not installed` warning is easy to miss. Without FLA, GDN layers use a decomposed fallback that is 10-50x slower. Always install `flash-linear-attention` when training GDN/Qwen3.5 models.
+- **OSFT embed_tokens.weight reverted to float32 by meta-device dtype conversion.** In the distributed OSFT loading path, rank 0 loads the model in bfloat16 but the meta-device model captures `nn.Embedding` weight as float32 (PyTorch default for embeddings on meta device). `post_fsdp2_wrap_synchronize_state_dict_across_procs` converted the bfloat16 state dict value back to float32 to match the registry, breaking FSDP2 training. Fix: store non-OSFT parameter tensors as-is without dtype conversion — the rank 0 state dict is already in the correct training dtype. Lesson: meta-device initialization does not respect `config.torch_dtype` for all layer types; never use meta-device dtypes as the authoritative source for state dict conversion.
+- **ART 0.5.18 broke `import art` without megatron packages.** ART 0.5.18's Qwen3.5 Megatron support added unconditional module-level imports from `megatron.bridge.*` that fire even on the Unsloth backend path. `import art` fails with `ModuleNotFoundError: No module named 'megatron.bridge'`. Fix: install placeholder `sys.modules` stubs for `megatron.bridge` sub-modules before `import art` in `_subprocess_entry`. The stubs try `__import__` first to avoid shadowing real megatron-core installations. Lesson: when a dependency adds unconditional imports for an optional feature path, you may need import stubs to prevent breakage on the non-feature path.
+- **trl 1.x `TypeError` from renamed SFTTrainer/SFTConfig parameters.** Upgrading trl from 0.x to 1.x caused `TypeError: SFTTrainer.__init__() got an unexpected keyword argument 'tokenizer'` and similar for `max_seq_length` in SFTConfig. Fix: rename `tokenizer` to `processing_class` and `max_seq_length` to `max_length`. Lesson: trl follows transformers' parameter renames aggressively — when upgrading trl, grep for deprecated parameter names in the changelog and verify both SFTTrainer and SFTConfig fields.
 
 ### verl Backend Reference Configuration
 
@@ -429,4 +440,12 @@ language_model_only=True, use_fused_kernels=True
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200
 Requires: vllm==0.19.0, flash-linear-attention, tilelang, CUDA toolkit 12.5+
 Step time: ~3.3 min/step, reward 0.85+ by epoch 2
+
+# AIPCC 3.5 GA validated environment (July 2026)
+# Install: uv pip install -e ".[lora,grpo]" → uv pip install -e ".[cuda]" --no-build-isolation
+#          → uv pip install unsloth@git+https://github.com/opendatahub-io/unsloth@v2026.6.9+rhaiv.1 --no-deps
+#          + uv pip install unsloth_zoo --no-deps
+# Versions: transformers=5.13.1, trl=1.8.0, kernels=0.16.0, unsloth=2026.6.9 (ODH fork)
+# openpipe-art>=0.5.18 (requires megatron stub in _subprocess_entry)
+# Validated 5/8 text models for LoRA on 8x A100-SXM4-80GB
 ```
