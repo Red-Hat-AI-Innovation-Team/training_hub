@@ -808,9 +808,9 @@ class VeRLLoRAGRPOBackend(Backend):
 
         # Validate batch divisibility — verl requires total rollouts
         # (prompt_batch_size * group_size) to be evenly divisible by
-        # the number of agent loop workers (n_gpus * 4 by default).
+        # the number of agent loop workers (n_gpus * nnodes * 4 by default).
         total_rollouts = prompt_batch_size * group_size
-        n_workers = n_gpus * 4  # verl default: 4 agent loop workers per GPU
+        n_workers = n_gpus * nnodes * 4
         if total_rollouts % n_workers != 0:
             # Find next valid prompt_batch_size (must produce total divisible by n_workers)
             suggested = prompt_batch_size + 1
@@ -819,7 +819,7 @@ class VeRLLoRAGRPOBackend(Backend):
             raise ValueError(
                 f"prompt_batch_size ({prompt_batch_size}) * group_size ({group_size}) "
                 f"= {total_rollouts} must be divisible by the number of agent workers "
-                f"({n_workers} = n_gpus * 4). Try prompt_batch_size={suggested}."
+                f"({n_workers} = n_gpus * nnodes * 4). Try prompt_batch_size={suggested}."
             )
         use_dr_grpo = algorithm_params.get("use_dr_grpo", True)
 
@@ -828,10 +828,11 @@ class VeRLLoRAGRPOBackend(Backend):
         # batch size should NOT be multiplied by group_size.
         train_batch_size = prompt_batch_size
 
-        # ppo_mini_batch_size must be divisible by n_gpus (world_size)
+        # ppo_mini_batch_size must be divisible by world_size (n_gpus * nnodes)
         ppo_mini_batch_size = min(train_batch_size, 256)
-        if ppo_mini_batch_size % n_gpus != 0:
-            ppo_mini_batch_size = max(n_gpus, (ppo_mini_batch_size // n_gpus) * n_gpus)
+        world_size = n_gpus * nnodes
+        if ppo_mini_batch_size % world_size != 0:
+            ppo_mini_batch_size = max(world_size, (ppo_mini_batch_size // world_size) * world_size)
 
         # Calculate steps per epoch for checkpoint frequency.
         # Default: save once per epoch. Can be overridden via saves_per_epoch.
@@ -1048,6 +1049,7 @@ class VeRLLoRAGRPOBackend(Backend):
                     entry = {
                         "step": step,
                         "epoch": raw.get("training/epoch", 0),
+                        "max_steps": num_iterations,
                         "mean_reward": raw.get("critic/score/mean", 0),
                         "loss": raw.get("actor/pg_loss"),
                         "grad_norm": raw.get("actor/grad_norm"),
@@ -1098,6 +1100,7 @@ class VeRLLoRAGRPOBackend(Backend):
                     entry = {
                         "step": step,
                         "epoch": raw.get("training/epoch", 0),
+                        "max_steps": num_iterations,
                         "mean_reward": raw.get("critic/score/mean", 0),
                         "loss": raw.get("actor/pg_loss"),
                         "grad_norm": raw.get("actor/grad_norm"),

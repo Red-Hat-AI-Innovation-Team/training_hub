@@ -8,6 +8,7 @@ from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
+from .profiling.preflight import preflight_check, optimize_config, validate_and_fix
 from .algorithms.its_rollout import ITSRollout
 from .visualization import plot_loss
 
@@ -43,6 +44,9 @@ __all__ = [
     'LoRAEstimator',
     'QLoRAEstimator',
     'estimate',
+    'preflight_check',
+    'optimize_config',
+    'validate_and_fix',
     'ITSRollout',
     'plot_loss',
 ]
