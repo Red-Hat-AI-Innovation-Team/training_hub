@@ -173,6 +173,21 @@ Loggers are automatically enabled when their configuration parameters are set:
 
 > **Note:** OSFT does not support TensorBoard logging.
 
+###### Validation
+
+See the [Validation Loss Guide](/guides/validation-loss) for full details.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation. Mutually exclusive with `validation_data_path`. |
+| `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. Tokenized automatically. Mutually exclusive with `validation_split`. |
+| `validation_frequency` | `int` | `None` | Run validation every N training steps. |
+| `validate_at_epoch` | `bool` | `None` | Run validation at the end of each epoch. |
+| `min_samples_per_validation` | `int` | `None` | Minimum accumulated samples between validation runs. |
+| `validate_at_final` | `bool` | `None` | Run validation at the end of training. |
+| `save_best_val_loss` | `bool` | `None` | Save a checkpoint whenever validation loss improves. |
+| `val_loss_improvement_threshold` | `float` | `None` | Minimum improvement to trigger a best-val-loss checkpoint save. |
+
 ###### Additional Backend Parameters
 
 | Parameter | Type | Default | Description |
@@ -264,6 +279,14 @@ Returns the optional parameters for OSFT.
     "beta2": float,
     "eps": float,
     "weight_decay": float,
+    "validation_split": float,
+    "validation_data_path": str,
+    "validation_frequency": int,
+    "validate_at_epoch": bool,
+    "min_samples_per_validation": int,
+    "validate_at_final": bool,
+    "save_best_val_loss": bool,
+    "val_loss_improvement_threshold": float,
     # Plus additional backend-specific parameters via **kwargs
 }
 ```

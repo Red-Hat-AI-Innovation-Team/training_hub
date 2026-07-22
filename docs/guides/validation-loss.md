@@ -11,7 +11,7 @@ Training Hub supports validation loss monitoring through its underlying backends
 | [LoRA](/api/functions/lora_sft) | [Unsloth](/api/backends/unsloth) | No | No |
 | [LoRA GRPO](/api/functions/lora_grpo) | [ART](/api/backends/art-grpo) / [verl](/api/backends/verl) | No | No |
 
-?> **Validation loss is not a first-class Training Hub parameter yet.** SFT and OSFT support it through their backends via `**kwargs`. Pass the backend-native parameter names listed below directly to the convenience function or `Algorithm.train()` call.
+?> **OSFT validation parameters are first-class.** As of mini-trainer v0.9.0, OSFT supports validation data, event-based triggers, and best-val-loss checkpointing as named parameters on `osft()` and `OSFTAlgorithm.train()`. SFT still supports validation through `**kwargs`.
 
 ## How It Works
 
@@ -70,14 +70,30 @@ result = sft(
 
 ## OSFT (mini-trainer backend)
 
-### Parameters
+As of mini-trainer v0.9.0, OSFT validation parameters are first-class — pass them directly to `osft()` or `OSFTAlgorithm.train()`.
 
-Pass these as `**kwargs` to `osft()` or `OSFTAlgorithm.train()`:
+### Validation Data Sources
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation. Range: `[0.0, 1.0)`. Setting `0.0` (default) disables validation. |
-| `validation_frequency` | `int` | `None` | How often to run validation, in training steps. **Required** when `validation_split > 0`. |
+| `validation_split` | `float` | `0.0` | Fraction of training data to hold out for validation. Range: `[0.0, 1.0)`. Mutually exclusive with `validation_data_path`. |
+| `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. Tokenized automatically. Mutually exclusive with `validation_split`. |
+
+### Validation Triggers
+
+At least one trigger must be configured when validation data is present. Multiple triggers can be combined; they are coalesced so validation runs at most once per step.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_frequency` | `int` | `None` | Run validation every N training steps. |
+| `validate_at_epoch` | `bool` | `False` | Run validation at the end of each epoch. |
+| `min_samples_per_validation` | `int` | `None` | Minimum accumulated samples between validation runs. Must be a positive integer. |
+| `validate_at_final` | `bool` | `False` | Run validation at the end of training. |
+
+### Best-Val-Loss Checkpointing
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
 | `save_best_val_loss` | `bool` | `False` | Save a checkpoint whenever validation loss improves. |
 | `val_loss_improvement_threshold` | `float` | `0.0` | Minimum improvement in validation loss required to trigger a best-val-loss checkpoint save. |
 
@@ -97,11 +113,7 @@ These appear in:
 - **wandb** (if configured)
 - **MLflow** (if configured)
 
-### Best-Val-Loss Checkpointing
-
-The mini-trainer backend can automatically save a checkpoint when validation loss improves. Enable this with `save_best_val_loss=True`. The checkpoint directory will have a `_best_val_loss` suffix.
-
-Use `val_loss_improvement_threshold` to require a minimum improvement before saving, which avoids excessive checkpoint writes when loss is plateauing:
+### Example: Step-Based Validation with Data Split
 
 ```python
 from training_hub import osft
@@ -116,23 +128,21 @@ result = osft(
     max_seq_len=1024,
     learning_rate=5e-6,
     num_epochs=5,
-    # Validation loss configuration
-    validation_split=0.1,                  # Hold out 10% of data
-    validation_frequency=100,              # Evaluate every 100 steps
-    # Best-val-loss checkpointing
-    save_best_val_loss=True,               # Save checkpoint on improvement
-    val_loss_improvement_threshold=0.01,   # Require at least 0.01 improvement
+    validation_split=0.1,
+    validation_frequency=100,
+    save_best_val_loss=True,
+    val_loss_improvement_threshold=0.01,
 )
 ```
 
-### Basic Example
+### Example: Separate Validation Dataset with Event-Based Triggers
 
 ```python
 from training_hub import osft
 
 result = osft(
     model_path="meta-llama/Llama-3.1-8B-Instruct",
-    data_path="./continual_learning_data.jsonl",
+    data_path="./train_data.jsonl",
     ckpt_output_dir="./checkpoints",
     unfreeze_rank_ratio=0.25,
     effective_batch_size=32,
@@ -141,9 +151,32 @@ result = osft(
     learning_rate=2e-5,
     num_epochs=3,
     nproc_per_node=4,
-    # Validation loss configuration
-    validation_split=0.1,        # Hold out 10% of data
-    validation_frequency=50,     # Evaluate every 50 steps
+    validation_data_path="./val_data.jsonl",
+    validate_at_epoch=True,
+    validate_at_final=True,
+)
+```
+
+### Example: Multiple Triggers Combined
+
+```python
+from training_hub import osft
+
+result = osft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=1024,
+    learning_rate=5e-6,
+    num_epochs=5,
+    validation_split=0.1,
+    validation_frequency=200,
+    validate_at_epoch=True,
+    validate_at_final=True,
+    save_best_val_loss=True,
 )
 ```
 

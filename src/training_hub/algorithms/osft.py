@@ -76,6 +76,15 @@ class OSFTAlgorithm(Algorithm):
         mlflow_tracking_uri: str | None = None,
         mlflow_experiment_name: str | None = None,
         mlflow_run_name: str | None = None,
+        # Validation
+        validation_split: float | None = None,
+        validation_data_path: str | None = None,
+        validation_frequency: int | None = None,
+        validate_at_epoch: bool | None = None,
+        min_samples_per_validation: int | None = None,
+        validate_at_final: bool | None = None,
+        save_best_val_loss: bool | None = None,
+        val_loss_improvement_threshold: float | None = None,
         # Model loading
         trust_remote_code: bool | None = None,
         **kwargs,
@@ -165,6 +174,16 @@ class OSFTAlgorithm(Algorithm):
             mlflow_tracking_uri (str): MLflow tracking server URI.
             mlflow_experiment_name (str): MLflow experiment name.
             mlflow_run_name (str): MLflow run name.
+            validation_split (float): Fraction of training data to hold out for validation (0.0 to 1.0).
+                Mutually exclusive with validation_data_path.
+            validation_data_path (str): Path to a separate validation dataset in JSONL format.
+                Mutually exclusive with validation_split.
+            validation_frequency (int): Run validation every N training steps.
+            validate_at_epoch (bool): Whether to run validation at the end of each epoch.
+            min_samples_per_validation (int): Minimum accumulated samples between validation runs.
+            validate_at_final (bool): Whether to run validation at the end of training.
+            save_best_val_loss (bool): Save a checkpoint whenever validation loss improves.
+            val_loss_improvement_threshold (float): Minimum improvement to trigger a best-val-loss checkpoint.
             **kwargs: Additional parameters passed to the backend.
 
         Returns:
@@ -182,6 +201,12 @@ class OSFTAlgorithm(Algorithm):
         if is_pretraining and unmask_messages:
             raise ValueError(
                 'Cannot use both is_pretraining=True and unmask_messages=True. These are mutually exclusive modes.'
+            )
+
+        if validation_data_path is not None and validation_split is not None and validation_split > 0:
+            raise ValueError(
+                'validation_data_path and validation_split are mutually exclusive. '
+                'Provide either a separate validation dataset or a split fraction, not both.'
             )
 
         if not is_pretraining and block_size is not None:
@@ -239,6 +264,15 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': mlflow_tracking_uri,
             'mlflow_experiment_name': mlflow_experiment_name,
             'mlflow_run_name': mlflow_run_name,
+            # validation
+            'validation_split': validation_split,
+            'validation_data_path': validation_data_path,
+            'validation_frequency': validation_frequency,
+            'validate_at_epoch': validate_at_epoch,
+            'min_samples_per_validation': min_samples_per_validation,
+            'validate_at_final': validate_at_final,
+            'save_best_val_loss': save_best_val_loss,
+            'val_loss_improvement_threshold': val_loss_improvement_threshold,
             # model loading
             'trust_remote_code': trust_remote_code,
         }
@@ -310,6 +344,15 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': str,
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
+            # validation
+            'validation_split': float,
+            'validation_data_path': str,
+            'validation_frequency': int,
+            'validate_at_epoch': bool,
+            'min_samples_per_validation': int,
+            'validate_at_final': bool,
+            'save_best_val_loss': bool,
+            'val_loss_improvement_threshold': float,
         }
 
     def _validate_param_types(self, params: dict[str, any]):
@@ -450,17 +493,34 @@ class MiniTrainerOSFTBackend(Backend):
 
         # since mini trainer itself does not process data, we delegate this to
         # a separate backend, and expect to receive the correct data path
+        use_processed_dataset = algorithm_params.get('use_processed_dataset', False)
         training_ready_data_path = self._process_data(
             data_path=algorithm_params['data_path'],  # should be there
             model_name_or_path=algorithm_params['model_name_or_path'],  # should be there
             output_dir=data_output_dir,
             max_seq_len=algorithm_params['max_seq_len'],
             num_cpu_procs=8,  # this is a safe default
-            use_processed_dataset=algorithm_params.get('use_processed_dataset', False),
+            use_processed_dataset=use_processed_dataset,
             unmask_messages=algorithm_params.get('unmask_messages', False),
             is_pretraining=algorithm_params.get('is_pretraining', False),
             document_column_name=algorithm_params.get('document_column_name'),
         )
+
+        # Process validation data if a separate validation dataset is provided
+        if (val_data_path := algorithm_params.get('validation_data_path')) is not None:
+            val_output_dir = os.path.join(data_output_dir, 'validation')
+            processed_val_path = self._process_data(
+                data_path=val_data_path,
+                model_name_or_path=algorithm_params['model_name_or_path'],
+                output_dir=val_output_dir,
+                max_seq_len=algorithm_params['max_seq_len'],
+                num_cpu_procs=8,
+                use_processed_dataset=use_processed_dataset,
+                unmask_messages=algorithm_params.get('unmask_messages', False),
+                is_pretraining=algorithm_params.get('is_pretraining', False),
+                document_column_name=algorithm_params.get('document_column_name'),
+            )
+            algorithm_params['validation_data_path'] = processed_val_path
 
         # adjust arguments to align with the API definition
         training_args_pre = {k: v for k, v in algorithm_params.items() if k in training_args_fields and v is not None}
@@ -613,6 +673,15 @@ def osft(
     mlflow_tracking_uri: str | None = None,
     mlflow_experiment_name: str | None = None,
     mlflow_run_name: str | None = None,
+    # Validation
+    validation_split: float | None = None,
+    validation_data_path: str | None = None,
+    validation_frequency: int | None = None,
+    validate_at_epoch: bool | None = None,
+    min_samples_per_validation: int | None = None,
+    validate_at_final: bool | None = None,
+    save_best_val_loss: bool | None = None,
+    val_loss_improvement_threshold: float | None = None,
     # Model loading
     trust_remote_code: bool | None = None,
     **kwargs,
@@ -698,6 +767,18 @@ def osft(
         mlflow_tracking_uri: MLflow tracking server URI.
         mlflow_experiment_name: MLflow experiment name.
         mlflow_run_name: MLflow run name.
+        validation_split: Fraction of training data to hold out for validation (0.0 to 1.0).
+            Mutually exclusive with ``validation_data_path``.
+        validation_data_path: Path to a separate validation dataset in JSONL format.
+            The dataset will be tokenized automatically. Mutually exclusive with
+            ``validation_split``.
+        validation_frequency: Run validation every N training steps.
+        validate_at_epoch: Run validation at the end of each epoch.
+        min_samples_per_validation: Minimum accumulated samples between validation runs.
+        validate_at_final: Run validation at the end of training.
+        save_best_val_loss: Save a checkpoint whenever validation loss improves.
+        val_loss_improvement_threshold: Minimum improvement in validation loss
+            required to trigger a best-val-loss checkpoint save.
         trust_remote_code: Whether to trust remote code when loading the model.
         **kwargs: Additional backend-specific parameters passed to the backend.
 
@@ -755,6 +836,14 @@ def osft(
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
+        validation_split=validation_split,
+        validation_data_path=validation_data_path,
+        validation_frequency=validation_frequency,
+        validate_at_epoch=validate_at_epoch,
+        min_samples_per_validation=min_samples_per_validation,
+        validate_at_final=validate_at_final,
+        save_best_val_loss=save_best_val_loss,
+        val_loss_improvement_threshold=val_loss_improvement_threshold,
         trust_remote_code=trust_remote_code,
         **kwargs,
     )
