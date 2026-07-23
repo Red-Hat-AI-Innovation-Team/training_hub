@@ -207,16 +207,17 @@ def _install_megatron_bridge_stub():
     class _StubMeta(type):
         """Metaclass that returns a new stub for any attribute access."""
         def __getattr__(cls, name):
-            logger.warning(
-                "megatron stub: attribute %s.%s accessed — stubs are import-only "
-                "placeholders; actual megatron functionality is not available",
-                cls.__name__, name,
-            )
-            return type(name, (), {"__init__": lambda self, *a, **kw: None})
+            return _Stub
+
+        def __call__(cls, *args, **kwargs):
+            return super().__call__(*args, **kwargs)
 
     class _Stub(metaclass=_StubMeta):
-        """A class whose attributes are all no-op classes."""
+        """A no-op class usable as value, decorator, or base class."""
         def __init__(self, *args, **kwargs):
+            pass
+
+        def __init_subclass__(cls, **kwargs):
             pass
 
     def _make_stub_module(fqn, is_package=True, attrs=None):
@@ -274,6 +275,7 @@ def _install_megatron_bridge_stub():
         def __getattr__(self, name):
             if name.startswith("__") and name.endswith("__"):
                 raise AttributeError(name)
+            logger.debug("Stub module %s: returning _Stub for attribute %r", self.__name__, name)
             return _Stub
 
     for fqn in sub_packages + leaf_modules:
@@ -283,7 +285,7 @@ def _install_megatron_bridge_stub():
 
     # Ensure megatron package itself and megatron.core exist as stubs if not
     # already installed (megatron-core --no-deps provides the real ones).
-    # Try real import first to avoid shadowing a real installation.
+    _used_stub = False
     for pkg in ("megatron", "megatron.core"):
         if pkg not in sys.modules:
             try:
@@ -294,8 +296,36 @@ def _install_megatron_bridge_stub():
                     pkg, type(exc).__name__, exc,
                 )
                 _make_stub_module(pkg)
+                _used_stub = True
 
-    logger.debug("Installed megatron.bridge stub modules for ART 0.5.18 compat")
+    # ART 0.5.18 imports from megatron.core.models, megatron.core.ssm, and
+    # other subpaths at module load time.  Enumerating them is fragile, so
+    # install a meta-path finder that auto-creates stub modules for any
+    # megatron.* import that hasn't been satisfied yet.
+    import importlib.abc
+    import importlib.machinery
+
+    class _MegatronStubFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if fullname.startswith("megatron.") and fullname not in sys.modules:
+                return importlib.machinery.ModuleSpec(fullname, _MegatronStubLoader(), is_package=True)
+            return None
+
+    class _MegatronStubLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            mod = _make_stub_module(spec.name)
+            mod.__class__ = _StubModuleType
+            return mod
+
+        def exec_module(self, module):
+            parts = module.__name__.rsplit(".", 1)
+            if len(parts) == 2 and parts[0] in sys.modules:
+                setattr(sys.modules[parts[0]], parts[1], module)
+
+    if _used_stub:
+        sys.meta_path.insert(0, _MegatronStubFinder())
+
+    logger.debug("Installed megatron stub modules for ART 0.5.18 compat")
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +886,22 @@ class ARTLoRAGRPOBackend(Backend):
 
             import art
             from art.local.backend import LocalBackend
+
+            # ART 0.5.18 passes reward_funcs=[] to GRPOTrainer, but trl 1.8+
+            # requires at least one reward source.  ART overrides compute_loss
+            # entirely, so the no-op is never called at runtime.
+            _noop_reward = lambda completions, **kw: [0.0] * len(completions)
+            import art.unsloth.train as _art_train
+            _OrigTrainer = _art_train.GRPOTrainer
+            class _GRPOTrainerWithDefaultReward(_OrigTrainer):
+                def __init__(self, *args, **kwargs):
+                    # reward_funcs is the 2nd positional param in trl GRPOTrainer
+                    if len(args) > 1 and not args[1]:
+                        args = (args[0], [_noop_reward]) + args[2:]
+                    elif not kwargs.get("reward_funcs"):
+                        kwargs["reward_funcs"] = [_noop_reward]
+                    super().__init__(*args, **kwargs)
+            _art_train.GRPOTrainer = _GRPOTrainerWithDefaultReward
             asyncio.run(
                 ARTLoRAGRPOBackend()._run_training(algorithm_params, art, LocalBackend)
             )
