@@ -165,7 +165,7 @@ See the [Validation Loss Guide](/guides/validation-loss) for full details.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation (`0.0` to `1.0`). Mutually exclusive with `validation_data_path`. |
+| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation (greater than `0.0`, less than `1.0`). Mutually exclusive with `validation_data_path`. |
 | `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. Tokenized automatically. Mutually exclusive with `validation_split`. |
 
 ##### Validation Triggers

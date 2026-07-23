@@ -174,8 +174,8 @@ class OSFTAlgorithm(Algorithm):
             mlflow_tracking_uri (str): MLflow tracking server URI.
             mlflow_experiment_name (str): MLflow experiment name.
             mlflow_run_name (str): MLflow run name.
-            validation_split (float): Fraction of training data to hold out for validation (0.0 to 1.0).
-                Mutually exclusive with validation_data_path.
+            validation_split (float): Fraction of training data to hold out for validation
+                (greater than 0.0, less than 1.0). Mutually exclusive with validation_data_path.
             validation_data_path (str): Path to a separate validation dataset in JSONL format.
                 Mutually exclusive with validation_split.
             validation_frequency (int): Run validation every N training steps.
@@ -207,6 +207,26 @@ class OSFTAlgorithm(Algorithm):
             raise ValueError(
                 'validation_data_path and validation_split are mutually exclusive. '
                 'Provide either a separate validation dataset or a split fraction, not both.'
+            )
+
+        if validation_split is not None and (validation_split < 0.0 or validation_split >= 1.0):
+            raise ValueError(
+                f'validation_split must be greater than 0.0 and less than 1.0, got {validation_split}'
+            )
+
+        if validation_frequency is not None and validation_frequency < 1:
+            raise ValueError(
+                f'validation_frequency must be a positive integer, got {validation_frequency}'
+            )
+
+        if min_samples_per_validation is not None and min_samples_per_validation < 1:
+            raise ValueError(
+                f'min_samples_per_validation must be a positive integer, got {min_samples_per_validation}'
+            )
+
+        if val_loss_improvement_threshold is not None and val_loss_improvement_threshold < 0:
+            raise ValueError(
+                f'val_loss_improvement_threshold must be non-negative, got {val_loss_improvement_threshold}'
             )
 
         if not is_pretraining and block_size is not None:
@@ -515,7 +535,7 @@ class MiniTrainerOSFTBackend(Backend):
                 output_dir=val_output_dir,
                 max_seq_len=algorithm_params['max_seq_len'],
                 num_cpu_procs=8,
-                use_processed_dataset=use_processed_dataset,
+                use_processed_dataset=False,
                 unmask_messages=algorithm_params.get('unmask_messages', False),
                 is_pretraining=algorithm_params.get('is_pretraining', False),
                 document_column_name=algorithm_params.get('document_column_name'),
@@ -767,8 +787,8 @@ def osft(
         mlflow_tracking_uri: MLflow tracking server URI.
         mlflow_experiment_name: MLflow experiment name.
         mlflow_run_name: MLflow run name.
-        validation_split: Fraction of training data to hold out for validation (0.0 to 1.0).
-            Mutually exclusive with ``validation_data_path``.
+        validation_split: Fraction of training data to hold out for validation
+            (greater than 0.0, less than 1.0). Mutually exclusive with ``validation_data_path``.
         validation_data_path: Path to a separate validation dataset in JSONL format.
             The dataset will be tokenized automatically. Mutually exclusive with
             ``validation_split``.

@@ -140,7 +140,7 @@ The Mini-Trainer backend supports validation loss monitoring with configurable e
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `0.0` | Fraction of training data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. Mutually exclusive with `validation_data_path`. |
+| `validation_split` | `float` | `0.0` | Fraction of training data to hold out for validation (greater than `0.0`, less than `1.0`). `0.0` disables validation. Mutually exclusive with `validation_data_path`. |
 | `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. The data is tokenized automatically using the same processing pipeline as the training data. Mutually exclusive with `validation_split`. |
 
 ### Validation Triggers
