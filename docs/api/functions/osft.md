@@ -41,6 +41,14 @@ def osft(
     node_rank: int | None = None,
     rdzv_id: int | None = None,
     rdzv_endpoint: str | None = None,
+    validation_split: float | None = None,
+    validation_data_path: str | None = None,
+    validation_frequency: int | None = None,
+    validate_at_epoch: bool | None = None,
+    min_samples_per_validation: int | None = None,
+    validate_at_final: bool | None = None,
+    save_best_val_loss: bool | None = None,
+    val_loss_improvement_threshold: float | None = None,
     **kwargs
 ) -> Any
 ```
@@ -149,16 +157,34 @@ Loggers are automatically enabled when their configuration parameters are set:
 
 > **Note:** OSFT does not support TensorBoard logging.
 
-#### Validation Loss
+#### Validation
 
-Validation loss is supported via `**kwargs`. See the [Validation Loss Guide](/guides/validation-loss) for full details.
+See the [Validation Loss Guide](/guides/validation-loss) for full details.
+
+##### Validation Data Sources
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
-| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
-| `save_best_val_loss` | `bool` | `False` | Save a checkpoint whenever validation loss improves. |
-| `val_loss_improvement_threshold` | `float` | `0.0` | Minimum improvement required to trigger a best-val-loss checkpoint save. |
+| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation (greater than `0.0`, less than `1.0`). Mutually exclusive with `validation_data_path`. |
+| `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. Tokenized automatically. Mutually exclusive with `validation_split`. |
+
+##### Validation Triggers
+
+At least one trigger must be configured when validation data is present. Multiple triggers can be combined.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_frequency` | `int` | `None` | Run validation every N training steps. |
+| `validate_at_epoch` | `bool` | `None` | Run validation at the end of each epoch. |
+| `min_samples_per_validation` | `int` | `None` | Minimum accumulated samples between validation runs. Must be a positive integer. |
+| `validate_at_final` | `bool` | `None` | Run validation at the end of training. |
+
+##### Best-Val-Loss Checkpointing
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `save_best_val_loss` | `bool` | `None` | Save a checkpoint whenever validation loss improves. |
+| `val_loss_improvement_threshold` | `float` | `None` | Minimum improvement required to trigger a best-val-loss checkpoint save. |
 
 #### Additional Parameters
 
