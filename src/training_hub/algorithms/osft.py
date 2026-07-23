@@ -209,7 +209,7 @@ class OSFTAlgorithm(Algorithm):
                 'Provide either a separate validation dataset or a split fraction, not both.'
             )
 
-        if validation_split is not None and (validation_split < 0.0 or validation_split >= 1.0):
+        if validation_split is not None and (validation_split <= 0.0 or validation_split >= 1.0):
             raise ValueError(
                 f'validation_split must be greater than 0.0 and less than 1.0, got {validation_split}'
             )
@@ -227,6 +227,23 @@ class OSFTAlgorithm(Algorithm):
         if val_loss_improvement_threshold is not None and val_loss_improvement_threshold < 0:
             raise ValueError(
                 f'val_loss_improvement_threshold must be non-negative, got {val_loss_improvement_threshold}'
+            )
+
+        has_validation = (
+            (validation_split is not None and validation_split > 0)
+            or validation_data_path is not None
+        )
+        has_trigger = (
+            (validation_frequency is not None and validation_frequency > 0)
+            or (validate_at_epoch is not None and validate_at_epoch)
+            or (min_samples_per_validation is not None and min_samples_per_validation > 0)
+            or (validate_at_final is not None and validate_at_final)
+        )
+        if has_validation and not has_trigger:
+            raise ValueError(
+                'Validation data is provided but no validation trigger is configured. '
+                'Set at least one of: validation_frequency, validate_at_epoch, '
+                'min_samples_per_validation, or validate_at_final.'
             )
 
         if not is_pretraining and block_size is not None:

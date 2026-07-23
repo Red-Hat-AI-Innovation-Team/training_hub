@@ -76,7 +76,7 @@ As of mini-trainer v0.9.0, OSFT validation parameters are first-class — pass t
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `0.0` | Fraction of training data to hold out for validation. Range: `[0.0, 1.0)`. Mutually exclusive with `validation_data_path`. |
+| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation. Range: `(0.0, 1.0)`. Mutually exclusive with `validation_data_path`. |
 | `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. Tokenized automatically. Mutually exclusive with `validation_split`. |
 
 ### Validation Triggers
