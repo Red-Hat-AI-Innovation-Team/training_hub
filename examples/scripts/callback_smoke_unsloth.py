@@ -4,7 +4,7 @@ Covers the unified TrainingHubCallback hooks that fire on a tiny LoRA run,
 including on_save and on_evaluate.
 
 Run on a CUDA workbench:
-  python smoke_callbacks.py
+  python callback_smoke_unsloth.py
 """
 
 from __future__ import annotations

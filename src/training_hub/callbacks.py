@@ -33,6 +33,7 @@ Example:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -59,7 +60,7 @@ class TrainingHubContext:
     learning_rate: float | None = None
     is_main_process: bool = True
     output_dir: str = ""
-    metrics: dict = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class TrainingHubCallback:

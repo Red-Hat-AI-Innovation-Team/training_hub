@@ -7,6 +7,7 @@ from . import Algorithm, Backend, AlgorithmRegistry
 from .sft import SFTAlgorithm
 from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
 from training_hub import utils
+from training_hub.callbacks import TrainingHubCallback
 
 # TrainerCallback import - transformers is required for LoRA functionality
 from transformers import TrainerCallback
@@ -729,7 +730,7 @@ class LoRASFTAlgorithm(Algorithm):
               # Model loading parameters
               trust_remote_code: Optional[bool] = None,
               # Callback / eval parameters
-              callbacks: Optional[List] = None,
+              callbacks: Optional[list[TrainingHubCallback]] = None,
               eval_data_path: Optional[str] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
@@ -1099,7 +1100,7 @@ def lora_sft(model_path: str,
          # Model loading parameters
          trust_remote_code: Optional[bool] = None,
          # Callback / eval parameters
-         callbacks: Optional[List] = None,
+         callbacks: Optional[list[TrainingHubCallback]] = None,
          eval_data_path: Optional[str] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
