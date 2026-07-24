@@ -6,6 +6,7 @@ from .algorithms.lora_grpo import lora_grpo, grpo, LoRAGRPOAlgorithm, ARTLoRAGRP
 from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
 from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.rewards import tool_call_reward, binary_reward
+from .callbacks import TrainingHubCallback, TrainingHubContext
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
 from .algorithms.its_rollout import ITSRollout
@@ -43,6 +44,8 @@ __all__ = [
     'LoRAEstimator',
     'QLoRAEstimator',
     'estimate',
+    'TrainingHubCallback',
+    'TrainingHubContext',
     'ITSRollout',
     'plot_loss',
 ]
