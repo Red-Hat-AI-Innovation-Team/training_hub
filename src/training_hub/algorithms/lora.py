@@ -565,7 +565,7 @@ class UnslothLoRABackend(Backend):
             save_total_limit=params.get('save_total_limit', 3),
             per_device_eval_batch_size=params.get(
                 'per_device_eval_batch_size',
-                params.get('micro_batch_size', 1),
+                micro_batch_size,
             ),
 
             # Performance optimizations
