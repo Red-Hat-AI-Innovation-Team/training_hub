@@ -1124,10 +1124,12 @@ class ARTLoRAGRPOBackend(Backend):
 
             logger.info("Shutting down ART backend...")
             await _shutdown_art_backend(backend)
-            if result is not None:
-                logger.info("ART backend shut down — force-exiting subprocess")
-                os._exit(0)
-            logger.info("ART backend shut down")
+            # Always force-exit after shutdown. Results are saved to disk
+            # both here and inside _run_training_loop (before model.train),
+            # so they survive the exit. Without this, asyncio.run() hangs
+            # on non-daemon threads left by vLLM's EngineCore.
+            logger.info("ART backend shut down — force-exiting subprocess")
+            os._exit(0)
 
     async def _run_training_loop(
         self, model, backend, art, train_data, *,
