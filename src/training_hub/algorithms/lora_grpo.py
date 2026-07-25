@@ -210,7 +210,7 @@ def _install_megatron_bridge_stub():
             return _Stub
 
         def __call__(cls, *args, **kwargs):
-            return super().__call__(*args, **kwargs)
+            return cls
 
     class _Stub(metaclass=_StubMeta):
         """A no-op class usable as value, decorator, or base class."""
