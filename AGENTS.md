@@ -378,6 +378,8 @@ Qwen3.5 uses a hybrid architecture: 75% GatedDeltaNet linear attention layers + 
 - **FLA fused kernels crash without `tilelang` on Hopper.** `RuntimeError: Triton >= 3.4.0 on Hopper GPUs produces incorrect results for gated chunk_bwd_dqkwg (see #640). Please install tilelang`. The error message is clear and actionable — just `pip install tilelang`.
 - **21 min/step without FLA vs 3.3 min/step with FLA.** The `[transformers] The fast path is not available because one of the required library is not installed` warning is easy to miss. Without FLA, GDN layers use a decomposed fallback that is 10-50x slower. Always install `flash-linear-attention` when training GDN/Qwen3.5 models.
 
+- **Megatron stub metaclass must return the class, not an instance, from `__call__`.** ART 0.5.18 uses `@MegatronModelBridge.register_bridge(...)` as a decorator — `register_bridge(...)` calls the stub, and the result must be callable to act as the decorator. With `_StubMeta.__call__` returning `super().__call__()` (which creates a `_Stub` *instance* that has no `__call__`), the decorator pattern crashed with `TypeError: '_Stub' object is not callable`. Fix: `return cls` instead. The guard for installing the meta-path finder was also narrowed from `_used_stub` (tracked any stub creation) to `not hasattr(megatron_mod, "__file__")` — be aware this doesn't cover partial installs where `megatron` is real but `megatron.core` was stubbed.
+
 ### verl Backend Reference Configuration
 
 These are known-good configuration values from validated training runs. Use as a starting point when debugging or configuring new runs.
@@ -429,4 +431,9 @@ language_model_only=True, use_fused_kernels=True
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200
 Requires: vllm==0.19.0, flash-linear-attention, tilelang, CUDA toolkit 12.5+
 Step time: ~3.3 min/step, reward 0.85+ by epoch 2
+
+# AIPCC 3.5 GA validated environment (training_hub PR #130)
+torch==2.11.0, openpipe-art==0.5.18, vllm==0.21.0+rhaiv.10
+unsloth==2026.6.9+rhaiv.2, trl==1.8.0
+Verified: GRPO e2e training completes on A100
 ```
