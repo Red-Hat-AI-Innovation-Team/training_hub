@@ -836,7 +836,18 @@ class ARTLoRAGRPOBackend(Backend):
             args=(algorithm_params, results_path, error_path),
         )
         proc.start()
-        proc.join()
+        # Join with timeout: vLLM's non-daemon EngineCore threads can prevent
+        # the subprocess from exiting even after os._exit is called from the
+        # training coroutine's finally block. Results are saved to disk inside
+        # the training loop before shutdown, so terminating is safe.
+        join_timeout = float(os.environ.get("TRAINING_HUB_JOIN_TIMEOUT", "7200"))
+        proc.join(timeout=join_timeout)
+        if proc.is_alive():
+            logger.warning("Training subprocess still alive after join timeout, terminating")
+            proc.terminate()
+            proc.join(timeout=10)
+            if proc.is_alive():
+                proc.kill()
 
         if os.path.exists(error_path):
             with open(error_path) as f:
