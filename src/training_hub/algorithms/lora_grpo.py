@@ -1129,7 +1129,7 @@ class ARTLoRAGRPOBackend(Backend):
             # so they survive the exit. Without this, asyncio.run() hangs
             # on non-daemon threads left by vLLM's EngineCore.
             logger.info("ART backend shut down — force-exiting subprocess")
-            os._exit(0)
+            os._exit(0 if result is not None else 1)
 
     async def _run_training_loop(
         self, model, backend, art, train_data, *,
