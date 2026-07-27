@@ -3,6 +3,29 @@ from typing import Literal, get_origin, get_args
 import torch
 import warnings
 
+_FORMAT_MAP = {
+    ".jsonl": "json",
+    ".json": "json",
+    ".parquet": "parquet",
+    ".csv": "csv",
+}
+
+
+def load_training_dataset(data_path: str, split: str = "train"):
+    """Load a dataset from a local file, auto-detecting format from extension.
+
+    Supports .jsonl, .json, .parquet, and .csv files. Falls back to
+    treating ``data_path`` as a HuggingFace dataset name when the
+    extension is unrecognized.
+    """
+    from datasets import load_dataset
+
+    ext = os.path.splitext(data_path)[1].lower()
+    builder = _FORMAT_MAP.get(ext)
+    if builder:
+        return load_dataset(builder, data_files=data_path, split=split)
+    return load_dataset(data_path, split=split)
+
 def format_type_name(tp):
     # Handle None
     if tp is type(None):
