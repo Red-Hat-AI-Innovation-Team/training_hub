@@ -1135,12 +1135,10 @@ class ARTLoRAGRPOBackend(Backend):
 
             logger.info("Shutting down ART backend...")
             await _shutdown_art_backend(backend)
-            # Always force-exit after shutdown. Results are saved to disk
-            # both here and inside _run_training_loop (before model.train),
-            # so they survive the exit. Without this, asyncio.run() hangs
-            # on non-daemon threads left by vLLM's EngineCore.
-            logger.info("ART backend shut down — force-exiting subprocess")
-            os._exit(0 if result is not None else 1)
+            if result is not None:
+                logger.info("ART backend shut down — force-exiting subprocess")
+                os._exit(0)
+            logger.info("ART backend shut down")
 
     async def _run_training_loop(
         self, model, backend, art, train_data, *,
@@ -1297,11 +1295,18 @@ class ARTLoRAGRPOBackend(Backend):
                 json.dump(results, f, indent=2)
 
             # Train GRPO step — ART writes loss metrics to its own
-            # history.jsonl live during training
-            await model.train(
-                train_groups,
-                config=art.TrainConfig(learning_rate=learning_rate),
-            )
+            # history.jsonl live during training.
+            # art 0.5.18 moved train() from TrainableModel to LocalBackend.
+            if hasattr(model, "train"):
+                await model.train(
+                    train_groups,
+                    config=art.TrainConfig(learning_rate=learning_rate),
+                )
+            else:
+                await backend.train(
+                    model, train_groups,
+                    learning_rate=learning_rate,
+                )
 
             iter_time = time.time() - iter_start
             timing_history.append(iter_time)
