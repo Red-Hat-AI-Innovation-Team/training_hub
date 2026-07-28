@@ -543,7 +543,14 @@ class MiniTrainerOSFTBackend(Backend):
             # Original instruction tuning flow
             # if we received unmask then we need to add that
             processing_data_path = data_path
-            if unmask_messages:
+            if not data_path.endswith(('.jsonl', '.json')):
+                from training_hub.utils import load_training_dataset
+                ds = load_training_dataset(data_path)
+                if unmask_messages:
+                    ds = ds.map(lambda _: {'unmask': True})
+                processing_data_path = os.path.join(output_dir, 'converted_data.jsonl')
+                ds.to_json(processing_data_path)
+            elif unmask_messages:
                 from training_hub.utils import load_training_dataset
                 ds = load_training_dataset(data_path)
                 ds = ds.map(lambda _: {'unmask': True})
