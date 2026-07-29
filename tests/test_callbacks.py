@@ -207,6 +207,25 @@ class TestUnslothCallbackAdapter:
         assert ctx.loss == 2.72
         assert ctx.output_dir == "/checkpoints"
 
+    def test_empty_logs_dict_preserved(self):
+        """Empty logs={} must not be treated as missing logs."""
+        cb = MagicMock(spec=TrainingHubCallback)
+        adapter = UnslothCallbackAdapter(cb)
+
+        args = _make_hf_args()
+        state = _make_hf_state(
+            global_step=3,
+            log_history=[{"loss": 0.5, "learning_rate": 1e-4}],
+        )
+
+        adapter.on_log(args, state, None, logs={})
+
+        ctx = cb.on_log.call_args[0][0]
+        assert ctx.metrics == {}
+        # Empty logs still fall back to log_history for loss/lr
+        assert ctx.loss == 0.5
+        assert ctx.learning_rate == 1e-4
+
     def test_all_hooks_dispatch(self):
         """Every adapter hook dispatches to the corresponding user hook."""
         cb = MagicMock(spec=TrainingHubCallback)

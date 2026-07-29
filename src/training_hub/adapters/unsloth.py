@@ -52,7 +52,7 @@ class UnslothCallbackAdapter(TrainerCallback):
         logs: dict | None = None,
     ) -> TrainingHubContext:
         """Build normalized context from HuggingFace trainer state."""
-        metrics = dict(logs) if logs else {}
+        metrics = dict(logs) if logs is not None else {}
 
         loss = metrics.get("loss")
         if loss is None:
