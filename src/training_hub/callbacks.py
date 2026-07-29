@@ -72,7 +72,15 @@ class TrainingHubCallback:
 
     Note:
         This is intentionally *not* an ABC. All hooks are optional.
+
+    Attributes:
+        run_on_all_ranks: When False (default), Unsloth/HF adapters only
+            dispatch on rank 0. Set True on a subclass to opt into
+            per-rank hooks (e.g. per-node GPU memory logging) before
+            multi-node InstructLab / Mini-Trainer adapters land.
     """
+
+    run_on_all_ranks: bool = False
 
     def on_train_begin(self, context: TrainingHubContext) -> None:
         """Called after initialization, before the training loop."""

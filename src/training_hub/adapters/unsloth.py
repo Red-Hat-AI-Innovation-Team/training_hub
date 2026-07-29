@@ -34,14 +34,20 @@ class UnslothCallbackAdapter(TrainerCallback):
     Exception isolation: user callback exceptions are caught and logged,
     never propagated — callbacks cannot crash training.
 
-    Rank-0 guard: callbacks only fire on the main process
-    (state.is_world_process_zero).
+    Rank guard: by default callbacks only fire on the main process
+    (state.is_world_process_zero). Set ``run_on_all_ranks = True`` on the
+    hub callback to opt into per-rank dispatch.
 
     Args:
         hub_callback: A TrainingHubCallback instance to adapt.
     """
 
     def __init__(self, hub_callback: TrainingHubCallback) -> None:
+        if not isinstance(hub_callback, TrainingHubCallback):
+            raise TypeError(
+                "Expected TrainingHubCallback instance, "
+                f"got {type(hub_callback).__name__}"
+            )
         super().__init__()
         self._hub_callback = hub_callback
 
@@ -94,14 +100,18 @@ class UnslothCallbackAdapter(TrainerCallback):
         logs: dict | None = None,
     ) -> None:
         """Dispatch to user callback with exception isolation and rank guard."""
-        if not state.is_world_process_zero:
+        if (
+            not state.is_world_process_zero
+            and not getattr(self._hub_callback, "run_on_all_ranks", False)
+        ):
             return
         try:
             ctx = self._build_context(args, state, logs)
             getattr(self._hub_callback, method_name)(ctx)
         except Exception:
             logger.exception(
-                "TrainingHubCallback.%s raised an exception (ignored)",
+                "%s.%s raised an exception (ignored)",
+                type(self._hub_callback).__name__,
                 method_name,
             )
 

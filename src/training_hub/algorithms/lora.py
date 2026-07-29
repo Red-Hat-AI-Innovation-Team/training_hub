@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional, Type, Union
 from pathlib import Path
@@ -11,6 +12,8 @@ from training_hub.callbacks import TrainingHubCallback
 
 # TrainerCallback import - transformers is required for LoRA functionality
 from transformers import TrainerCallback
+
+logger = logging.getLogger(__name__)
 
 
 class JSONLLoggingCallback(TrainerCallback):
@@ -166,6 +169,12 @@ class UnslothLoRABackend(Backend):
             eval_dataset = self._prepare_dataset(
                 eval_params, tokenizer_or_processor, is_vlm=is_vlm
             )
+        elif training_params.get('eval_steps') is not None:
+            logger.warning(
+                "eval_steps=%s was set but eval_data_path is not provided; "
+                "evaluation will be skipped.",
+                training_params['eval_steps'],
+            )
 
         # Configure training arguments
         training_args = self._build_training_args(
@@ -293,7 +302,10 @@ class UnslothLoRABackend(Backend):
             _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
             _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
             cls._mamba_kernels_initialized = True
-        except (ImportError, AttributeError):
+        except Exception:
+            # Runtime images may ship a broken mamba_ssm/tilelang/tvm stack that
+            # raises OSError/RuntimeError (not ImportError) on import. Non-Mamba
+            # models (e.g. Qwen2.5) do not need these kernels.
             pass
 
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
@@ -730,8 +742,9 @@ class LoRASFTAlgorithm(Algorithm):
               # Model loading parameters
               trust_remote_code: Optional[bool] = None,
               # Callback / eval parameters
-              callbacks: Optional[list[TrainingHubCallback]] = None,
+              callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               eval_data_path: Optional[str] = None,
+              per_device_eval_batch_size: Optional[int] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -827,9 +840,11 @@ class LoRASFTAlgorithm(Algorithm):
             finetune_language_layers: Include language layers in LoRA targets (default: True)
 
             Callbacks / Evaluation:
-            callbacks: List of TrainingHubCallback instances for lifecycle hooks
+            callbacks: TrainingHubCallback or list of them for lifecycle hooks
             eval_data_path: Optional JSON/JSONL (or HF dataset) path for evaluation.
                             When set, enables eval_strategy=steps and fires on_evaluate.
+            per_device_eval_batch_size: Per-device eval batch size (defaults to
+                            the computed train micro_batch_size).
 
             Advanced:
             **kwargs: Additional parameters passed to the backend
@@ -837,6 +852,9 @@ class LoRASFTAlgorithm(Algorithm):
         Returns:
             Dictionary containing trained model, tokenizer, and trainer
         """
+        if isinstance(callbacks, TrainingHubCallback):
+            callbacks = [callbacks]
+
         # Build base parameters dict (required parameters)
         params = {
             'model_path': model_path,
@@ -923,6 +941,7 @@ class LoRASFTAlgorithm(Algorithm):
             # Callback / eval parameters
             'callbacks': callbacks,
             'eval_data_path': eval_data_path,
+            'per_device_eval_batch_size': per_device_eval_batch_size,
         }
 
         # Only add non-None parameters
@@ -1100,8 +1119,9 @@ def lora_sft(model_path: str,
          # Model loading parameters
          trust_remote_code: Optional[bool] = None,
          # Callback / eval parameters
-         callbacks: Optional[list[TrainingHubCallback]] = None,
+         callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
          eval_data_path: Optional[str] = None,
+         per_device_eval_batch_size: Optional[int] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -1173,9 +1193,11 @@ def lora_sft(model_path: str,
         finetune_language_layers: Include language layers in LoRA targets (default: True)
 
         Callbacks / Evaluation:
-        callbacks: List of TrainingHubCallback instances for lifecycle hooks
+        callbacks: TrainingHubCallback or list of them for lifecycle hooks
         eval_data_path: Optional eval dataset path. When set, enables periodic
                         evaluation (eval_strategy=steps) and on_evaluate callbacks.
+        per_device_eval_batch_size: Per-device eval batch size (defaults to the
+                        computed train micro_batch_size).
 
         Advanced:
         **kwargs: Additional parameters passed to the backend
@@ -1264,5 +1286,6 @@ def lora_sft(model_path: str,
         trust_remote_code=trust_remote_code,
         callbacks=callbacks,
         eval_data_path=eval_data_path,
+        per_device_eval_batch_size=per_device_eval_batch_size,
         **kwargs
     )

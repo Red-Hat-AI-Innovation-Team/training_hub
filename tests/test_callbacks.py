@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -118,12 +117,51 @@ class TestTrainingHubCallback:
 # UnslothCallbackAdapter (requires transformers)
 # ---------------------------------------------------------------------------
 
-pytest.importorskip("transformers", reason="transformers not installed")
+try:
+    from training_hub.adapters.unsloth import (
+        UnslothCallbackAdapter,
+        adapt_hub_callbacks,
+    )
 
-from training_hub.adapters.unsloth import (  # noqa: E402
-    UnslothCallbackAdapter,
-    adapt_hub_callbacks,
-)
+    _HAS_TRANSFORMERS = True
+except ImportError:
+    UnslothCallbackAdapter = None  # type: ignore[misc, assignment]
+    adapt_hub_callbacks = None  # type: ignore[misc, assignment]
+    _HAS_TRANSFORMERS = False
+
+
+class _RecordingCallback(TrainingHubCallback):
+    """Records last context per hook for adapter tests."""
+
+    def __init__(self) -> None:
+        self.calls: dict[str, TrainingHubContext] = {}
+
+    def on_train_begin(self, context):
+        self.calls["on_train_begin"] = context
+
+    def on_epoch_begin(self, context):
+        self.calls["on_epoch_begin"] = context
+
+    def on_step_begin(self, context):
+        self.calls["on_step_begin"] = context
+
+    def on_log(self, context):
+        self.calls["on_log"] = context
+
+    def on_evaluate(self, context):
+        self.calls["on_evaluate"] = context
+
+    def on_save(self, context):
+        self.calls["on_save"] = context
+
+    def on_step_end(self, context):
+        self.calls["on_step_end"] = context
+
+    def on_epoch_end(self, context):
+        self.calls["on_epoch_end"] = context
+
+    def on_train_end(self, context):
+        self.calls["on_train_end"] = context
 
 
 def _make_hf_state(
@@ -146,12 +184,17 @@ def _make_hf_args(output_dir: str = "/tmp/output") -> SimpleNamespace:
     return SimpleNamespace(output_dir=output_dir)
 
 
+@pytest.mark.skipif(not _HAS_TRANSFORMERS, reason="transformers not installed")
 class TestUnslothCallbackAdapter:
     """Tests for the UnslothCallbackAdapter."""
 
+    def test_rejects_non_callback(self):
+        with pytest.raises(TypeError, match="TrainingHubCallback"):
+            UnslothCallbackAdapter(object())  # type: ignore[arg-type]
+
     def test_context_mapping(self):
         """Adapter builds correct TrainingHubContext from HF state."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args("/checkpoints")
@@ -160,8 +203,7 @@ class TestUnslothCallbackAdapter:
 
         adapter.on_log(args, state, None, logs=logs)
 
-        cb.on_log.assert_called_once()
-        ctx = cb.on_log.call_args[0][0]
+        ctx = cb.calls["on_log"]
         assert isinstance(ctx, TrainingHubContext)
         assert ctx.step == 5
         assert ctx.epoch == 1
@@ -173,7 +215,7 @@ class TestUnslothCallbackAdapter:
 
     def test_loss_from_log_history_fallback(self):
         """When logs don't have loss, fall back to log_history."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args()
@@ -184,13 +226,13 @@ class TestUnslothCallbackAdapter:
 
         adapter.on_step_end(args, state, None)
 
-        ctx = cb.on_step_end.call_args[0][0]
+        ctx = cb.calls["on_step_end"]
         assert ctx.loss == 0.99
         assert ctx.learning_rate == 1e-4
 
     def test_evaluate_forwards_metrics(self):
         """on_evaluate must populate context.metrics from HF metrics kwarg."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args("/checkpoints")
@@ -199,8 +241,7 @@ class TestUnslothCallbackAdapter:
 
         adapter.on_evaluate(args, state, None, metrics=metrics)
 
-        cb.on_evaluate.assert_called_once()
-        ctx = cb.on_evaluate.call_args[0][0]
+        ctx = cb.calls["on_evaluate"]
         assert isinstance(ctx, TrainingHubContext)
         assert ctx.step == 2
         assert ctx.metrics == metrics
@@ -209,7 +250,7 @@ class TestUnslothCallbackAdapter:
 
     def test_empty_logs_dict_preserved(self):
         """Empty logs={} must not be treated as missing logs."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args()
@@ -220,7 +261,7 @@ class TestUnslothCallbackAdapter:
 
         adapter.on_log(args, state, None, logs={})
 
-        ctx = cb.on_log.call_args[0][0]
+        ctx = cb.calls["on_log"]
         assert ctx.metrics == {}
         # Empty logs still fall back to log_history for loss/lr
         assert ctx.loss == 0.5
@@ -228,7 +269,7 @@ class TestUnslothCallbackAdapter:
 
     def test_all_hooks_dispatch(self):
         """Every adapter hook dispatches to the corresponding user hook."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args()
@@ -237,8 +278,7 @@ class TestUnslothCallbackAdapter:
         for hook_name in ALL_HOOKS:
             getattr(adapter, hook_name)(args, state, None)
 
-        for hook_name in ALL_HOOKS:
-            getattr(cb, hook_name).assert_called_once()
+        assert set(cb.calls) == set(ALL_HOOKS)
 
     def test_exception_isolation(self, caplog):
         """Callback exceptions are caught and logged, never propagated."""
@@ -255,11 +295,11 @@ class TestUnslothCallbackAdapter:
             adapter.on_step_end(args, state, None)
 
         assert "boom" in caplog.text
-        assert "on_step_end" in caplog.text
+        assert "Exploder.on_step_end" in caplog.text
 
     def test_rank_guard_skips_non_main(self):
-        """Callbacks should not fire on non-main processes."""
-        cb = MagicMock(spec=TrainingHubCallback)
+        """Callbacks should not fire on non-main processes by default."""
+        cb = _RecordingCallback()
         adapter = UnslothCallbackAdapter(cb)
 
         args = _make_hf_args()
@@ -267,7 +307,27 @@ class TestUnslothCallbackAdapter:
 
         adapter.on_step_end(args, state, None)
 
-        cb.on_step_end.assert_not_called()
+        assert "on_step_end" not in cb.calls
+
+    def test_run_on_all_ranks_opt_in(self):
+        """run_on_all_ranks=True allows worker-rank dispatch."""
+
+        class AllRanks(TrainingHubCallback):
+            run_on_all_ranks = True
+
+            def __init__(self) -> None:
+                self.called = False
+
+            def on_step_end(self, context):
+                self.called = True
+
+        cb = AllRanks()
+        adapter = UnslothCallbackAdapter(cb)
+        args = _make_hf_args()
+        state = _make_hf_state(is_world_process_zero=False)
+
+        adapter.on_step_end(args, state, None)
+        assert cb.called is True
 
     def test_inherits_trainer_callback(self):
         """Adapter must be a TrainerCallback subclass (required by Trainer)."""
@@ -277,6 +337,7 @@ class TestUnslothCallbackAdapter:
         assert isinstance(adapter, HFTrainerCallback)
 
 
+@pytest.mark.skipif(not _HAS_TRANSFORMERS, reason="transformers not installed")
 class TestAdaptHubCallbacks:
     """Tests for the adapt_hub_callbacks utility."""
 
