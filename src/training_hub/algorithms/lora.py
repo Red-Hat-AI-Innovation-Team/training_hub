@@ -302,11 +302,15 @@ class UnslothLoRABackend(Backend):
             _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
             _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
             cls._mamba_kernels_initialized = True
-        except Exception:
+        except Exception as e:
             # Runtime images may ship a broken mamba_ssm/tilelang/tvm stack that
             # raises OSError/RuntimeError (not ImportError) on import. Non-Mamba
             # models (e.g. Qwen2.5) do not need these kernels.
-            pass
+            logger.debug(
+                "Skipping local mamba kernel preload (%s: %s)",
+                type(e).__name__,
+                e,
+            )
 
     def _load_unsloth_model(self, params: Dict[str, Any]) -> tuple:
         """Load model with Unsloth optimizations.
@@ -503,7 +507,17 @@ class UnslothLoRABackend(Backend):
                              is_vlm: bool = False,
                              supports_grad_ckpt: bool = True,
                              has_eval: bool = False):
-        """Build training arguments for SFTTrainer using SFTConfig."""
+        """Build training arguments for SFTTrainer using SFTConfig.
+
+        Args:
+            params: Training Hub parameter dict.
+            is_vlm: Whether the model is a vision-language architecture.
+            supports_grad_ckpt: Whether the model supports gradient checkpointing.
+            has_eval: Whether an eval dataset is available (enables eval_strategy).
+
+        Returns:
+            Configured ``SFTConfig`` instance for ``SFTTrainer``.
+        """
         from trl import SFTConfig
 
         # Populate logging params from environment variables if not explicitly set
@@ -741,7 +755,8 @@ class LoRASFTAlgorithm(Algorithm):
               finetune_language_layers: Optional[bool] = None,
               # Model loading parameters
               trust_remote_code: Optional[bool] = None,
-              # Callback / eval parameters
+              # Callback / eval parameters (keyword-only)
+              *,
               callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               eval_data_path: Optional[str] = None,
               per_device_eval_batch_size: Optional[int] = None,
@@ -1118,7 +1133,8 @@ def lora_sft(model_path: str,
          finetune_language_layers: Optional[bool] = None,
          # Model loading parameters
          trust_remote_code: Optional[bool] = None,
-         # Callback / eval parameters
+         # Callback / eval parameters (keyword-only)
+         *,
          callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
          eval_data_path: Optional[str] = None,
          per_device_eval_batch_size: Optional[int] = None,
