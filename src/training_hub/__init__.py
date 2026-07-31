@@ -5,6 +5,10 @@ from .algorithms.lora import lora_sft, LoRASFTAlgorithm, UnslothLoRABackend
 from .algorithms.lora_grpo import lora_grpo, grpo, LoRAGRPOAlgorithm, ARTLoRAGRPOBackend
 from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
 from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
+from .algorithms.speculative_decoding import (
+    train_speculator, eagle3, prepare_speculator_data,
+    SpeculativeDecodingAlgorithm, SpeculatorsBackend,
+)
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .callbacks import TrainingHubCallback, TrainingHubContext
 from .hub_core import welcome
@@ -35,6 +39,11 @@ __all__ = [
     'GEPAAlgorithm',
     'GEPABackend',
     'MLflowGEPABackend',
+    'train_speculator',
+    'eagle3',
+    'prepare_speculator_data',
+    'SpeculativeDecodingAlgorithm',
+    'SpeculatorsBackend',
     'tool_call_reward',
     'binary_reward',
     'welcome',
