@@ -85,6 +85,10 @@ gepa = [
     "mlflow>=3.5.0",
 ]
 
+embedding = [
+    "sentence-transformers>=4.0",
+]
+
 dev = [
     "ipykernel",
     "ipython",
