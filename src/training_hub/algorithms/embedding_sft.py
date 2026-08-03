@@ -25,13 +25,14 @@ Data format (JSONL):
 import json
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional, Type
+import random
+from typing import Any, Callable, Optional
 
 from . import Algorithm, Backend, AlgorithmRegistry
 
 logger = logging.getLogger(__name__)
 
-LOSS_REGISTRY: Dict[str, str] = {
+LOSS_REGISTRY: dict[str, str] = {
     "batch_all_triplet": "BatchAllTripletLoss",
     "batch_hard_triplet": "BatchHardTripletLoss",
     "mnrl": "MultipleNegativesRankingLoss",
@@ -42,7 +43,7 @@ TRIPLET_LOSSES = {"batch_all_triplet", "batch_hard_triplet"}
 
 def _load_dataset(data_path: str, text_column: str = "text", label_column: str = "label"):
     """Load dataset from JSONL file or HuggingFace dataset ID."""
-    from datasets import load_dataset, Dataset
+    from datasets import load_dataset
 
     if os.path.isfile(data_path):
         ext = os.path.splitext(data_path)[1].lower()
@@ -69,19 +70,22 @@ def _load_dataset(data_path: str, text_column: str = "text", label_column: str =
     return dataset
 
 
-def _to_pair_dataset(dataset):
+def _to_pair_dataset(dataset, max_pairs_per_label: int = 10_000, seed: int = 42):
     """Convert a label-based dataset to (anchor, positive) pairs for MNRL."""
     from datasets import Dataset
     from itertools import combinations
 
-    groups = {}
+    groups: dict[int, list[str]] = {}
     for row in dataset:
         groups.setdefault(row["label"], []).append(row["text"])
 
-    pairs = []
-    for label, texts in groups.items():
-        for a, b in combinations(texts, 2):
-            pairs.append({"anchor": a, "positive": b})
+    rng = random.Random(seed)
+    pairs: list[dict[str, str]] = []
+    for _label, texts in groups.items():
+        label_pairs = [{"anchor": a, "positive": b} for a, b in combinations(texts, 2)]
+        if len(label_pairs) > max_pairs_per_label:
+            label_pairs = rng.sample(label_pairs, max_pairs_per_label)
+        pairs.extend(label_pairs)
 
     return Dataset.from_list(pairs)
 
@@ -89,17 +93,23 @@ def _to_pair_dataset(dataset):
 class SentenceTransformersBackend(Backend):
     """Backend using the sentence-transformers library for embedding fine-tuning."""
 
-    def execute_training(self, algorithm_params: Dict[str, Any]) -> Any:
+    def execute_training(self, algorithm_params: dict[str, Any]) -> Any:
         from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer
-        from sentence_transformers.sentence_transformer.training_args import (
-            SentenceTransformerTrainingArguments,
-            BatchSamplers,
-        )
-        from sentence_transformers.sentence_transformer.losses import (
-            BatchAllTripletLoss,
-            BatchHardTripletLoss,
-            MultipleNegativesRankingLoss,
-        )
+        try:
+            from sentence_transformers.sentence_transformer.training_args import (
+                SentenceTransformerTrainingArguments, BatchSamplers,
+            )
+            from sentence_transformers.sentence_transformer.losses import (
+                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
+            )
+        except ImportError:
+            from sentence_transformers.training_args import (
+                SentenceTransformerTrainingArguments, BatchSamplers,
+            )
+            from sentence_transformers.losses import (
+                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
+            )
+        import torch
 
         model_path = algorithm_params["model_path"]
         data_path = algorithm_params["data_path"]
@@ -111,7 +121,7 @@ class SentenceTransformersBackend(Backend):
         batch_size = algorithm_params.get("batch_size", 32)
         learning_rate = algorithm_params.get("learning_rate", 2e-5)
         warmup_ratio = algorithm_params.get("warmup_ratio", 0.1)
-        batch_sampler_name = algorithm_params.get("batch_sampler", "group_by_label")
+        batch_sampler_name = algorithm_params.get("batch_sampler")
         eval_data_path = algorithm_params.get("eval_data_path")
         seed = algorithm_params.get("seed", 42)
         text_column = algorithm_params.get("text_column", "text")
@@ -141,10 +151,14 @@ class SentenceTransformersBackend(Backend):
         train_dataset = _load_dataset(data_path, text_column, label_column)
 
         if loss_type == "mnrl" and loss_fn is None:
-            train_dataset = _to_pair_dataset(train_dataset)
+            train_dataset = _to_pair_dataset(train_dataset, seed=seed)
             logger.info("Converted to %d (anchor, positive) pairs for MNRL", len(train_dataset))
+            if batch_sampler_name is None:
+                batch_sampler_name = "no_duplicates"
         else:
             logger.info("Training samples: %d", len(train_dataset))
+        if batch_sampler_name is None:
+            batch_sampler_name = "group_by_label"
 
         eval_dataset = None
         if eval_data_path:
@@ -172,6 +186,8 @@ class SentenceTransformersBackend(Backend):
 
         os.makedirs(ckpt_output_dir, exist_ok=True)
 
+        use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
         training_args = SentenceTransformerTrainingArguments(
             output_dir=ckpt_output_dir,
             num_train_epochs=num_epochs,
@@ -183,7 +199,7 @@ class SentenceTransformersBackend(Backend):
             save_strategy="epoch",
             logging_steps=10,
             fp16=False,
-            bf16=True,
+            bf16=use_bf16,
         )
 
         trainer = SentenceTransformerTrainer(
@@ -199,6 +215,16 @@ class SentenceTransformersBackend(Backend):
             num_epochs, batch_size, learning_rate, loss_type, batch_sampler_name,
         )
         trainer.train()
+
+        metrics_path = os.path.join(ckpt_output_dir, "training_metrics.jsonl")
+        metrics_entry = {
+            "max_steps": getattr(trainer.state, "max_steps", num_epochs),
+            "global_step": trainer.state.global_step,
+            "train_loss": trainer.state.log_history[-1].get("train_loss") if trainer.state.log_history else None,
+            "epoch": num_epochs,
+        }
+        with open(metrics_path, "a") as f:
+            f.write(json.dumps(metrics_entry) + "\n")
 
         model.save_pretrained(ckpt_output_dir)
         logger.info("Model saved to %s", ckpt_output_dir)
@@ -221,14 +247,14 @@ class EmbeddingSFTAlgorithm(Algorithm):
     def train(self, **kwargs) -> Any:
         return self.backend.execute_training(kwargs)
 
-    def get_required_params(self) -> Dict[str, Type]:
+    def get_required_params(self) -> dict[str, type]:
         return {
             "model_path": str,
             "data_path": str,
             "ckpt_output_dir": str,
         }
 
-    def get_optional_params(self) -> Dict[str, Type]:
+    def get_optional_params(self) -> dict[str, type]:
         return {
             "loss_type": str,
             "loss_fn": object,
@@ -248,6 +274,7 @@ def embedding_sft(
     model_path: str,
     data_path: str,
     ckpt_output_dir: str,
+    *,
     backend: str = "sentence-transformers",
     # Loss configuration
     loss_type: str = "batch_all_triplet",
@@ -258,7 +285,7 @@ def embedding_sft(
     learning_rate: float = 2e-5,
     warmup_ratio: float = 0.1,
     # Batch sampling
-    batch_sampler: str = "group_by_label",
+    batch_sampler: Optional[str] = None,
     # Evaluation
     eval_data_path: Optional[str] = None,
     # Data format
@@ -287,9 +314,10 @@ def embedding_sft(
         batch_size: Per-device batch size. Default 32.
         learning_rate: Learning rate. Default 2e-5.
         warmup_ratio: Warmup fraction of total steps. Default 0.1.
-        batch_sampler: Batch sampling strategy. "group_by_label" (default)
-            ensures every batch has examples from all classes — required
-            for triplet losses. Also "no_duplicates" or "default".
+        batch_sampler: Batch sampling strategy. None (default) auto-selects:
+            "group_by_label" for triplet losses, "no_duplicates" for MNRL.
+            Can also be set explicitly to "group_by_label", "no_duplicates",
+            or "default".
         eval_data_path: Optional path to evaluation JSONL.
         text_column: Name of the text column in the dataset. Default "text".
         label_column: Name of the label column in the dataset. Default "label".

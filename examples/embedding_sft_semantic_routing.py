@@ -186,11 +186,14 @@ def evaluate_model(model_path, eval_data, anchors, top_k=3):
 
     model = SentenceTransformer(model_path)
 
-    # Build anchor embeddings per tier
+    # Build anchor embeddings, excluding any that overlap with eval set
+    eval_texts = {s["text"] for s in eval_data}
     anchor_texts = []
     anchor_labels = []
     for label, texts in anchors.items():
         for t in texts:
+            if t in eval_texts:
+                continue
             anchor_texts.append(t)
             anchor_labels.append(label)
 
@@ -250,7 +253,23 @@ def evaluate_model(model_path, eval_data, anchors, top_k=3):
 
 # ── Main ─────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import argparse
+
     from training_hub import embedding_sft
+
+    parser = argparse.ArgumentParser(
+        description="Fine-tune an embedding model for semantic routing classification."
+    )
+    parser.add_argument("--model", default=MODEL, help="Base sentence-transformers model.")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="Directory for data and checkpoints.")
+    parser.add_argument("--num-epochs", type=int, default=TRAIN_CONFIG["num_epochs"])
+    parser.add_argument("--batch-size", type=int, default=TRAIN_CONFIG["batch_size"])
+    parser.add_argument("--seed", type=int, default=TRAIN_CONFIG["seed"])
+    args = parser.parse_args()
+
+    MODEL = args.model
+    OUTPUT_DIR = args.output_dir
+    TRAIN_CONFIG.update(num_epochs=args.num_epochs, batch_size=args.batch_size, seed=args.seed)
 
     # Step 1: Generate synthetic data
     print("Generating synthetic training data from 48 seed anchors...")
