@@ -95,20 +95,12 @@ class SentenceTransformersBackend(Backend):
 
     def execute_training(self, algorithm_params: dict[str, Any]) -> Any:
         from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer
-        try:
-            from sentence_transformers.sentence_transformer.training_args import (
-                SentenceTransformerTrainingArguments, BatchSamplers,
-            )
-            from sentence_transformers.sentence_transformer.losses import (
-                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
-            )
-        except ImportError:
-            from sentence_transformers.training_args import (
-                SentenceTransformerTrainingArguments, BatchSamplers,
-            )
-            from sentence_transformers.losses import (
-                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
-            )
+        from sentence_transformers.sentence_transformer.training_args import (
+            SentenceTransformerTrainingArguments, BatchSamplers,
+        )
+        from sentence_transformers.sentence_transformer.losses import (
+            BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
+        )
         import torch
 
         model_path = algorithm_params["model_path"]

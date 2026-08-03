@@ -86,7 +86,7 @@ gepa = [
 ]
 
 embedding = [
-    "sentence-transformers>=4.0",
+    "sentence-transformers>=5.0",
 ]
 
 dev = [
