@@ -132,18 +132,36 @@ These parameter names match the mini-trainer `TrainingArgs` dataclass fields dir
 | `rdzv_endpoint` | Master node endpoint |
 
 
-## Validation Loss
+## Validation
 
-The Mini-Trainer backend supports validation loss monitoring with optional best-val-loss checkpointing.
+The Mini-Trainer backend supports validation loss monitoring with configurable event-based triggers and optional best-val-loss checkpointing. All validation parameters are first-class parameters of `osft()` and `OSFTAlgorithm.train()`.
+
+### Validation Data Sources
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `validation_split` | `float` | `0.0` | Fraction of data to hold out for validation (`0.0` to `1.0`). `0.0` disables validation. |
-| `validation_frequency` | `int` | `None` | Steps between validation evaluations. Required when `validation_split > 0`. |
+| `validation_split` | `float` | `None` | Fraction of training data to hold out for validation (greater than `0.0`, less than `1.0`). `None` disables validation. Mutually exclusive with `validation_data_path`. |
+| `validation_data_path` | `str` | `None` | Path to a separate validation dataset in JSONL format. The data is tokenized automatically using the same processing pipeline as the training data. Mutually exclusive with `validation_split`. |
+
+### Validation Triggers
+
+At least one trigger must be configured when validation data is present. Multiple triggers can be combined and are coalesced so validation runs at most once per step.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `validation_frequency` | `int` | `None` | Run validation every N training steps. |
+| `validate_at_epoch` | `bool` | `False` | Run validation at the end of each epoch. |
+| `min_samples_per_validation` | `int` | `None` | Minimum accumulated samples between validation runs. Must be a positive integer. |
+| `validate_at_final` | `bool` | `False` | Run validation at the end of training. |
+
+### Best-Val-Loss Checkpointing
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
 | `save_best_val_loss` | `bool` | `False` | Save a checkpoint whenever validation loss improves. |
 | `val_loss_improvement_threshold` | `float` | `0.0` | Minimum improvement in validation loss required to trigger a best-val-loss checkpoint save. |
 
-Pass these as kwargs through `osft()`:
+### Example: Step-Based Validation with Data Split
 
 ```python
 osft(
@@ -159,6 +177,25 @@ osft(
     validation_split=0.1,
     validation_frequency=100,
     save_best_val_loss=True,
+)
+```
+
+### Example: Separate Validation Dataset with Event-Based Triggers
+
+```python
+osft(
+    model_path="Qwen/Qwen2.5-7B-Instruct",
+    data_path="./train_data.jsonl",
+    ckpt_output_dir="./checkpoints",
+    unfreeze_rank_ratio=0.25,
+    effective_batch_size=16,
+    max_tokens_per_gpu=2048,
+    max_seq_len=1024,
+    learning_rate=5e-6,
+    num_epochs=5,
+    validation_data_path="./val_data.jsonl",
+    validate_at_epoch=True,
+    validate_at_final=True,
 )
 ```
 
