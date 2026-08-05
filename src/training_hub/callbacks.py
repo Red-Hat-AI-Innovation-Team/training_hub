@@ -2,7 +2,7 @@
 
 Provides TrainingHubCallback (base class) and TrainingHubContext (normalized
 training state) so users can write lifecycle hooks once and run them across
-backends (Unsloth first; InstructLab / Mini-Trainer adapters follow).
+backends (Unsloth, InstructLab Training, Mini-Trainer).
 
 Users subclass TrainingHubCallback and override only the hooks they need.
 Backend adapters translate these to each trainer's native callback interface.
@@ -10,8 +10,18 @@ Backend adapters translate these to each trainer's native callback interface.
 Callbacks are fire-and-forget: adapter layers catch exceptions so a failing
 user hook cannot abort training.
 
+Torchrun backends (InstructLab / Mini-Trainer):
+    Callbacks cross the subprocess boundary via class-source serialization.
+    Requirements:
+    - Define subclasses at **module level** (not nested / not ephemeral notebook cells)
+    - Put imports **inside method bodies**
+    - Use a no-arg (or all-default) constructor — **instance state is not preserved**
+    - Keep helpers/constants **inside the callback class** — module-level names
+      outside the class are not included in class-source serialization
+    - Prefer class attributes or re-read config from files/env inside hooks
+
 Example:
-    from training_hub import TrainingHubCallback, TrainingHubContext, lora_sft
+    from training_hub import TrainingHubCallback, TrainingHubContext, lora_sft, sft, osft
 
     class MetricsLogger(TrainingHubCallback):
         def on_log(self, context: TrainingHubContext) -> None:
@@ -20,14 +30,10 @@ Example:
         def on_evaluate(self, context: TrainingHubContext) -> None:
             print(f"eval step={context.step} metrics={context.metrics}")
 
-    lora_sft(
-        model_path="...",
-        data_path="train.jsonl",
-        ckpt_output_dir="...",
-        eval_data_path="eval.jsonl",
-        eval_steps=100,
-        callbacks=[MetricsLogger()],
-    )
+    # Same callback class works across backends:
+    lora_sft(..., callbacks=[MetricsLogger()])
+    sft(..., callbacks=[MetricsLogger()])
+    osft(..., callbacks=[MetricsLogger()])
 """
 
 from __future__ import annotations
@@ -74,10 +80,9 @@ class TrainingHubCallback:
         This is intentionally *not* an ABC. All hooks are optional.
 
     Attributes:
-        run_on_all_ranks: When False (default), Unsloth/HF adapters only
-            dispatch on rank 0. Set True on a subclass to opt into
-            per-rank hooks (e.g. per-node GPU memory logging) before
-            multi-node InstructLab / Mini-Trainer adapters land.
+        run_on_all_ranks: When False (default), adapters only dispatch on
+            rank 0. Set True on a subclass to opt into per-rank hooks
+            (e.g. per-node GPU memory logging).
     """
 
     run_on_all_ranks: bool = False

@@ -9,6 +9,7 @@ from instructlab.training import (
 
 from . import Algorithm, Backend, AlgorithmRegistry
 from training_hub import utils
+from training_hub.callbacks import TrainingHubCallback
 
 
 class InstructLabTrainingSFTBackend(Backend):
@@ -26,6 +27,17 @@ class InstructLabTrainingSFTBackend(Backend):
         # Note: instructlab-training auto-detects loggers based on mlflow_tracking_uri,
         # wandb_project, and tensorboard_log_dir parameters
         training_params = {k: v for k, v in algorithm_params.items() if k not in torchrun_keys}
+
+        # Adapt TrainingHubCallbacks → InstructLab TrainerCallback bridge
+        # (payload file + env for torchrun worker; upstream serializes the bridge)
+        hub_callbacks = training_params.pop('callbacks', None)
+        if hub_callbacks:
+            from training_hub.adapters.instructlab import adapt_hub_callbacks
+
+            payload_dir = training_params.get('ckpt_output_dir')
+            training_params['callbacks'] = adapt_hub_callbacks(
+                hub_callbacks, payload_dir=payload_dir
+            )
         
         # Map training_hub parameter names to instructlab-training parameter names
         if 'max_tokens_per_gpu' in training_params:
@@ -128,6 +140,9 @@ class SFTAlgorithm(Algorithm):
               mlflow_tracking_uri: Optional[str] = None,
               mlflow_experiment_name: Optional[str] = None,
               mlflow_run_name: Optional[str] = None,
+              # Callback parameters (keyword-only)
+              *,
+              callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               **kwargs) -> Any:
         """Execute SFT training.
         
@@ -166,11 +181,15 @@ class SFTAlgorithm(Algorithm):
             mlflow_tracking_uri: MLflow tracking server URI
             mlflow_experiment_name: MLflow experiment name
             mlflow_run_name: MLflow run name
+            callbacks: TrainingHubCallback or list of them for lifecycle hooks
             **kwargs: Additional parameters passed to the backend
             
         Returns:
             Training result from the backend
         """
+        if isinstance(callbacks, TrainingHubCallback):
+            callbacks = [callbacks]
+
         # Build parameters dict, only including non-None values
         params = {'model_path': model_path, 'data_path': data_path, 'ckpt_output_dir': ckpt_output_dir}
         
@@ -210,6 +229,7 @@ class SFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': mlflow_tracking_uri,
             'mlflow_experiment_name': mlflow_experiment_name,
             'mlflow_run_name': mlflow_run_name,
+            'callbacks': callbacks,
         }
         
         # Only add non-None parameters (let TrainingArgs handle defaults)
@@ -267,6 +287,7 @@ class SFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': str,
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
+            'callbacks': list,
         }
 
 
@@ -314,6 +335,9 @@ def sft(model_path: str,
         mlflow_tracking_uri: Optional[str] = None,
         mlflow_experiment_name: Optional[str] = None,
         mlflow_run_name: Optional[str] = None,
+        # Callback parameters (keyword-only)
+        *,
+        callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
         **kwargs) -> Any:
     """Convenience function to run SFT training.
     
@@ -353,6 +377,7 @@ def sft(model_path: str,
         mlflow_tracking_uri: MLflow tracking server URI
         mlflow_experiment_name: MLflow experiment name
         mlflow_run_name: MLflow run name
+        callbacks: TrainingHubCallback or list of them for lifecycle hooks
         **kwargs: Additional parameters passed to the backend
     
     Returns:
@@ -396,6 +421,7 @@ def sft(model_path: str,
         mlflow_tracking_uri=mlflow_tracking_uri,
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
+        callbacks=callbacks,
         **kwargs
     )
 
