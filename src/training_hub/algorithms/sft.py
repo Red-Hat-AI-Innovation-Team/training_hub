@@ -38,6 +38,13 @@ class InstructLabTrainingSFTBackend(Backend):
             training_params['callbacks'] = adapt_hub_callbacks(
                 hub_callbacks, payload_dir=payload_dir
             )
+            model_fields = getattr(TrainingArgs, 'model_fields', None)
+            if model_fields is None or 'callbacks' not in model_fields:
+                raise RuntimeError(
+                    "callbacks= was provided but the installed instructlab-training "
+                    "does not support TrainingArgs.callbacks. "
+                    "Upgrade instructlab-training to >=0.16.2."
+                )
         
         # Map training_hub parameter names to instructlab-training parameter names
         if 'max_tokens_per_gpu' in training_params:

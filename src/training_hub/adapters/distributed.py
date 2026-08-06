@@ -42,7 +42,9 @@ def build_hub_context_from_native(context: Any) -> TrainingHubContext:
     if loss is None:
         loss = metrics.get("loss")
     if loss is None:
-        loss = metrics.get("eval_loss") or metrics.get("val_loss")
+        loss = metrics.get("eval_loss")
+    if loss is None:
+        loss = metrics.get("val_loss")
 
     return TrainingHubContext(
         step=int(getattr(context, "step", 0) or 0),
@@ -63,7 +65,14 @@ class HubCallbackDispatcher:
 
     def _callbacks(self) -> list[TrainingHubCallback]:
         if self._hub_callbacks is None:
-            self._hub_callbacks = load_hub_callbacks_payload()
+            try:
+                self._hub_callbacks = load_hub_callbacks_payload()
+            except Exception:
+                logger.exception(
+                    "Failed to load hub callback payload; callbacks are disabled "
+                    "for this worker"
+                )
+                self._hub_callbacks = []
         return self._hub_callbacks
 
     def dispatch(self, method_name: str, native_context: Any) -> None:

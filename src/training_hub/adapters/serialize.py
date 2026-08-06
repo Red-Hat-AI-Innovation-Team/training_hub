@@ -135,6 +135,7 @@ def write_hub_callbacks_payload(
         "callbacks": [encode_hub_callback(cb) for cb in callbacks],
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+    path.chmod(0o600)
     return str(path.resolve())
 
 

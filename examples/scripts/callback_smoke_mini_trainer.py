@@ -115,7 +115,11 @@ def main() -> None:
         max_seq_len=128,
         learning_rate=2e-5,
         num_epochs=1,
-        nproc_per_node=int(args.nproc_per_node),
+        nproc_per_node=(
+            int(args.nproc_per_node)
+            if args.nproc_per_node.isdigit()
+            else args.nproc_per_node
+        ),
         checkpoint_at_epoch=True,
         callbacks=[MiniTrainerSmokeLogger()],
     )

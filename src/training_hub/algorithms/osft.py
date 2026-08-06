@@ -427,13 +427,13 @@ class MiniTrainerOSFTBackend(Backend):
         algorithm_params = {renames.get(k, k): v for k, v in algorithm_params.items()}
 
         # Adapt TrainingHubCallbacks → Mini-Trainer TrainerCallback bridge
-        hub_callbacks = algorithm_params.pop('callbacks', None)
-        if hub_callbacks:
+        user_hub_callbacks = algorithm_params.pop('callbacks', None)
+        if user_hub_callbacks:
             from training_hub.adapters.mini_trainer import adapt_hub_callbacks
 
             payload_dir = algorithm_params.get('output_dir')
             algorithm_params['callbacks'] = adapt_hub_callbacks(
-                hub_callbacks, payload_dir=payload_dir
+                user_hub_callbacks, payload_dir=payload_dir
             )
 
         # Populate logging params from environment variables if not explicitly set
@@ -453,6 +453,13 @@ class MiniTrainerOSFTBackend(Backend):
         # Separate parameters into their respective dataclass fields
         torchrun_args_fields = {f.name for f in fields(TorchrunArgs)}
         training_args_fields = {f.name for f in fields(TrainingArgs)}
+
+        if user_hub_callbacks and 'callbacks' not in training_args_fields:
+            raise RuntimeError(
+                "callbacks= was provided but the installed mini-trainer does not "
+                "support TrainingArgs.callbacks. "
+                "Upgrade rhai-innovation-mini-trainer to >=0.8.3."
+            )
 
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}

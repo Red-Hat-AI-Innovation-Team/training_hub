@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -404,6 +405,7 @@ class TestSerializeHubCallbacks:
         path = write_hub_callbacks_payload([original], payload_dir=str(tmp_path))
         loaded = load_hub_callbacks_payload(path)
         assert len(loaded) == 1
+        assert oct(Path(path).stat().st_mode & 0o777) == oct(0o600)
         loaded[0].on_train_begin(TrainingHubContext(step=1))
         # Fresh instance — events list starts empty then gets begin
         assert loaded[0].events == ["begin"]
@@ -449,6 +451,23 @@ class TestDistributedContextAndDispatch:
         assert ctx.metrics["tok"] == 10
         assert ctx.metrics["eval_loss"] == 0.4
         assert ctx.metrics["checkpoint_path"] == "/out/ckpt-7"
+
+    def test_build_context_preserves_zero_eval_loss(self):
+        from training_hub.adapters.distributed import build_hub_context_from_native
+
+        native = SimpleNamespace(
+            step=1,
+            epoch=0,
+            loss=None,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={"eval_loss": 0.0},
+            checkpoint_path=None,
+        )
+        ctx = build_hub_context_from_native(native)
+        assert ctx.loss == 0.0
 
     def test_rank_guard_and_exception_isolation(self, tmp_path, caplog):
         from training_hub.adapters.distributed import HubCallbackDispatcher
@@ -499,6 +518,28 @@ class TestDistributedContextAndDispatch:
         ]
         assert len(ranks) == 1
         assert ranks[0].calls == 1
+
+    def test_load_failure_disables_callbacks(self, tmp_path, caplog):
+        from training_hub.adapters.distributed import HubCallbackDispatcher
+        from training_hub.adapters.serialize import set_callbacks_payload_env
+
+        set_callbacks_payload_env(str(tmp_path / "missing_payload.json"))
+        dispatcher = HubCallbackDispatcher()
+        native = SimpleNamespace(
+            step=1,
+            epoch=0,
+            loss=0.1,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        with caplog.at_level(logging.ERROR):
+            dispatcher.dispatch("on_log", native)
+        assert dispatcher._callbacks() == []
+        assert "Failed to load hub callback payload" in caplog.text
 
 
 @pytest.mark.skipif(
