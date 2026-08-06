@@ -582,7 +582,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    _upload_mlflow_artifacts(final_kwargs)
+    if not os.environ.get("AMORTIZED_SKIP_ARTIFACT_UPLOAD"):
+        _upload_mlflow_artifacts(final_kwargs)
 
     if isinstance(result, dict):
         print(json.dumps(result, indent=2, default=str))
