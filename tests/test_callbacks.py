@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -349,3 +350,285 @@ class TestAdaptHubCallbacks:
 
     def test_empty_list(self):
         assert adapt_hub_callbacks([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Serialize helpers + InstructLab / Mini-Trainer bridges
+# ---------------------------------------------------------------------------
+
+
+class _SerializableLogger(TrainingHubCallback):
+    """Module-level callback for serialization tests."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def on_log(self, context: TrainingHubContext) -> None:
+        self.events.append(f"log:{context.step}:{context.loss}")
+
+    def on_train_begin(self, context: TrainingHubContext) -> None:
+        self.events.append("begin")
+
+
+class _AllRanksLogger(TrainingHubCallback):
+    run_on_all_ranks = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def on_step_end(self, context: TrainingHubContext) -> None:
+        self.calls += 1
+
+
+class _BoomCallback(TrainingHubCallback):
+    def on_log(self, context: TrainingHubContext) -> None:
+        raise RuntimeError("boom")
+
+
+class TestSerializeHubCallbacks:
+    """Tests for torchrun payload encode/decode."""
+
+    def test_round_trip(self, tmp_path):
+        from training_hub.adapters.serialize import (
+            decode_hub_callbacks,
+            encode_hub_callbacks,
+            load_hub_callbacks_payload,
+            write_hub_callbacks_payload,
+        )
+
+        original = _SerializableLogger()
+        encoded = encode_hub_callbacks([original])
+        restored = decode_hub_callbacks(encoded)
+        assert len(restored) == 1
+        assert type(restored[0]).__name__ == "_SerializableLogger"
+
+        path = write_hub_callbacks_payload([original], payload_dir=str(tmp_path))
+        loaded = load_hub_callbacks_payload(path)
+        assert len(loaded) == 1
+        assert oct(Path(path).stat().st_mode & 0o777) == oct(0o600)
+        loaded[0].on_train_begin(TrainingHubContext(step=1))
+        # Fresh instance — events list starts empty then gets begin
+        assert loaded[0].events == ["begin"]
+
+    def test_rejects_non_callback(self):
+        from training_hub.adapters.serialize import normalize_hub_callbacks
+
+        with pytest.raises(TypeError, match="TrainingHubCallback"):
+            normalize_hub_callbacks([object()])  # type: ignore[list-item]
+
+    def test_dynamic_class_fails_getsource(self):
+        from training_hub.adapters.serialize import encode_hub_callback
+
+        Dyn = type("DynCallback", (TrainingHubCallback,), {})
+        with pytest.raises(ValueError, match="Cannot serialize"):
+            encode_hub_callback(Dyn())
+
+
+class TestDistributedContextAndDispatch:
+    """Shared native-context mapping + dispatcher behavior."""
+
+    def test_build_context_maps_fields(self):
+        from training_hub.adapters.distributed import build_hub_context_from_native
+
+        native = SimpleNamespace(
+            step=7,
+            epoch=2,
+            loss=0.3,
+            learning_rate=1e-5,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={"loss": 0.3, "tok": 10},
+            val_metrics={"eval_loss": 0.4},
+            checkpoint_path="/out/ckpt-7",
+        )
+        ctx = build_hub_context_from_native(native)
+        assert ctx.step == 7
+        assert ctx.epoch == 2
+        assert ctx.loss == 0.3
+        assert ctx.learning_rate == 1e-5
+        assert ctx.is_main_process is True
+        assert ctx.output_dir == "/out"
+        assert ctx.metrics["tok"] == 10
+        assert ctx.metrics["eval_loss"] == 0.4
+        assert ctx.metrics["checkpoint_path"] == "/out/ckpt-7"
+
+    def test_build_context_preserves_zero_eval_loss(self):
+        from training_hub.adapters.distributed import build_hub_context_from_native
+
+        native = SimpleNamespace(
+            step=1,
+            epoch=0,
+            loss=None,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={"eval_loss": 0.0},
+            checkpoint_path=None,
+        )
+        ctx = build_hub_context_from_native(native)
+        assert ctx.loss == 0.0
+
+    def test_rank_guard_and_exception_isolation(self, tmp_path, caplog):
+        from training_hub.adapters.distributed import HubCallbackDispatcher
+        from training_hub.adapters.serialize import (
+            set_callbacks_payload_env,
+            write_hub_callbacks_payload,
+        )
+
+        path = write_hub_callbacks_payload(
+            [_SerializableLogger(), _BoomCallback(), _AllRanksLogger()],
+            payload_dir=str(tmp_path),
+        )
+        set_callbacks_payload_env(path)
+        dispatcher = HubCallbackDispatcher()
+
+        native_main = SimpleNamespace(
+            step=1,
+            epoch=0,
+            loss=0.1,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        with caplog.at_level(logging.ERROR):
+            dispatcher.dispatch("on_log", native_main)
+        assert "boom" in caplog.text or "BoomCallback" in caplog.text or "ignored" in caplog.text
+
+        # Non-main: only run_on_all_ranks callbacks fire
+        dispatcher2 = HubCallbackDispatcher()
+        native_worker = SimpleNamespace(
+            step=2,
+            epoch=0,
+            loss=0.2,
+            learning_rate=None,
+            is_world_process_zero=False,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        dispatcher2.dispatch("on_step_end", native_worker)
+        # Fresh load — AllRanksLogger should have been called once
+        ranks = [
+            cb for cb in dispatcher2._callbacks() if type(cb).__name__ == "_AllRanksLogger"
+        ]
+        assert len(ranks) == 1
+        assert ranks[0].calls == 1
+
+    def test_load_failure_disables_callbacks(self, tmp_path, caplog):
+        from training_hub.adapters.distributed import HubCallbackDispatcher
+        from training_hub.adapters.serialize import set_callbacks_payload_env
+
+        set_callbacks_payload_env(str(tmp_path / "missing_payload.json"))
+        dispatcher = HubCallbackDispatcher()
+        native = SimpleNamespace(
+            step=1,
+            epoch=0,
+            loss=0.1,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir="/out",
+            batch_metrics={},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        with caplog.at_level(logging.ERROR):
+            dispatcher.dispatch("on_log", native)
+        assert dispatcher._callbacks() == []
+        assert "Failed to load hub callback payload" in caplog.text
+
+
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("instructlab") is None,
+    reason="instructlab-training not installed",
+)
+class TestInstructLabBridge:
+    def test_adapt_writes_payload_and_returns_bridge(self, tmp_path):
+        from training_hub.adapters.instructlab import (
+            InstructLabCallbackBridge,
+            adapt_hub_callbacks,
+        )
+        from training_hub.adapters.serialize import CALLBACKS_PATH_ENV
+        import os
+
+        adapted = adapt_hub_callbacks([_SerializableLogger()], payload_dir=str(tmp_path))
+        assert len(adapted) == 1
+        assert isinstance(adapted[0], InstructLabCallbackBridge)
+        assert os.environ.get(CALLBACKS_PATH_ENV)
+        assert (tmp_path / "training_hub_callbacks.json").exists()
+
+        native = SimpleNamespace(
+            step=3,
+            epoch=1,
+            loss=0.5,
+            learning_rate=2e-4,
+            is_world_process_zero=True,
+            output_dir=str(tmp_path),
+            batch_metrics={"loss": 0.5},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        adapted[0].on_log(native)
+
+    def test_bridge_survives_upstream_serialize_roundtrip(self, tmp_path):
+        from instructlab.training.callbacks import (
+            deserialize_callback,
+            serialize_callback,
+        )
+        from training_hub.adapters.instructlab import (
+            InstructLabCallbackBridge,
+            adapt_hub_callbacks,
+        )
+
+        adapt_hub_callbacks([_SerializableLogger()], payload_dir=str(tmp_path))
+        bridge = InstructLabCallbackBridge()
+        restored = deserialize_callback(serialize_callback(bridge))
+        assert type(restored).__name__ == "InstructLabCallbackBridge"
+
+        native = SimpleNamespace(
+            step=9,
+            epoch=0,
+            loss=0.9,
+            learning_rate=None,
+            is_world_process_zero=True,
+            output_dir=str(tmp_path),
+            batch_metrics={},
+            val_metrics={},
+            checkpoint_path=None,
+        )
+        restored.on_train_begin(native)
+
+
+@pytest.mark.skipif(
+    __import__("importlib.util").util.find_spec("mini_trainer") is None,
+    reason="mini_trainer not installed",
+)
+class TestMiniTrainerBridge:
+    def test_adapt_and_upstream_serialize(self, tmp_path):
+        from mini_trainer.callbacks import deserialize_callback, serialize_callback
+        from training_hub.adapters.mini_trainer import (
+            MiniTrainerCallbackBridge,
+            adapt_hub_callbacks,
+        )
+
+        adapted = adapt_hub_callbacks([_SerializableLogger()], payload_dir=str(tmp_path))
+        assert isinstance(adapted[0], MiniTrainerCallbackBridge)
+        restored = deserialize_callback(serialize_callback(adapted[0]))
+        assert type(restored).__name__ == "MiniTrainerCallbackBridge"
+        restored.on_train_end(
+            SimpleNamespace(
+                step=1,
+                epoch=0,
+                loss=None,
+                learning_rate=None,
+                is_world_process_zero=True,
+                output_dir=str(tmp_path),
+                batch_metrics={},
+                val_metrics={},
+                checkpoint_path=None,
+            )
+        )

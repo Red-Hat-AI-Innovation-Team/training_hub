@@ -5,6 +5,7 @@ import warnings
 
 import datasets
 from training_hub.algorithms import Algorithm, Backend, AlgorithmRegistry
+from training_hub.callbacks import TrainingHubCallback
 from training_hub.utils import format_type_name, get_torchrun_params
 
 
@@ -78,6 +79,9 @@ class OSFTAlgorithm(Algorithm):
         mlflow_run_name: str | None = None,
         # Model loading
         trust_remote_code: bool | None = None,
+        # Callback parameters (keyword-only)
+        *,
+        callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
         **kwargs,
     ) -> any:
         """
@@ -198,6 +202,9 @@ class OSFTAlgorithm(Algorithm):
             'unfreeze_rank_ratio': unfreeze_rank_ratio,
         }
 
+        if isinstance(callbacks, TrainingHubCallback):
+            callbacks = [callbacks]
+
         optional_params = {
             'target_patterns': target_patterns,
             # for data processing
@@ -241,6 +248,7 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_run_name': mlflow_run_name,
             # model loading
             'trust_remote_code': trust_remote_code,
+            'callbacks': callbacks,
         }
 
         # now do validation now that we've set everything up
@@ -310,6 +318,7 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_tracking_uri': str,
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
+            'callbacks': list,
         }
 
     def _validate_param_types(self, params: dict[str, any]):
@@ -417,6 +426,16 @@ class MiniTrainerOSFTBackend(Backend):
         # Rename parameters before sending to backend
         algorithm_params = {renames.get(k, k): v for k, v in algorithm_params.items()}
 
+        # Adapt TrainingHubCallbacks → Mini-Trainer TrainerCallback bridge
+        user_hub_callbacks = algorithm_params.pop('callbacks', None)
+        if user_hub_callbacks:
+            from training_hub.adapters.mini_trainer import adapt_hub_callbacks
+
+            payload_dir = algorithm_params.get('output_dir')
+            algorithm_params['callbacks'] = adapt_hub_callbacks(
+                user_hub_callbacks, payload_dir=payload_dir
+            )
+
         # Populate logging params from environment variables if not explicitly set
         if not algorithm_params.get('mlflow_tracking_uri'):
             algorithm_params['mlflow_tracking_uri'] = os.environ.get('MLFLOW_TRACKING_URI')
@@ -434,6 +453,13 @@ class MiniTrainerOSFTBackend(Backend):
         # Separate parameters into their respective dataclass fields
         torchrun_args_fields = {f.name for f in fields(TorchrunArgs)}
         training_args_fields = {f.name for f in fields(TrainingArgs)}
+
+        if user_hub_callbacks and 'callbacks' not in training_args_fields:
+            raise RuntimeError(
+                "callbacks= was provided but the installed mini-trainer does not "
+                "support TrainingArgs.callbacks. "
+                "Upgrade rhai-innovation-mini-trainer to >=0.8.3."
+            )
 
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
@@ -615,6 +641,9 @@ def osft(
     mlflow_run_name: str | None = None,
     # Model loading
     trust_remote_code: bool | None = None,
+    # Callback parameters (keyword-only)
+    *,
+    callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
     **kwargs,
 ) -> any:
     """Convenience function to run Orthogonal Subspace Fine-Tuning (OSFT) training.
@@ -699,6 +728,7 @@ def osft(
         mlflow_experiment_name: MLflow experiment name.
         mlflow_run_name: MLflow run name.
         trust_remote_code: Whether to trust remote code when loading the model.
+        callbacks: TrainingHubCallback or list of them for lifecycle hooks.
         **kwargs: Additional backend-specific parameters passed to the backend.
 
     Returns:
@@ -756,5 +786,6 @@ def osft(
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
         trust_remote_code=trust_remote_code,
+        callbacks=callbacks,
         **kwargs,
     )
