@@ -897,7 +897,7 @@ class ARTLoRAGRPOBackend(Backend):
             import art
             from art.local.backend import LocalBackend
 
-            # ART 0.5.18 passes reward_funcs=[] to GRPOTrainer, but trl 1.8+
+            # ART passes reward_funcs=[] to GRPOTrainer, but trl 1.8+
             # requires at least one reward source.  ART overrides compute_loss
             # entirely, so the no-op is never called at runtime.
             _noop_reward = lambda completions, **kw: [0.0] * len(completions)
@@ -911,7 +911,16 @@ class ARTLoRAGRPOBackend(Backend):
                     elif not kwargs.get("reward_funcs"):
                         kwargs["reward_funcs"] = [_noop_reward]
                     super().__init__(*args, **kwargs)
+            # art 0.5.18 instantiates GRPOTrainer in art.unsloth.train;
+            # art 0.5.17 instantiates it in art.unsloth.service.  Patch the
+            # reference in both modules so either version gets the default.
             _art_train.GRPOTrainer = _GRPOTrainerWithDefaultReward
+            try:
+                import art.unsloth.service as _art_service
+                if hasattr(_art_service, "GRPOTrainer"):
+                    _art_service.GRPOTrainer = _GRPOTrainerWithDefaultReward
+            except ImportError:
+                pass
             asyncio.run(
                 ARTLoRAGRPOBackend()._run_training(algorithm_params, art, LocalBackend)
             )
