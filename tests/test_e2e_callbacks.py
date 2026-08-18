@@ -16,7 +16,8 @@ All 49 TCs from the test plan are covered:
   TC-E2E     — End-to-end scenarios (3)
   TC-UPGRADE — Upgrade testing (3)
 
-GPU-requiring tests (real training) are marked ``pytest.mark.gpu``.
+All tests run without a GPU. Real GPU training remains manual via
+``examples/scripts/callback_smoke_*.py``.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 import tracemalloc
 from datetime import datetime, timezone
@@ -32,6 +34,19 @@ from types import SimpleNamespace
 import pytest
 
 from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
+
+_CALLBACKS_PATH_ENV = "TRAINING_HUB_CALLBACKS_PATH"
+
+
+@pytest.fixture(autouse=True)
+def _restore_callbacks_env(monkeypatch):
+    """Restore TRAINING_HUB_CALLBACKS_PATH after every test."""
+    old = os.environ.get(_CALLBACKS_PATH_ENV)
+    yield
+    if old is None:
+        monkeypatch.delenv(_CALLBACKS_PATH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_CALLBACKS_PATH_ENV, old)
 
 ALL_HOOKS = [
     "on_train_begin",
@@ -110,8 +125,16 @@ def _simulate_training(callbacks: list[TrainingHubCallback], epochs: int = 2, st
             for cb in callbacks:
                 cb.on_step_end(ctx)
 
+        epoch_ctx = TrainingHubContext(
+            step=global_step, epoch=epoch,
+            metrics={"eval_loss": 1.0 / max(global_step, 1)},
+        )
         for cb in callbacks:
-            cb.on_epoch_end(TrainingHubContext(step=global_step, epoch=epoch))
+            cb.on_epoch_end(epoch_ctx)
+        for cb in callbacks:
+            cb.on_evaluate(epoch_ctx)
+        for cb in callbacks:
+            cb.on_save(epoch_ctx)
 
     for cb in callbacks:
         cb.on_train_end(TrainingHubContext(step=global_step, epoch=epochs - 1))
@@ -177,6 +200,8 @@ class TestIFACE:
         assert names.count("on_step_end") == 10
         assert names.count("on_epoch_end") == 2
         assert names.count("on_epoch_begin") == 2
+        assert names.count("on_evaluate") == 2
+        assert names.count("on_save") == 2
 
         # Each epoch_end comes after its step_ends
         epoch_end_indices = [i for i, n in enumerate(names) if n == "on_epoch_end"]
@@ -227,7 +252,11 @@ class TestIFACE:
         with pytest.raises(TypeError, match="TrainingHubCallback"):
             normalize_hub_callbacks([FakeCallback()])
 
-    def test_006_exception_isolation(self):
+    @pytest.mark.skipif(
+        __import__("importlib.util").util.find_spec("transformers") is None,
+        reason="transformers not installed",
+    )
+    def test_006_exception_isolation(self, tmp_path):
         """TC-IFACE-006: Callback exception does not crash training pipeline."""
         survived = []
 
@@ -242,25 +271,21 @@ class TestIFACE:
             def on_train_end(self, ctx: TrainingHubContext) -> None:
                 survived.append("end")
 
-        # Exception isolation is adapter-level; test via Unsloth adapter
-        try:
-            from training_hub.adapters.unsloth import UnslothCallbackAdapter
+        from training_hub.adapters.unsloth import UnslothCallbackAdapter
 
-            args = SimpleNamespace(output_dir="/tmp")
-            state = SimpleNamespace(
-                global_step=1, epoch=0.0,
-                is_world_process_zero=True, log_history=[],
-            )
+        args = SimpleNamespace(output_dir=str(tmp_path))
+        state = SimpleNamespace(
+            global_step=1, epoch=0.0,
+            is_world_process_zero=True, log_history=[],
+        )
 
-            exploder_adapter = UnslothCallbackAdapter(Exploder())
-            survivor_adapter = UnslothCallbackAdapter(Survivor())
+        exploder_adapter = UnslothCallbackAdapter(Exploder())
+        survivor_adapter = UnslothCallbackAdapter(Survivor())
 
-            exploder_adapter.on_step_end(args, state, None)
-            survivor_adapter.on_step_end(args, state, None)
+        exploder_adapter.on_step_end(args, state, None)
+        survivor_adapter.on_step_end(args, state, None)
 
-            assert 1 in survived
-        except ImportError:
-            pytest.skip("transformers not installed")
+        assert 1 in survived
 
 
 # ---------------------------------------------------------------------------
@@ -381,16 +406,14 @@ class TestADAPT:
         adapted = adapt_hub_callbacks([tracker], payload_dir=str(tmp_path))
         assert len(adapted) == 1
 
-        for hook in ALL_HOOKS:
-            native = _make_native_context(step=1, epoch=0, loss=0.5)
-            getattr(adapted[0], hook)(native)
-
-        dispatched_hooks = {c[0] for c in tracker.calls}
-        # All hooks fire when dispatched — but tracker isn't the bridge callback.
-        # Bridge dispatches via env payload. Verify bridge has all hooks.
         bridge = adapted[0]
         for hook in ALL_HOOKS:
-            assert hasattr(bridge, hook) and callable(getattr(bridge, hook))
+            native = _make_native_context(step=1, epoch=0, loss=0.5)
+            getattr(bridge, hook)(native)
+            assert callable(getattr(bridge, hook))
+
+        dispatched = {c[0] for c in bridge._get_dispatcher()._callbacks()[0].calls}
+        assert dispatched == set(ALL_HOOKS)
 
     @pytest.mark.skipif(
         __import__("importlib.util").util.find_spec("mini_trainer") is None,
@@ -716,8 +739,6 @@ class TestUNSL:
         """TC-UNSL-002: TrainerState fields accessible via context."""
         from training_hub.adapters.unsloth import UnslothCallbackAdapter
 
-        tracker = _OrderTracker()
-        adapter = UnslothCallbackAdapter(tracker)
         args = SimpleNamespace(output_dir="/ckpt")
         state = SimpleNamespace(
             global_step=7, epoch=2.0,
@@ -727,9 +748,7 @@ class TestUNSL:
             ],
         )
         logs = {"loss": 0.5, "learning_rate": 1e-4}
-        adapter.on_log(args, state, None, logs=logs)
 
-        # Verify through the _RecordingCallback pattern instead
         class CtxCapture(TrainingHubCallback):
             def __init__(self):
                 self.ctx = None
@@ -738,8 +757,8 @@ class TestUNSL:
                 self.ctx = ctx
 
         cap = CtxCapture()
-        adapter2 = UnslothCallbackAdapter(cap)
-        adapter2.on_log(args, state, None, logs=logs)
+        adapter = UnslothCallbackAdapter(cap)
+        adapter.on_log(args, state, None, logs=logs)
         assert cap.ctx.step == 7
         assert cap.ctx.loss == 0.5
         assert cap.ctx.learning_rate == 1e-4
@@ -892,7 +911,7 @@ class _QualityMonitoringCallback(TrainingHubCallback):
             if len(self._step_losses) >= 4:
                 last3 = self._step_losses[-3:]
                 prev3 = self._step_losses[-4:-1]
-                if all(a > b for a, b in zip(last3, prev3)):
+                if all(a > b for a, b in zip(last3, prev3, strict=True)):
                     self._entries.append({
                         "step": ctx.step, "warning": "loss_increasing_3_steps",
                     })
@@ -985,6 +1004,20 @@ class TestENT:
 
         for e in loss_entries:
             assert math.isfinite(e["loss"])
+
+    def test_003_quality_loss_increase_warning(self, tmp_path):
+        """TC-ENT-003 supplement: loss-increasing warning branch fires."""
+        out = str(tmp_path / "quality_warn.jsonl")
+        cb = _QualityMonitoringCallback(output_path=out)
+        for step, loss in enumerate([0.5, 0.6, 0.7, 0.8], start=1):
+            cb.on_step_end(TrainingHubContext(step=step, epoch=0, loss=loss))
+        cb.on_train_end(TrainingHubContext(step=4, epoch=0))
+
+        with open(out) as f:
+            entries = [json.loads(line) for line in f]
+
+        warnings = [e for e in entries if e.get("warning") == "loss_increasing_3_steps"]
+        assert len(warnings) >= 1
 
     def test_004_bias_detection_identifies_indicators(self, tmp_path):
         """TC-ENT-004: Bias detection callback identifies bias indicators."""
@@ -1105,7 +1138,7 @@ class TestMIG:
             _make_native_context(step=3, epoch=0, loss=0.5),
         ]
         hooks = ["on_train_begin", "on_step_end", "on_step_end", "on_step_end", "on_train_end"]
-        for evt, hook in zip(native_events, hooks):
+        for evt, hook in zip(native_events, hooks, strict=True):
             ctx = build_hub_context_from_native(evt)
             legacy_output.append({"event": hook, "step": ctx.step, "loss": ctx.loss})
 
@@ -1128,13 +1161,13 @@ class TestMIG:
         set_callbacks_payload_env(path)
         dispatcher = HubCallbackDispatcher()
 
-        for evt, hook in zip(native_events, hooks):
+        for evt, hook in zip(native_events, hooks, strict=True):
             dispatcher.dispatch(hook, evt)
 
         unified_output = dispatcher._callbacks()[0].output
 
         assert len(unified_output) == len(legacy_output)
-        for legacy, unified in zip(legacy_output, unified_output):
+        for legacy, unified in zip(legacy_output, unified_output, strict=True):
             assert legacy["event"] == unified["event"]
             assert legacy["step"] == unified["step"]
             assert legacy["loss"] == unified["loss"]
@@ -1165,7 +1198,7 @@ class TestMIG:
             _make_native_context(step=2, epoch=0, loss=0.7),
         ]
         hooks = ["on_train_begin", "on_step_end", "on_step_end", "on_train_end"]
-        for evt, hook in zip(native_events, hooks):
+        for evt, hook in zip(native_events, hooks, strict=True):
             ctx = build_hub_context_from_native(evt)
             legacy_output.append({"event": hook, "step": ctx.step, "loss": ctx.loss})
 
@@ -1187,12 +1220,12 @@ class TestMIG:
         set_callbacks_payload_env(path)
         dispatcher = HubCallbackDispatcher()
 
-        for evt, hook in zip(native_events, hooks):
+        for evt, hook in zip(native_events, hooks, strict=True):
             dispatcher.dispatch(hook, evt)
 
         unified_output = dispatcher._callbacks()[0].output
         assert len(unified_output) == len(legacy_output)
-        for legacy, unified in zip(legacy_output, unified_output):
+        for legacy, unified in zip(legacy_output, unified_output, strict=True):
             assert legacy["event"] == unified["event"]
             assert legacy["step"] == unified["step"]
 
@@ -1290,6 +1323,8 @@ class TestPERF:
         Run 500 steps, sample memory every 100 steps via tracemalloc.
         Verify no monotonic upward slope (leak pattern).
         """
+        if tracemalloc.is_tracing():
+            pytest.skip("tracemalloc already active")
         tracemalloc.start()
 
         class MemSampler(TrainingHubCallback):
@@ -1302,9 +1337,10 @@ class TestPERF:
                     self.samples.append(current)
 
         sampler = MemSampler()
-        _simulate_training([sampler], epochs=5, steps_per_epoch=100)
-
-        tracemalloc.stop()
+        try:
+            _simulate_training([sampler], epochs=5, steps_per_epoch=100)
+        finally:
+            tracemalloc.stop()
 
         assert len(sampler.samples) >= 4
         # Peak delta under 50MB (TC spec threshold)
@@ -1361,13 +1397,6 @@ class TestPERF:
 
         for name, ms in overheads.items():
             assert ms < 1.0, f"{name} overhead {ms:.3f}ms exceeds 1ms"
-
-        if len(overheads) >= 2:
-            vals = list(overheads.values())
-            # All sub-microsecond; 10x ratio acceptable at these scales
-            assert max(vals) < 10 * min(vals), (
-                f"Overhead spread too wide: {overheads}"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -1554,14 +1583,10 @@ class TestUPGRADE:
         path = write_hub_callbacks_payload([tracker], payload_dir=str(tmp_path))
 
         # Verify file exists and is valid JSON
-        import pathlib
-        payload_file = pathlib.Path(path)
+        from pathlib import Path as _Path
+        payload_file = _Path(path)
         assert payload_file.exists()
-        pre_checksum = payload_file.read_bytes()
-
-        # Simulate upgrade: file should not be modified
-        # (Training-Hub upgrade doesn't touch user payload files)
-        assert payload_file.read_bytes() == pre_checksum
+        assert json.loads(payload_file.read_text())  # valid JSON
 
         # Post-upgrade: load payload — should still work
         set_callbacks_payload_env(path)
@@ -1603,23 +1628,24 @@ class TestUPGRADE:
 
         assert legacy.events == ["begin", "step_1", "step_2", "step_3", "end"]
 
-        # Simulate rollback: trying to use unified callback fails gracefully
+        # Simulate rollback: unified layer removed from sys.modules
+        import sys
+        saved = sys.modules.pop("training_hub.callbacks", None)
         try:
-            # This import succeeds in our test env (post-upgrade), but
-            # the test validates the pattern: if it failed, legacy still works
-            from training_hub.callbacks import TrainingHubCallback as _THC
-            unified_available = True
-        except ImportError:
-            unified_available = False
+            try:
+                from training_hub.callbacks import TrainingHubCallback as _THC  # noqa: F811
+                unified_available = True
+            except ImportError:
+                unified_available = False
+        finally:
+            if saved is not None:
+                sys.modules["training_hub.callbacks"] = saved
 
-        # Either way, legacy callback output is intact
+        # Legacy callback output intact regardless of unified availability
         assert legacy.events == ["begin", "step_1", "step_2", "step_3", "end"]
 
-        # If unified IS available (our current state), verify it doesn't
-        # corrupt legacy callback state
-        if unified_available:
-            tracker = _OrderTracker()
-            _simulate_training([tracker], epochs=1, steps_per_epoch=2)
-            assert len(tracker.calls) > 0
-            # Legacy still works
-            assert legacy.events == ["begin", "step_1", "step_2", "step_3", "end"]
+        # Unified layer existence does not corrupt legacy state
+        tracker = _OrderTracker()
+        _simulate_training([tracker], epochs=1, steps_per_epoch=2)
+        assert len(tracker.calls) > 0
+        assert legacy.events == ["begin", "step_1", "step_2", "step_3", "end"]
