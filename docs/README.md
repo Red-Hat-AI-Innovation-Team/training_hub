@@ -158,7 +158,7 @@ result = grpo(
 )
 ```
 
-### GEPA (Genetic-Pareto Prompt Optimization)
+### [GEPA (Genetic-Pareto Prompt Optimization)](/algorithms/gepa)
 
 Gradient-free prompt optimization using evolutionary search with Pareto-based selection and LLM-driven reflection. GEPA evolves textual prompts to maximize task performance **without modifying model weights**, so it needs no local GPU — it optimizes prompts by calling an LLM endpoint (hosted API or local vLLM/OpenAI-compatible server via `api_base`). Features:
 - Genetic-Pareto search with LLM reflection to propose improved prompts

@@ -116,6 +116,31 @@ result = lora_sft(
 )
 ```
 
+### GEPA (Genetic-Pareto Prompt Optimization)
+
+GEPA is a gradient-free algorithm that optimizes prompt *text* — system prompts, few-shot templates, agent instructions — without modifying model weights, so it requires no local GPU. It uses evolutionary search with Pareto-based selection and LLM-driven reflection, reaching the model through a hosted API or a local vLLM/OpenAI-compatible endpoint.
+
+**Documentation:**
+- [GEPA Usage Guide](/algorithms/gepa) - Conceptual overview, backends, data format, and tips
+- [gepa() Function Reference](/api/functions/gepa) - Full parameter reference
+
+**Tutorials:**
+- [GEPA Prompt Optimization](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/notebooks/gepa_prompt_optimization.ipynb) - Interactive notebook demonstrating both backends (direct and MLflow) against a local vLLM server
+
+**Quick Example:**
+```python
+from training_hub import gepa
+
+result = gepa(
+    seed_candidate={"system_prompt": "You are a helpful assistant. Answer the question."},
+    task_lm="openai/gpt-4o-mini",
+    data_path="/path/to/eval_data.jsonl",
+    output_dir="/path/to/gepa_output",
+    max_metric_calls=200,
+)
+print(result.best_candidate)
+```
+
 ### Memory Estimation (Experimental)
 
 training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during fine-tuning.

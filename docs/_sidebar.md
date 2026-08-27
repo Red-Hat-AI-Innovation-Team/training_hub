@@ -14,6 +14,7 @@
   * [LoRA - Low-Rank Adaptation](/algorithms/lora)
   * [LoRA + GRPO - Adapter RLVR](/algorithms/lora_grpo)
   * [GRPO - Full Fine-Tuning RLVR](/algorithms/grpo)
+  * [GEPA - Prompt Optimization](/algorithms/gepa)
 
 * API Reference
   * [API Overview](/api/)
@@ -23,6 +24,7 @@
     * [lora_sft()](/api/functions/lora_sft)
     * [lora_grpo()](/api/functions/lora_grpo)
     * [grpo()](/api/functions/grpo)
+    * [gepa()](/api/functions/gepa)
     * [create_algorithm()](/api/functions/create-algorithm)
   * Classes
     * [Algorithm](/api/classes/Algorithm)
@@ -31,6 +33,7 @@
     * [OSFTAlgorithm](/api/classes/OSFTAlgorithm)
     * [LoRASFTAlgorithm](/api/classes/LoRASFTAlgorithm)
     * [LoRAGRPOAlgorithm](/api/classes/LoRAGRPOAlgorithm)
+    * [GEPAAlgorithm](/api/classes/GEPAAlgorithm)
     * [PEFTExtender](/api/classes/PEFTExtender)
     * [LoRAPEFTExtender](/api/classes/LoRAPEFTExtender)
     * [AlgorithmRegistry](/api/classes/AlgorithmRegistry)
@@ -41,6 +44,7 @@
     * [Unsloth](/api/backends/unsloth)
     * [ART (GRPO)](/api/backends/art-grpo)
     * [verl (GRPO)](/api/backends/verl)
+    * [GEPA (Prompt Optimization)](/api/backends/gepa)
   * [Data Formats](/api/data-formats)
 
 * Guides
