@@ -26,19 +26,14 @@
 
 ## Support Matrix
 
-| Algorithm | InstructLab-Training | RHAI Innovation Mini-Trainer | PEFT | Unsloth | verl | Status |
-|-----------|----------------------|------------------------------|------|---------|------|--------|
-| **Supervised Fine-tuning (SFT)** | ✅ | - | - | - | - | Implemented |
-| Continual Learning (OSFT) | 🔄 | ✅ | 🔄 | - | - | Implemented |
-| **Low-Rank Adaptation (LoRA) + SFT** | - | - | - | ✅ | - | Implemented |
-| **LoRA + GRPO (Adapter-Based RLVR)** | - | - | - | ✅ | ✅ | Implemented |
-| **GRPO (Full Fine-Tuning RLVR)** | - | - | - | - | ✅ | Implemented |
-| Direct Preference Optimization (DPO) | - | - | - | - | 🔄 | Planned |
-
-**Legend:**
-- ✅ Implemented and tested
-- 🔄 Planned for future implementation
-- \- Not applicable or not planned
+| Algorithm | Backends | GPU Support | Install Extra |
+|-----------|----------|-------------|---------------|
+| **Supervised Fine-tuning (SFT)** | InstructLab-Training | Multi-GPU, multi-node | base |
+| **Continual Learning (OSFT)** | RHAI Innovation Mini-Trainer | Multi-GPU, multi-node | base |
+| **Low-Rank Adaptation (LoRA) + SFT** | Unsloth | Single-GPU, multi-GPU, multi-node | `[lora]` |
+| **LoRA + GRPO (Adapter-Based RLVR)** | ART + Unsloth, verl | Single-GPU (ART), multi-GPU, multi-node (verl) | `[grpo,lora]` |
+| **GRPO (Full Fine-Tuning RLVR)** | verl | Multi-GPU, multi-node | `[grpo]` |
+| **GEPA (Genetic-Pareto Prompt Optimization)** | GEPA, MLflow | CPU (API-based) | `[gepa]` |
 
 ## Implemented Algorithms
 
@@ -163,6 +158,26 @@ result = grpo(
 )
 ```
 
+### GEPA (Genetic-Pareto Prompt Optimization)
+
+Gradient-free prompt optimization using evolutionary search with Pareto-based selection and LLM-driven reflection. GEPA evolves textual prompts to maximize task performance **without modifying model weights**, so it needs no local GPU — it optimizes prompts by calling an LLM endpoint (hosted API or local vLLM/OpenAI-compatible server via `api_base`). Features:
+- Genetic-Pareto search with LLM reflection to propose improved prompts
+- Works with any model reachable through LiteLLM (hosted APIs or local endpoints)
+- Two backends: `gepa` (direct `gepa.optimize()`) and `mlflow` (MLflow prompt registry, scorers, and tracking)
+
+```python
+from training_hub import gepa
+
+result = gepa(
+    seed_candidate={"system_prompt": "You are a helpful assistant. Answer the question."},
+    task_lm="openai/gpt-4o-mini",
+    data_path="./eval_data.jsonl",
+    output_dir="./gepa_output",
+    reflection_lm="openai/gpt-4o",
+    max_metric_calls=200,
+)
+```
+
 ## Installation
 
 ### Basic Installation
@@ -208,6 +223,18 @@ pip install training-hub[grpo,lora]
 > The `[grpo]` extras constrain torch, vllm, and transformers versions for verl
 > compatibility, which may conflict with versions pulled by `[cuda]`. Sequential
 > installation lets the solver pick compatible versions.
+
+### GEPA Support
+For gradient-free prompt optimization (includes the MLflow backend):
+```bash
+pip install training-hub[gepa]
+# or for development
+pip install -e .[gepa]
+```
+
+**Note:** GEPA optimizes prompts via LLM API calls and does not require CUDA. To
+optimize against a local model, run a vLLM (or other OpenAI-compatible) server and
+pass its URL via the `api_base` parameter.
 
 ### CUDA Support
 For GPU training with CUDA support:
