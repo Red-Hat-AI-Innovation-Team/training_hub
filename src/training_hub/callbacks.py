@@ -41,6 +41,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# Backends with native on_demand_checkpointing (no hub JIT callback injection).
+_NATIVE_JIT_BACKENDS = frozenset({"sft", "osft"})
+
+
+@dataclass
+class TrainingHubControl:
+    """Mutable control flags for hub default callbacks (HF TrainerControl-like)."""
+
+    should_save: bool = False
+    should_training_stop: bool = False
+
 
 @dataclass
 class TrainingHubContext:
@@ -58,6 +69,7 @@ class TrainingHubContext:
         is_main_process: Whether this is rank 0 in distributed training.
         output_dir: Checkpoint output directory.
         metrics: Backend-specific metrics dict, flattened.
+        control: Mutable control bag for default-flow callbacks (optional).
     """
 
     step: int = 0
@@ -67,6 +79,7 @@ class TrainingHubContext:
     is_main_process: bool = True
     output_dir: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
+    control: TrainingHubControl | None = None
 
 
 class TrainingHubCallback:
@@ -113,3 +126,27 @@ class TrainingHubCallback:
 
     def on_train_end(self, context: TrainingHubContext) -> None:
         """Called after training completes."""
+
+
+def merge_default_callbacks(
+    user_callbacks: list[TrainingHubCallback] | TrainingHubCallback | None,
+    *,
+    enable_jit_checkpoint: bool = False,
+    ckpt_output_dir: str | None = None,
+    backend: str | None = None,
+) -> list[TrainingHubCallback]:
+    """Prepend platform default callbacks before user callbacks.
+
+    Hub defaults run first on each lifecycle event. JIT checkpointing is
+    injected only when ``enable_jit_checkpoint=True`` and ``ckpt_output_dir``
+    is set. SFT/OSFT use native ``on_demand_checkpointing`` instead.
+    """
+    from training_hub.adapters.serialize import normalize_hub_callbacks
+    from training_hub.jit_checkpoint import JITCheckpointCallback
+
+    user_cbs = normalize_hub_callbacks(user_callbacks)
+    if not enable_jit_checkpoint or not ckpt_output_dir:
+        return user_cbs
+    if backend in _NATIVE_JIT_BACKENDS:
+        return user_cbs
+    return [JITCheckpointCallback(), *user_cbs]

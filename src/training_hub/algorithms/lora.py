@@ -8,7 +8,8 @@ from . import Algorithm, Backend, AlgorithmRegistry
 from .sft import SFTAlgorithm
 from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
 from training_hub import utils
-from training_hub.callbacks import TrainingHubCallback
+from training_hub.callbacks import TrainingHubCallback, merge_default_callbacks
+from training_hub.checkpoint_utils import apply_native_jit_params
 
 # TrainerCallback import - transformers is required for LoRA functionality
 from transformers import TrainerCallback
@@ -216,41 +217,61 @@ class UnslothLoRABackend(Backend):
         trainer.add_callback(jsonl_callback)
 
         # Add user-provided TrainingHub callbacks (adapted to HuggingFace)
-        if training_params.get('callbacks'):
+        hub_callbacks = training_params.get('callbacks') or []
+        if hub_callbacks:
             from training_hub.adapters.unsloth import adapt_hub_callbacks
-            for hf_cb in adapt_hub_callbacks(training_params['callbacks']):
+            from training_hub.callbacks import TrainingHubControl
+
+            hub_control = TrainingHubControl()
+            for hf_cb in adapt_hub_callbacks(hub_callbacks, hub_control=hub_control):
                 trainer.add_callback(hf_cb)
+
+        resume_path = None
+        from training_hub.checkpoint_utils import (
+            find_latest_valid_checkpoint,
+            jit_checkpoint_enabled,
+        )
+
+        if jit_checkpoint_enabled(
+            training_params.get("enable_jit_checkpoint"),
+            training_params.get("ckpt_output_dir"),
+        ):
+            resume_path = find_latest_valid_checkpoint(
+                training_params["ckpt_output_dir"]
+            )
 
         # Execute training with error handling for known Unsloth issues
         try:
-            trainer.train()
-        except AssertionError as e:
-            if "wrong number of dimensions" in str(e) and "int8_mixed_scaled_mm" in str(e):
-                # Known Unsloth 8-bit quantization issue: https://github.com/unslothai/unsloth/issues/3501
-                raise RuntimeError(
-                    f"❌ Unsloth 8-bit quantization compatibility issue detected.\n"
-                    f"This is a known issue with Unsloth + 8-bit quantization + some model architectures.\n"
-                    f"See: https://github.com/unslothai/unsloth/issues/3501\n\n"
-                    f"💡 Recommended solutions:\n"
-                    f"• Try 4-bit quantization instead: load_in_4bit=True, load_in_8bit=False\n"
-                    f"• Use standard training without quantization: load_in_4bit=False, load_in_8bit=False\n"
-                    f"• Update Unsloth to the latest version in case this issue is fixed\n\n"
-                    f"Original error: {e}"
-                ) from e
-            else:
-                # Re-raise other AssertionErrors
+            try:
+                trainer.train(resume_from_checkpoint=resume_path)
+            except AssertionError as e:
+                if "wrong number of dimensions" in str(e) and "int8_mixed_scaled_mm" in str(e):
+                    raise RuntimeError(
+                        f"❌ Unsloth 8-bit quantization compatibility issue detected.\n"
+                        f"This is a known issue with Unsloth + 8-bit quantization + some model architectures.\n"
+                        f"See: https://github.com/unslothai/unsloth/issues/3501\n\n"
+                        f"💡 Recommended solutions:\n"
+                        f"• Try 4-bit quantization instead: load_in_4bit=True, load_in_8bit=False\n"
+                        f"• Use standard training without quantization: load_in_4bit=False, load_in_8bit=False\n"
+                        f"• Update Unsloth to the latest version in case this issue is fixed\n\n"
+                        f"Original error: {e}"
+                    ) from e
                 raise
 
-        # Save model
-        if training_params.get('save_model', True):
-            trainer.save_model(training_params['ckpt_output_dir'])
-            tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
+            # Save model
+            if training_params.get('save_model', True):
+                trainer.save_model(training_params['ckpt_output_dir'])
+                tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
 
-        return {
-            'model': model,
-            'tokenizer': tokenizer_or_processor,
-            'trainer': trainer
-        }
+            return {
+                'model': model,
+                'tokenizer': tokenizer_or_processor,
+                'trainer': trainer
+            }
+        finally:
+            from training_hub.checkpoint_manager import shutdown_upload_worker
+
+            shutdown_upload_worker()
 
     @staticmethod
     def _is_vlm_model_id(model_path: str, trust_remote_code: bool = False) -> bool:
@@ -760,6 +781,7 @@ class LoRASFTAlgorithm(Algorithm):
               callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               eval_data_path: Optional[str] = None,
               per_device_eval_batch_size: Optional[int] = None,
+              enable_jit_checkpoint: Optional[bool] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -856,6 +878,8 @@ class LoRASFTAlgorithm(Algorithm):
 
             Callbacks / Evaluation:
             callbacks: TrainingHubCallback or list of them for lifecycle hooks
+            enable_jit_checkpoint: When True, enable SIGTERM JIT checkpointing
+                (requires ckpt_output_dir). Off by default.
             eval_data_path: Optional JSON/JSONL (or HF dataset) path for evaluation.
                             When set, enables eval_strategy=steps and fires on_evaluate.
             per_device_eval_batch_size: Per-device eval batch size (defaults to
@@ -869,6 +893,13 @@ class LoRASFTAlgorithm(Algorithm):
         """
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
+
+        callbacks = merge_default_callbacks(
+            callbacks,
+            enable_jit_checkpoint=bool(enable_jit_checkpoint),
+            ckpt_output_dir=ckpt_output_dir,
+            backend="lora_sft",
+        )
 
         # Build base parameters dict (required parameters)
         params = {
@@ -957,6 +988,7 @@ class LoRASFTAlgorithm(Algorithm):
             'callbacks': callbacks,
             'eval_data_path': eval_data_path,
             'per_device_eval_batch_size': per_device_eval_batch_size,
+            'enable_jit_checkpoint': enable_jit_checkpoint,
         }
 
         # Only add non-None parameters
@@ -1053,6 +1085,7 @@ class LoRASFTAlgorithm(Algorithm):
             'callbacks': list,
             'eval_data_path': str,
             'per_device_eval_batch_size': int,
+            'enable_jit_checkpoint': bool,
         }
 
         # Combine all parameter types
@@ -1138,6 +1171,7 @@ def lora_sft(model_path: str,
          callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
          eval_data_path: Optional[str] = None,
          per_device_eval_batch_size: Optional[int] = None,
+         enable_jit_checkpoint: Optional[bool] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -1303,5 +1337,6 @@ def lora_sft(model_path: str,
         callbacks=callbacks,
         eval_data_path=eval_data_path,
         per_device_eval_batch_size=per_device_eval_batch_size,
+        enable_jit_checkpoint=enable_jit_checkpoint,
         **kwargs
     )

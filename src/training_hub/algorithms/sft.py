@@ -9,7 +9,8 @@ from instructlab.training import (
 
 from . import Algorithm, Backend, AlgorithmRegistry
 from training_hub import utils
-from training_hub.callbacks import TrainingHubCallback
+from training_hub.callbacks import TrainingHubCallback, merge_default_callbacks
+from training_hub.checkpoint_utils import apply_native_jit_params
 
 
 class InstructLabTrainingSFTBackend(Backend):
@@ -87,6 +88,8 @@ class InstructLabTrainingSFTBackend(Backend):
                 **pretraining_kwargs,
             )
 
+        training_params.pop("enable_jit_checkpoint", None)
+
         # Create TrainingArgs with all provided parameters, letting it handle defaults
         training_args = TrainingArgs(**training_params)
         
@@ -150,6 +153,7 @@ class SFTAlgorithm(Algorithm):
               # Callback parameters (keyword-only)
               *,
               callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
+              enable_jit_checkpoint: Optional[bool] = None,
               **kwargs) -> Any:
         """Execute SFT training.
         
@@ -189,6 +193,8 @@ class SFTAlgorithm(Algorithm):
             mlflow_experiment_name: MLflow experiment name
             mlflow_run_name: MLflow run name
             callbacks: TrainingHubCallback or list of them for lifecycle hooks
+            enable_jit_checkpoint: When True, enable native on-demand checkpointing
+                for SIGTERM preemption (requires ckpt_output_dir). Off by default.
             **kwargs: Additional parameters passed to the backend
             
         Returns:
@@ -196,6 +202,13 @@ class SFTAlgorithm(Algorithm):
         """
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
+
+        callbacks = merge_default_callbacks(
+            callbacks,
+            enable_jit_checkpoint=bool(enable_jit_checkpoint),
+            ckpt_output_dir=ckpt_output_dir,
+            backend="sft",
+        )
 
         # Build parameters dict, only including non-None values
         params = {'model_path': model_path, 'data_path': data_path, 'ckpt_output_dir': ckpt_output_dir}
@@ -237,6 +250,7 @@ class SFTAlgorithm(Algorithm):
             'mlflow_experiment_name': mlflow_experiment_name,
             'mlflow_run_name': mlflow_run_name,
             'callbacks': callbacks,
+            'enable_jit_checkpoint': enable_jit_checkpoint,
         }
         
         # Only add non-None parameters (let TrainingArgs handle defaults)
@@ -244,6 +258,7 @@ class SFTAlgorithm(Algorithm):
             if value is not None:
                 params[key] = value
                 
+        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint, backend="sft")
         params.update(kwargs)
         
         return self.backend.execute_training(params)
@@ -295,6 +310,8 @@ class SFTAlgorithm(Algorithm):
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
             'callbacks': list,
+            'enable_jit_checkpoint': bool,
+            'on_demand_checkpointing': bool,
         }
 
 
@@ -345,6 +362,7 @@ def sft(model_path: str,
         # Callback parameters (keyword-only)
         *,
         callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
+        enable_jit_checkpoint: Optional[bool] = None,
         **kwargs) -> Any:
     """Convenience function to run SFT training.
     
@@ -429,6 +447,7 @@ def sft(model_path: str,
         mlflow_experiment_name=mlflow_experiment_name,
         mlflow_run_name=mlflow_run_name,
         callbacks=callbacks,
+        enable_jit_checkpoint=enable_jit_checkpoint,
         **kwargs
     )
 

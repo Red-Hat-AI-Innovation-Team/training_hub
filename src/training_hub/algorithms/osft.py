@@ -5,7 +5,8 @@ import warnings
 
 import datasets
 from training_hub.algorithms import Algorithm, Backend, AlgorithmRegistry
-from training_hub.callbacks import TrainingHubCallback
+from training_hub.callbacks import TrainingHubCallback, merge_default_callbacks
+from training_hub.checkpoint_utils import apply_native_jit_params
 from training_hub.utils import format_type_name, get_torchrun_params
 
 
@@ -82,6 +83,7 @@ class OSFTAlgorithm(Algorithm):
         # Callback parameters (keyword-only)
         *,
         callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
+        enable_jit_checkpoint: bool | None = None,
         **kwargs,
     ) -> any:
         """
@@ -205,6 +207,13 @@ class OSFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
+        callbacks = merge_default_callbacks(
+            callbacks,
+            enable_jit_checkpoint=bool(enable_jit_checkpoint),
+            ckpt_output_dir=ckpt_output_dir,
+            backend="osft",
+        )
+
         optional_params = {
             'target_patterns': target_patterns,
             # for data processing
@@ -249,6 +258,7 @@ class OSFTAlgorithm(Algorithm):
             # model loading
             'trust_remote_code': trust_remote_code,
             'callbacks': callbacks,
+            'enable_jit_checkpoint': enable_jit_checkpoint,
         }
 
         # now do validation now that we've set everything up
@@ -264,6 +274,12 @@ class OSFTAlgorithm(Algorithm):
         all_params = dict(**required_params)
         all_params.update(optional_params)
         all_params.update(kwargs)
+
+        apply_native_jit_params(
+            all_params,
+            enable_jit_checkpoint=enable_jit_checkpoint,
+            backend="osft",
+        )
 
         return self.backend.execute_training(all_params)
 
@@ -319,6 +335,8 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
             'callbacks': list,
+            'enable_jit_checkpoint': bool,
+            'on_demand_checkpointing': bool,
         }
 
     def _validate_param_types(self, params: dict[str, any]):
@@ -644,6 +662,7 @@ def osft(
     # Callback parameters (keyword-only)
     *,
     callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
+    enable_jit_checkpoint: bool | None = None,
     **kwargs,
 ) -> any:
     """Convenience function to run Orthogonal Subspace Fine-Tuning (OSFT) training.
@@ -787,5 +806,6 @@ def osft(
         mlflow_run_name=mlflow_run_name,
         trust_remote_code=trust_remote_code,
         callbacks=callbacks,
+        enable_jit_checkpoint=enable_jit_checkpoint,
         **kwargs,
     )
