@@ -479,6 +479,18 @@ class MiniTrainerOSFTBackend(Backend):
                 "Upgrade rhai-innovation-mini-trainer to >=0.8.3."
             )
 
+        # Fail loudly if JIT was requested but mini-trainer would silently drop it
+        if (
+            algorithm_params.get('on_demand_checkpointing')
+            and 'on_demand_checkpointing' not in training_args_fields
+        ):
+            raise RuntimeError(
+                "enable_jit_checkpoint=True but the installed mini-trainer does "
+                "not support TrainingArgs.on_demand_checkpointing. "
+                "Upgrade rhai-innovation-mini-trainer to a version with "
+                "on-demand checkpointing support."
+            )
+
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
         torchrun_args_pre = get_torchrun_params(torchrun_args_pre)

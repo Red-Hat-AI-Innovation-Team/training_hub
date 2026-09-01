@@ -90,6 +90,18 @@ class InstructLabTrainingSFTBackend(Backend):
 
         training_params.pop("enable_jit_checkpoint", None)
 
+        # Older instructlab-training silently drops unknown TrainingArgs fields,
+        # which would turn JIT checkpointing into a no-op — fail loudly instead.
+        if training_params.get('on_demand_checkpointing'):
+            model_fields = getattr(TrainingArgs, 'model_fields', None)
+            if model_fields is None or 'on_demand_checkpointing' not in model_fields:
+                raise RuntimeError(
+                    "enable_jit_checkpoint=True but the installed "
+                    "instructlab-training does not support "
+                    "TrainingArgs.on_demand_checkpointing. "
+                    "Upgrade instructlab-training to >=0.16.2."
+                )
+
         # Create TrainingArgs with all provided parameters, letting it handle defaults
         training_args = TrainingArgs(**training_params)
         
