@@ -68,10 +68,10 @@ class JITCheckpointCallback(TrainingHubCallback):
     HuggingFace ``TrainerControl.should_save`` / ``should_training_stop``.
     No constructor arguments — reads ``context.output_dir`` at hook time.
 
-  ponytail: ``run_on_all_ranks`` is set for future multi-GPU LoRA, but SIGTERM
-  can land between ranks' ``on_step_end`` checks and cause mismatched save
-  flags across processes. Unsloth LoRA is single-process today; a distributed
-  fix would need a collective preemption barrier before ``should_save``.
+    ponytail: ``run_on_all_ranks`` is set for future multi-GPU LoRA, but SIGTERM
+    can land between ranks' ``on_step_end`` checks and cause mismatched save
+    flags across processes. Unsloth LoRA is single-process today; a distributed
+    fix would need a collective preemption barrier before ``should_save``.
     """
 
     run_on_all_ranks = True

@@ -10,7 +10,9 @@ import pytest
 from training_hub.callbacks import TrainingHubControl, merge_default_callbacks
 from training_hub.checkpoint_utils import (
     INCOMPLETE_SENTINEL,
+    INCOMPLETE_SIDECAR_PREFIX,
     find_latest_valid_checkpoint,
+    incomplete_sidecar_path,
     is_valid_checkpoint_dir,
     jit_checkpoint_enabled,
     mark_checkpoint_complete,
@@ -20,7 +22,16 @@ from training_hub.jit_checkpoint import JITCheckpointCallback
 
 
 class TestCheckpointUtils:
-    def test_incomplete_sentinel_skipped_on_resume(self, tmp_path: Path):
+    def test_incomplete_sidecar_skipped_on_resume(self, tmp_path: Path):
+        valid = tmp_path / "checkpoint-10"
+        valid.mkdir()
+        incomplete = tmp_path / "checkpoint-20"
+        incomplete.mkdir()
+        incomplete_sidecar_path(tmp_path, 20).touch()
+
+        assert find_latest_valid_checkpoint(str(tmp_path)) == str(valid.resolve())
+
+    def test_legacy_in_dir_sentinel_still_skipped(self, tmp_path: Path):
         valid = tmp_path / "checkpoint-10"
         valid.mkdir()
         incomplete = tmp_path / "checkpoint-20"
@@ -40,13 +51,21 @@ class TestCheckpointUtils:
         (step_dir / "training_state.pt").touch()
         assert find_latest_valid_checkpoint(str(tmp_path)) == str(step_dir.resolve())
 
-    def test_mark_complete_removes_sentinel(self, tmp_path: Path):
-        ckpt = tmp_path / "checkpoint-1"
-        ckpt.mkdir()
-        mark_checkpoint_incomplete(ckpt)
-        assert not is_valid_checkpoint_dir(ckpt)
-        mark_checkpoint_complete(ckpt)
-        assert is_valid_checkpoint_dir(ckpt)
+    def test_mark_complete_removes_sidecar(self, tmp_path: Path):
+        mark_checkpoint_incomplete(tmp_path, 1)
+        sidecar = incomplete_sidecar_path(tmp_path, 1)
+        assert sidecar.exists()
+        assert not is_valid_checkpoint_dir(tmp_path / "checkpoint-1", tmp_path)
+
+        (tmp_path / "checkpoint-1").mkdir()
+        mark_checkpoint_complete(tmp_path, 1)
+        assert not sidecar.exists()
+        assert is_valid_checkpoint_dir(tmp_path / "checkpoint-1", tmp_path)
+
+    def test_incomplete_does_not_precreate_checkpoint_dir(self, tmp_path: Path):
+        mark_checkpoint_incomplete(tmp_path, 5)
+        assert incomplete_sidecar_path(tmp_path, 5).exists()
+        assert not (tmp_path / "checkpoint-5").exists()
 
     def test_jit_checkpoint_enabled_requires_both(self):
         assert not jit_checkpoint_enabled(False, "/tmp")
@@ -109,7 +128,8 @@ class TestJITCheckpointCallback:
         cb.on_step_end(ctx)
         assert control.should_save is True
         assert control.should_training_stop is True
-        assert (tmp_path / "checkpoint-5" / INCOMPLETE_SENTINEL).exists()
+        assert incomplete_sidecar_path(tmp_path, 5).exists()
+        assert not (tmp_path / "checkpoint-5").exists()
 
     def test_no_preempt_is_noop(self):
         cb = JITCheckpointCallback()
@@ -155,3 +175,26 @@ class TestUnslothControlWiring:
         result = adapter.on_step_end(args, state, control)
         assert result.should_save is True
         assert result.should_training_stop is True
+
+    def test_on_save_uses_global_step_not_best_checkpoint(self):
+        from training_hub.adapters.unsloth import adapt_hub_callbacks
+        from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
+
+        captured: dict[str, str] = {}
+
+        class CaptureSave(TrainingHubCallback):
+            def on_save(self, context: TrainingHubContext) -> None:
+                captured["path"] = context.metrics["checkpoint_path"]
+
+        adapter = adapt_hub_callbacks([CaptureSave()])[0]
+        args = SimpleNamespace(output_dir="/runs/out")
+        state = SimpleNamespace(
+            global_step=42,
+            best_model_checkpoint="/runs/out/checkpoint-10",
+            epoch=1.0,
+            is_world_process_zero=True,
+            log_history=[],
+        )
+        control = SimpleNamespace()
+        adapter.on_save(args, state, control)
+        assert captured["path"] == "/runs/out/checkpoint-42"
