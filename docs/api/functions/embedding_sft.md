@@ -118,7 +118,7 @@ print(result["status"], result["model_path"])
     "model_path": "<ckpt_output_dir>",
     "num_samples": <int>,
     "num_epochs": <int>,
-    "loss_type": "<loss_type>",
+    "loss": "<loss_type or 'custom (<ClassName>)'>",
 }
 ```
 

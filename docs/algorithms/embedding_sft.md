@@ -91,7 +91,7 @@ result = embedding_sft(
 - The fine-tuned model is saved to `ckpt_output_dir` in standard sentence-transformers format.
 - `training_metrics.jsonl` is appended with the final step/loss/epoch.
 
-The call returns a dict: `{"status", "model_path", "num_samples", "num_epochs", "loss_type"}`.
+The call returns a dict: `{"status", "model_path", "num_samples", "num_epochs", "loss"}`, where `loss` is the effective loss label — the `loss_type` name, or `"custom (<ClassName>)"` when `loss_fn` is provided.
 
 ## Inference (Routing)
 

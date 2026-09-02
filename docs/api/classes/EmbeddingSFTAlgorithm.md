@@ -102,7 +102,7 @@ Executes contrastive embedding fine-tuning.
 
 #### Returns
 
-**Type:** `dict` — `{"status", "model_path", "num_samples", "num_epochs", "loss_type"}`. The model is saved to `ckpt_output_dir` in sentence-transformers format.
+**Type:** `dict` — `{"status", "model_path", "num_samples", "num_epochs", "loss"}`, where `loss` is the effective loss label (the `loss_type` name, or `"custom (<ClassName>)"` when `loss_fn` is provided). The model is saved to `ckpt_output_dir` in sentence-transformers format.
 
 #### Raises
 
