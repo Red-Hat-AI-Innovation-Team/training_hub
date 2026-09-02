@@ -139,3 +139,31 @@ def apply_native_jit_params(
             backend,
         )
     params["on_demand_checkpointing"] = True
+
+
+UPLOAD_URI_ENV = "TRAINING_HUB_CHECKPOINT_UPLOAD_URI"
+
+
+def resolve_checkpoint_storage(checkpoint_storage: str | None) -> str | None:
+    """Validate the checkpoint_storage selector and return the S3 URI, if any.
+
+    Accepted values: None / "pvc" (filesystem only, the default) or an
+    "s3://bucket/prefix" URI (mirror checkpoints to S3, restore on resume).
+    """
+    if checkpoint_storage in (None, "", "pvc"):
+        return None
+    if isinstance(checkpoint_storage, str) and checkpoint_storage.startswith("s3://"):
+        return checkpoint_storage
+    raise ValueError(
+        "checkpoint_storage must be None, 'pvc', or an 's3://bucket/prefix' "
+        f"URI; got {checkpoint_storage!r}"
+    )
+
+
+def apply_checkpoint_storage_env(checkpoint_storage: str | None) -> None:
+    """Export the S3 upload URI so callbacks and torchrun workers inherit it."""
+    import os
+
+    uri = resolve_checkpoint_storage(checkpoint_storage)
+    if uri:
+        os.environ[UPLOAD_URI_ENV] = uri

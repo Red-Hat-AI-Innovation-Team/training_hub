@@ -227,6 +227,7 @@ class UnslothLoRABackend(Backend):
                 trainer.add_callback(hf_cb)
 
         resume_path = None
+        from training_hub.checkpoint_manager import maybe_restore_from_s3
         from training_hub.checkpoint_utils import (
             find_latest_valid_checkpoint,
             jit_checkpoint_enabled,
@@ -236,6 +237,7 @@ class UnslothLoRABackend(Backend):
             training_params.get("enable_jit_checkpoint"),
             training_params.get("ckpt_output_dir"),
         ):
+            maybe_restore_from_s3(training_params["ckpt_output_dir"])
             resume_path = find_latest_valid_checkpoint(
                 training_params["ckpt_output_dir"]
             )
@@ -782,6 +784,7 @@ class LoRASFTAlgorithm(Algorithm):
               eval_data_path: Optional[str] = None,
               per_device_eval_batch_size: Optional[int] = None,
               enable_jit_checkpoint: Optional[bool] = None,
+              checkpoint_storage: Optional[str] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -894,11 +897,15 @@ class LoRASFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
+        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+
+        apply_checkpoint_storage_env(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),
             ckpt_output_dir=ckpt_output_dir,
             backend="lora_sft",
+            checkpoint_storage=checkpoint_storage,
         )
 
         # Build base parameters dict (required parameters)
@@ -989,6 +996,7 @@ class LoRASFTAlgorithm(Algorithm):
             'eval_data_path': eval_data_path,
             'per_device_eval_batch_size': per_device_eval_batch_size,
             'enable_jit_checkpoint': enable_jit_checkpoint,
+            'checkpoint_storage': checkpoint_storage,
         }
 
         # Only add non-None parameters
@@ -1086,6 +1094,7 @@ class LoRASFTAlgorithm(Algorithm):
             'eval_data_path': str,
             'per_device_eval_batch_size': int,
             'enable_jit_checkpoint': bool,
+            'checkpoint_storage': str,
         }
 
         # Combine all parameter types
@@ -1172,6 +1181,7 @@ def lora_sft(model_path: str,
          eval_data_path: Optional[str] = None,
          per_device_eval_batch_size: Optional[int] = None,
          enable_jit_checkpoint: Optional[bool] = None,
+         checkpoint_storage: Optional[str] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -1338,5 +1348,6 @@ def lora_sft(model_path: str,
         eval_data_path=eval_data_path,
         per_device_eval_batch_size=per_device_eval_batch_size,
         enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
         **kwargs
     )

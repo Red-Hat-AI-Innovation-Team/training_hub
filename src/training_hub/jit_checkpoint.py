@@ -8,7 +8,6 @@ import threading
 from pathlib import Path
 
 from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
-from training_hub.checkpoint_manager import enqueue_checkpoint_upload
 from training_hub.checkpoint_utils import mark_checkpoint_complete, mark_checkpoint_incomplete
 
 logger = logging.getLogger(__name__)
@@ -123,3 +122,30 @@ class JITCheckpointCallback(TrainingHubCallback):
 
         control.should_save = True
         control.should_training_stop = True
+
+
+class S3CheckpointSyncCallback(TrainingHubCallback):
+    """Mirror every saved checkpoint to S3 (checkpoint_storage="s3://...").
+
+    Serialization-safe for torchrun backends: no constructor arguments —
+    the S3 URI is read from TRAINING_HUB_CHECKPOINT_UPLOAD_URI inside hooks.
+    Uploads happen on rank 0 only, via the background upload queue.
+    """
+
+    def on_save(self, context: TrainingHubContext) -> None:
+        from training_hub.checkpoint_manager import enqueue_checkpoint_upload
+
+        checkpoint_path = context.metrics.get("checkpoint_path")
+        if not checkpoint_path and context.output_dir and context.step > 0:
+            candidate = f"{context.output_dir}/checkpoint-{context.step}"
+            import os
+
+            if os.path.isdir(candidate):
+                checkpoint_path = candidate
+        if checkpoint_path:
+            enqueue_checkpoint_upload(checkpoint_path, base_dir=context.output_dir or None)
+
+    def on_train_end(self, context: TrainingHubContext) -> None:
+        from training_hub.checkpoint_manager import shutdown_upload_worker
+
+        shutdown_upload_worker()

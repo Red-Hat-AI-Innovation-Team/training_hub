@@ -84,6 +84,7 @@ class OSFTAlgorithm(Algorithm):
         *,
         callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
         enable_jit_checkpoint: bool | None = None,
+        checkpoint_storage: str | None = None,
         **kwargs,
     ) -> any:
         """
@@ -207,11 +208,15 @@ class OSFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
+        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+
+        apply_checkpoint_storage_env(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),
             ckpt_output_dir=ckpt_output_dir,
             backend="osft",
+            checkpoint_storage=checkpoint_storage,
         )
 
         optional_params = {
@@ -259,6 +264,7 @@ class OSFTAlgorithm(Algorithm):
             'trust_remote_code': trust_remote_code,
             'callbacks': callbacks,
             'enable_jit_checkpoint': enable_jit_checkpoint,
+            'checkpoint_storage': checkpoint_storage,
         }
 
         # now do validation now that we've set everything up
@@ -278,6 +284,7 @@ class OSFTAlgorithm(Algorithm):
         apply_native_jit_params(
             all_params,
             enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
             backend="osft",
         )
 
@@ -336,6 +343,7 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_run_name': str,
             'callbacks': list,
             'enable_jit_checkpoint': bool,
+            'checkpoint_storage': str,
             'on_demand_checkpointing': bool,
         }
 
@@ -490,6 +498,12 @@ class MiniTrainerOSFTBackend(Backend):
                 "Upgrade rhai-innovation-mini-trainer to a version with "
                 "on-demand checkpointing support."
             )
+
+        # Restore latest checkpoint from S3 when checkpoint_storage=s3://
+        # and the local dir is empty (fresh pod after preemption)
+        from training_hub.checkpoint_manager import maybe_restore_from_s3
+
+        maybe_restore_from_s3(algorithm_params['output_dir'])
 
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
@@ -675,6 +689,7 @@ def osft(
     *,
     callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
     enable_jit_checkpoint: bool | None = None,
+    checkpoint_storage: str | None = None,
     **kwargs,
 ) -> any:
     """Convenience function to run Orthogonal Subspace Fine-Tuning (OSFT) training.
@@ -819,5 +834,6 @@ def osft(
         trust_remote_code=trust_remote_code,
         callbacks=callbacks,
         enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
         **kwargs,
     )

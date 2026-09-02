@@ -134,19 +134,31 @@ def merge_default_callbacks(
     enable_jit_checkpoint: bool = False,
     ckpt_output_dir: str | None = None,
     backend: str | None = None,
+    checkpoint_storage: str | None = None,
 ) -> list[TrainingHubCallback]:
     """Prepend platform default callbacks before user callbacks.
 
     Hub defaults run first on each lifecycle event. JIT checkpointing is
     injected only when ``enable_jit_checkpoint=True`` and ``ckpt_output_dir``
-    is set. SFT/OSFT use native ``on_demand_checkpointing`` instead.
+    is set; SFT/OSFT use native ``on_demand_checkpointing`` instead. An
+    S3 sync callback is prepended for every backend when
+    ``checkpoint_storage`` is an s3:// URI.
     """
     from training_hub.adapters.serialize import normalize_hub_callbacks
-    from training_hub.jit_checkpoint import JITCheckpointCallback
+    from training_hub.checkpoint_utils import resolve_checkpoint_storage
+    from training_hub.jit_checkpoint import (
+        JITCheckpointCallback,
+        S3CheckpointSyncCallback,
+    )
 
     user_cbs = normalize_hub_callbacks(user_callbacks)
-    if not enable_jit_checkpoint or not ckpt_output_dir:
-        return user_cbs
-    if backend in _NATIVE_JIT_BACKENDS:
-        return user_cbs
-    return [JITCheckpointCallback(), *user_cbs]
+    defaults: list[TrainingHubCallback] = []
+    if (
+        enable_jit_checkpoint
+        and ckpt_output_dir
+        and backend not in _NATIVE_JIT_BACKENDS
+    ):
+        defaults.append(JITCheckpointCallback())
+    if resolve_checkpoint_storage(checkpoint_storage):
+        defaults.append(S3CheckpointSyncCallback())
+    return [*defaults, *user_cbs]

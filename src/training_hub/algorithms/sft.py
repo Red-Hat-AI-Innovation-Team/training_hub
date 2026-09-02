@@ -89,6 +89,13 @@ class InstructLabTrainingSFTBackend(Backend):
             )
 
         training_params.pop("enable_jit_checkpoint", None)
+        training_params.pop("checkpoint_storage", None)
+
+        # Restore latest checkpoint from S3 when checkpoint_storage=s3://
+        # and the local dir is empty (fresh pod after preemption)
+        from training_hub.checkpoint_manager import maybe_restore_from_s3
+
+        maybe_restore_from_s3(training_params['ckpt_output_dir'])
 
         # Older instructlab-training silently drops unknown TrainingArgs fields,
         # which would turn JIT checkpointing into a no-op — fail loudly instead.
@@ -166,6 +173,7 @@ class SFTAlgorithm(Algorithm):
               *,
               callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               enable_jit_checkpoint: Optional[bool] = None,
+              checkpoint_storage: Optional[str] = None,
               **kwargs) -> Any:
         """Execute SFT training.
         
@@ -215,11 +223,15 @@ class SFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
+        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+
+        apply_checkpoint_storage_env(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),
             ckpt_output_dir=ckpt_output_dir,
             backend="sft",
+            checkpoint_storage=checkpoint_storage,
         )
 
         # Build parameters dict, only including non-None values
@@ -263,6 +275,7 @@ class SFTAlgorithm(Algorithm):
             'mlflow_run_name': mlflow_run_name,
             'callbacks': callbacks,
             'enable_jit_checkpoint': enable_jit_checkpoint,
+            'checkpoint_storage': checkpoint_storage,
         }
         
         # Only add non-None parameters (let TrainingArgs handle defaults)
@@ -270,7 +283,8 @@ class SFTAlgorithm(Algorithm):
             if value is not None:
                 params[key] = value
                 
-        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint, backend="sft")
+        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage, backend="sft")
         params.update(kwargs)
         
         return self.backend.execute_training(params)
@@ -323,6 +337,7 @@ class SFTAlgorithm(Algorithm):
             'mlflow_run_name': str,
             'callbacks': list,
             'enable_jit_checkpoint': bool,
+            'checkpoint_storage': str,
             'on_demand_checkpointing': bool,
         }
 
@@ -375,6 +390,7 @@ def sft(model_path: str,
         *,
         callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
         enable_jit_checkpoint: Optional[bool] = None,
+        checkpoint_storage: Optional[str] = None,
         **kwargs) -> Any:
     """Convenience function to run SFT training.
     
@@ -460,6 +476,7 @@ def sft(model_path: str,
         mlflow_run_name=mlflow_run_name,
         callbacks=callbacks,
         enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
         **kwargs
     )
 
