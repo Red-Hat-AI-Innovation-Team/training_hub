@@ -34,6 +34,7 @@
 | **LoRA + GRPO (Adapter-Based RLVR)** | ART + Unsloth, verl | Single-GPU (ART), multi-GPU, multi-node (verl) | `[grpo,lora]` |
 | **GRPO (Full Fine-Tuning RLVR)** | verl | Multi-GPU, multi-node | `[grpo]` |
 | **GEPA (Genetic-Pareto Prompt Optimization)** | GEPA, MLflow | CPU (API-based) | `[gepa]` |
+| **Embedding Fine-Tuning** | SentenceTransformers | Single-GPU, multi-GPU, CPU | `[embedding]` |
 
 ## Implemented Algorithms
 
@@ -178,6 +179,29 @@ result = gepa(
 )
 ```
 
+### [Embedding Fine-Tuning](/algorithms/embedding_sft)
+
+Contrastive fine-tuning of sentence embedding models (e.g. `all-MiniLM-L6-v2`) so that inputs with the same label cluster together in embedding space. Designed for **semantic routing / classification** — route a query to one of N specialist lanes by nearest-anchor cosine similarity — but applicable to any task that benefits from tighter embedding clusters (retrieval, deduplication, clustering). Features:
+- Three contrastive losses: `batch_all_triplet`, `batch_hard_triplet`, and `mnrl` (Multiple Negatives Ranking Loss)
+- `GROUP_BY_LABEL` batch sampling so every batch contains all classes (required for triplet mining)
+- Auto-converts label datasets to (anchor, positive) pairs for MNRL
+- Custom `loss_fn` support for extensibility
+- Saves in standard sentence-transformers format
+
+```python
+from training_hub import embedding_sft
+
+result = embedding_sft(
+    model_path="sentence-transformers/all-MiniLM-L6-v2",
+    data_path="routing_train.jsonl",    # {"text": "...", "label": 0}
+    ckpt_output_dir="./routing_model",
+    loss_type="batch_all_triplet",
+    num_epochs=20,
+    batch_size=32,
+    learning_rate=2e-5,
+)
+```
+
 ## Installation
 
 ### Basic Installation
@@ -235,6 +259,18 @@ pip install -e .[gepa]
 **Note:** GEPA optimizes prompts via LLM API calls and does not require CUDA. To
 optimize against a local model, run a vLLM (or other OpenAI-compatible) server and
 pass its URL via the `api_base` parameter.
+
+### Embedding Support
+For contrastive embedding fine-tuning (sentence-transformers backend):
+```bash
+pip install training-hub[embedding]
+# or for development
+pip install -e .[embedding]
+```
+
+**Note:** Embedding fine-tuning uses `sentence-transformers>=5.0`. It runs on CPU
+for small models (e.g. `all-MiniLM-L6-v2`, 23M params) and accelerates on a single
+or multi-GPU when CUDA is available.
 
 ### CUDA Support
 For GPU training with CUDA support:

@@ -141,6 +141,32 @@ result = gepa(
 print(result.best_candidate)
 ```
 
+### Embedding Fine-Tuning (Semantic Routing)
+
+Contrastive fine-tuning of sentence embedding models so that inputs with the same label cluster together in embedding space. The primary use case is **semantic routing** — classifying a natural-language query into one of N lanes (e.g. routing a request to the right specialist model) via nearest-anchor cosine similarity. It also improves any task that benefits from tighter embedding clusters (retrieval, deduplication, clustering).
+
+**Documentation:**
+- [Embedding SFT Usage Guide](/algorithms/embedding_sft) - Conceptual overview, losses, data format, and tips
+- [embedding_sft() Function Reference](/api/functions/embedding_sft) - Full parameter reference
+
+**Tutorials:**
+- [Semantic Routing Demo](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/notebooks/routing_demo.ipynb) - Interactive notebook training a 4-class router end-to-end (data generation → fine-tuning → inference runtime → evaluation), including a confidence-threshold fallback
+
+**Quick Example:**
+```python
+from training_hub import embedding_sft
+
+result = embedding_sft(
+    model_path="sentence-transformers/all-MiniLM-L6-v2",
+    data_path="/path/to/routing_train.jsonl",    # {"text": "...", "label": 0}
+    ckpt_output_dir="/path/to/routing_model",
+    loss_type="batch_all_triplet",
+    num_epochs=20,
+    batch_size=32,
+    learning_rate=2e-5,
+)
+```
+
 ### Memory Estimation (Experimental)
 
 training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during fine-tuning.
