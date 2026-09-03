@@ -163,12 +163,23 @@ class SentenceTransformersBackend(Backend):
 
     def execute_training(self, algorithm_params: dict[str, Any]) -> Any:
         from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer
-        from sentence_transformers.sentence_transformer.training_args import (
-            SentenceTransformerTrainingArguments, BatchSamplers,
-        )
-        from sentence_transformers.sentence_transformer.losses import (
-            BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
-        )
+        # Prefer the nested module paths (sentence-transformers >=5.4) which avoid
+        # the deprecation warning emitted by the top-level aliases in 6.x. Fall back
+        # to the top-level paths for 5.0-5.3.x where the nested modules do not exist.
+        try:
+            from sentence_transformers.sentence_transformer.training_args import (
+                SentenceTransformerTrainingArguments, BatchSamplers,
+            )
+            from sentence_transformers.sentence_transformer.losses import (
+                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
+            )
+        except ImportError:
+            from sentence_transformers.training_args import (
+                SentenceTransformerTrainingArguments, BatchSamplers,
+            )
+            from sentence_transformers.losses import (
+                BatchAllTripletLoss, BatchHardTripletLoss, MultipleNegativesRankingLoss,
+            )
         import torch
 
         model_path = algorithm_params["model_path"]
