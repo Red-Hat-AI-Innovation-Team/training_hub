@@ -233,11 +233,15 @@ class UnslothLoRABackend(Backend):
             jit_checkpoint_enabled,
         )
 
+        # Restore mirrored checkpoints whenever S3 storage is configured
+        # (env-gated no-op otherwise), independent of the JIT flag
+        if training_params.get("ckpt_output_dir"):
+            maybe_restore_from_s3(training_params["ckpt_output_dir"])
+
         if jit_checkpoint_enabled(
             training_params.get("enable_jit_checkpoint"),
             training_params.get("ckpt_output_dir"),
         ):
-            maybe_restore_from_s3(training_params["ckpt_output_dir"])
             resume_path = find_latest_valid_checkpoint(
                 training_params["ckpt_output_dir"]
             )

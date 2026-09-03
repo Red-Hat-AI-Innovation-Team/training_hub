@@ -90,24 +90,37 @@ class JITCheckpointCallback(TrainingHubCallback):
         self._handle_preemption(context)
 
     def on_save(self, context: TrainingHubContext) -> None:
-        if not context.output_dir or context.step <= 0:
+        # Clear the incomplete sidecar for the just-saved checkpoint.
+        # S3 mirroring is owned by S3CheckpointSyncCallback, not this hook.
+        if not context.is_main_process:
             return
-
-        if context.is_main_process:
+        if context.output_dir and context.step > 0:
             mark_checkpoint_complete(context.output_dir, context.step)
 
-        checkpoint_path = context.metrics.get("checkpoint_path")
-        if checkpoint_path and context.is_main_process:
-            enqueue_checkpoint_upload(checkpoint_path)
-            return
+    @staticmethod
+    def _preempt_requested_any_rank() -> bool:
+        """Aggregate the process-local SIGTERM flag across ranks (MAX), so a
+        signal seen by one rank stops all ranks at the same step boundary."""
+        flag = preempt_requested()
+        try:
+            import torch
+            import torch.distributed as dist
 
-        if context.is_main_process:
-            ckpt_dir = Path(context.output_dir) / f"checkpoint-{context.step}"
-            if ckpt_dir.is_dir():
-                enqueue_checkpoint_upload(ckpt_dir)
+            if dist.is_available() and dist.is_initialized():
+                device = (
+                    torch.device("cuda", torch.cuda.current_device())
+                    if torch.cuda.is_available()
+                    else torch.device("cpu")
+                )
+                t = torch.tensor([1 if flag else 0], device=device)
+                dist.all_reduce(t, op=dist.ReduceOp.MAX)
+                return bool(t.item())
+        except Exception:
+            logger.exception("JIT checkpoint: preemption rank-sync failed")
+        return flag
 
     def _handle_preemption(self, context: TrainingHubContext) -> None:
-        if not preempt_requested():
+        if not self._preempt_requested_any_rank():
             return
         control = context.control
         if control is None:

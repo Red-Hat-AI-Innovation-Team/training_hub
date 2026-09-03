@@ -167,3 +167,6 @@ def apply_checkpoint_storage_env(checkpoint_storage: str | None) -> None:
     uri = resolve_checkpoint_storage(checkpoint_storage)
     if uri:
         os.environ[UPLOAD_URI_ENV] = uri
+    else:
+        # clear any URI left by an earlier S3 run in the same process
+        os.environ.pop(UPLOAD_URI_ENV, None)

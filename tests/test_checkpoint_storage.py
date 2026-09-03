@@ -92,3 +92,60 @@ class TestUploadLayout:
         local, base = captured[0]
         assert local == str(ckpt.resolve())
         assert base == str(tmp_path.resolve())
+
+
+class TestEnvClearedForPvc:
+    def test_s3_then_pvc_clears_stale_uri(self, monkeypatch):
+        """Switching from S3 to PVC in one process must not leak the URI."""
+        monkeypatch.delenv(UPLOAD_URI_ENV, raising=False)
+        apply_checkpoint_storage_env("s3://b/p")
+        assert os.environ[UPLOAD_URI_ENV] == "s3://b/p"
+        apply_checkpoint_storage_env(None)
+        assert UPLOAD_URI_ENV not in os.environ
+
+
+class TestTrainParamPath:
+    """Full train() param path with a mock backend: catches unsupported-kwarg
+    regressions (e.g. apply_native_jit_params signature drift) that pure
+    helper tests miss."""
+
+    class _CaptureBackend:
+        def __init__(self):
+            self.params = None
+
+        def execute_training(self, params):
+            self.params = params
+            return "ok"
+
+    def test_sft_train_params_path(self, tmp_path):
+        from training_hub.algorithms.sft import SFTAlgorithm
+
+        backend = self._CaptureBackend()
+        result = SFTAlgorithm(backend).train(
+            model_path="m",
+            data_path="d",
+            ckpt_output_dir=str(tmp_path),
+            enable_jit_checkpoint=True,
+            checkpoint_storage="pvc",
+        )
+        assert result == "ok"
+        assert backend.params["on_demand_checkpointing"] is True
+
+    def test_osft_train_params_path(self, tmp_path):
+        from training_hub.algorithms.osft import OSFTAlgorithm
+
+        backend = self._CaptureBackend()
+        result = OSFTAlgorithm(backend).train(
+            model_path="m",
+            data_path="d",
+            unfreeze_rank_ratio=0.25,
+            effective_batch_size=8,
+            max_tokens_per_gpu=4096,
+            max_seq_len=512,
+            learning_rate=1e-5,
+            ckpt_output_dir=str(tmp_path),
+            enable_jit_checkpoint=True,
+            checkpoint_storage="pvc",
+        )
+        assert result == "ok"
+        assert backend.params["on_demand_checkpointing"] is True

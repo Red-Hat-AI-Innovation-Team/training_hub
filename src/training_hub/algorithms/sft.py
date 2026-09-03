@@ -283,8 +283,7 @@ class SFTAlgorithm(Algorithm):
             if value is not None:
                 params[key] = value
                 
-        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint,
-        checkpoint_storage=checkpoint_storage, backend="sft")
+        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint, backend="sft")
         params.update(kwargs)
         
         return self.backend.execute_training(params)

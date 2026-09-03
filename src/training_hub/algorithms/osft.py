@@ -284,7 +284,6 @@ class OSFTAlgorithm(Algorithm):
         apply_native_jit_params(
             all_params,
             enable_jit_checkpoint=enable_jit_checkpoint,
-        checkpoint_storage=checkpoint_storage,
             backend="osft",
         )
 
