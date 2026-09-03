@@ -1,6 +1,6 @@
 # Embedding SFT Backend
 
-> Contrastive embedding fine-tuning. The [`SentenceTransformersBackend`](#) powers the [`embedding_sft()`](/api/functions/embedding_sft) algorithm.
+> Contrastive embedding fine-tuning. The `SentenceTransformersBackend` powers the [`embedding_sft()`](/api/functions/embedding_sft) algorithm.
 
 ## Overview
 
@@ -60,7 +60,7 @@ For `mnrl`, the backend auto-converts `{"text", "label"}` datasets into `(anchor
 
 | `batch_sampler` | When used | Description |
 |-----------------|-----------|-------------|
-| `group_by_label` | default for triplet losses | Every batch contains all classes — required for triplet mining. |
+| `group_by_label` | default for triplet losses | Every batch has multiple labels with ≥2 samples per label — required for triplet mining. |
 | `no_duplicates` | default for MNRL | No duplicate texts per batch. |
 | `default` | — | Standard batching. |
 

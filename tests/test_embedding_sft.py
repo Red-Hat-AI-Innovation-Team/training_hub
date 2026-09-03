@@ -112,6 +112,16 @@ class TestLoadDataset:
         ds = _load_dataset(path, require_label=False)
         assert "text" in ds.column_names and "label" not in ds.column_names
 
+    def test_custom_loss_schema_not_forced_into_text_label(self, tmp_path):
+        """A custom loss (e.g. ContrastiveLoss) may use sentence1/sentence2 + label
+        instead of text/label. With requirements relaxed, loading must not fail."""
+        path = _write_jsonl(tmp_path / "train.jsonl", [
+            {"sentence1": "a", "sentence2": "b", "label": 1},
+            {"sentence1": "c", "sentence2": "d", "label": 0},
+        ])
+        ds = _load_dataset(path, require_text=False, require_label=False)
+        assert "sentence1" in ds.column_names and "text" not in ds.column_names
+
 
 # ---------------------------------------------------------------------------
 # MNRL pair conversion

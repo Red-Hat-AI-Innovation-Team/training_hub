@@ -183,7 +183,7 @@ result = gepa(
 
 Contrastive fine-tuning of sentence embedding models (e.g. `all-MiniLM-L6-v2`) so that inputs with the same label cluster together in embedding space. Designed for **semantic routing / classification** — route a query to one of N specialist lanes by nearest-anchor cosine similarity — but applicable to any task that benefits from tighter embedding clusters (retrieval, deduplication, clustering). Features:
 - Three contrastive losses: `batch_all_triplet`, `batch_hard_triplet`, and `mnrl` (Multiple Negatives Ranking Loss)
-- `GROUP_BY_LABEL` batch sampling so every batch contains all classes (required for triplet mining)
+- `GROUP_BY_LABEL` batch sampling so every batch contains multiple labels with at least two samples per label (required for triplet mining)
 - Auto-converts label datasets to (anchor, positive) pairs for MNRL
 - Custom `loss_fn` support for extensibility
 - Saves in standard sentence-transformers format

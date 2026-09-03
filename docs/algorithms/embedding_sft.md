@@ -34,7 +34,7 @@ result = embedding_sft(
 ## How It Works
 
 1. **Load** a sentence-transformers model (`model_path` — a HuggingFace ID or local path).
-2. **Sample batches** with `GROUP_BY_LABEL` so every batch contains examples from every class — this is required for triplet mining (an anchor needs positives and negatives in the same batch).
+2. **Sample batches** with `GROUP_BY_LABEL` so every batch contains multiple labels with at least two samples per label — this is required for triplet mining (an anchor needs positives and negatives in the same batch).
 3. **Compute a contrastive loss** that pulls same-label embeddings together and pushes different-label embeddings apart.
 4. **Save** the fine-tuned model in standard sentence-transformers format, ready for `SentenceTransformer("<output_dir>")`.
 
@@ -54,7 +54,7 @@ For triplet losses, the dataset is consumed as `{"text", "label"}` rows. For `mn
 
 | `batch_sampler` | Description |
 |-----------------|-------------|
-| `group_by_label` (default for triplets) | Every batch contains all classes — required for triplet mining |
+| `group_by_label` (default for triplets) | Every batch has multiple labels with ≥2 samples per label — required for triplet mining |
 | `no_duplicates` (default for MNRL) | No duplicate texts in a batch |
 | `default` | Standard batching |
 
@@ -76,7 +76,9 @@ Column names default to `text` and `label`; override with `text_column` / `label
 Pass any sentence-transformers-compatible loss as `loss_fn` to override `loss_type`:
 
 ```python
-from sentence_transformers import losses
+from sentence_transformers import SentenceTransformer, losses
+
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 result = embedding_sft(
     model_path="sentence-transformers/all-MiniLM-L6-v2",

@@ -55,7 +55,9 @@ Creates a new `EmbeddingSFTAlgorithm` instance.
 
 **Parameters:**
 - `backend` (`Backend`): The backend implementation to use (`SentenceTransformersBackend`)
-- `**kwargs`: Additional configuration passed to the algorithm
+- `**kwargs`: Accepted for API symmetry but not stored — all training configuration
+  is passed to `train()`. (Use the [`embedding_sft()`](../functions/embedding_sft.md)
+  convenience function to select the backend by name via the `backend` argument.)
 
 **Example:**
 ```python
@@ -85,7 +87,6 @@ Executes contrastive embedding fine-tuning.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `backend` | `str` | `"sentence-transformers"` | Training backend. |
 | `loss_type` | `str` | `"batch_all_triplet"` | One of `"batch_all_triplet"`, `"batch_hard_triplet"`, `"mnrl"`. Ignored if `loss_fn` is set. |
 | `loss_fn` | `Callable` | `None` | Custom loss function; overrides `loss_type`. |
 | `num_epochs` | `int` | `20` | Number of training epochs. |
@@ -98,7 +99,9 @@ Executes contrastive embedding fine-tuning.
 | `label_column` | `str` | `"label"` | Name of the integer label column. |
 | `seed` | `int` | `42` | Random seed. |
 
-> Additional parameters are also accepted via `**kwargs`.
+> The backend is selected in the constructor (`__init__`), not via `train()`.
+> Additional parameters are also accepted via `train(**kwargs)` (unknown ones
+> are logged as a warning to catch typos).
 
 #### Returns
 

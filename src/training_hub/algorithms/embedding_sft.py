@@ -50,8 +50,35 @@ _KNOWN_PARAMS: set[str] = {
 }
 
 
-def _load_dataset(data_path: str, text_column: str = "text", label_column: str = "label", *, require_label: bool = True):
-    """Load a text/label dataset from a JSONL/CSV file or HuggingFace dataset ID."""
+def _load_dataset(
+    data_path: str,
+    text_column: str = "text",
+    label_column: str = "label",
+    *,
+    require_text: bool = True,
+    require_label: bool = True,
+) -> Any:
+    """Load a text/label dataset from a JSONL/CSV file or HuggingFace dataset ID.
+
+    Args:
+        data_path: Path to a .jsonl/.json/.csv file, or a HuggingFace dataset ID.
+        text_column: Name of the column to rename to ``text`` (if present).
+        label_column: Name of the column to rename to ``label`` (if present).
+        require_text: When True (default), require a ``text`` column after renaming.
+            Set False for custom losses that use a different column schema
+            (e.g. ``sentence1``/``sentence2``).
+        require_label: When True (default), require a ``label`` column after
+            renaming. Set False for pair-formatted or custom-loss datasets.
+
+    Returns:
+        A HuggingFace ``Dataset`` with the requested columns (``text`` and/or
+        ``label`` after renaming, or whatever the custom loss expects when
+        requirements are relaxed).
+
+    Raises:
+        ValueError: If the file extension is unsupported, or if a required
+            column is missing after renaming.
+    """
     from datasets import load_dataset
 
     if os.path.isfile(data_path):
@@ -73,7 +100,7 @@ def _load_dataset(data_path: str, text_column: str = "text", label_column: str =
     if label_column != "label" and label_column in dataset.column_names:
         dataset = dataset.rename_column(label_column, "label")
 
-    if "text" not in dataset.column_names:
+    if require_text and "text" not in dataset.column_names:
         raise ValueError(
             f"Dataset must have a 'text' column (or specify text_column). "
             f"Found: {dataset.column_names}"
@@ -87,13 +114,22 @@ def _load_dataset(data_path: str, text_column: str = "text", label_column: str =
     return dataset
 
 
-def _to_pair_dataset(dataset, max_pairs_per_label: int = 10_000, seed: int = 42):
+def _to_pair_dataset(dataset: Any, max_pairs_per_label: int = 10_000, seed: int = 42) -> Any:
     """Convert a label-based dataset to (anchor, positive) pairs for MNRL.
 
-    To avoid the O(n²) memory blow-up of materializing all within-label pairs,
-    each label's texts are down-sampled to at most ``ceil(2 * max_pairs_per_label)``
-    texts *before* pair construction. For a label with n texts this caps memory at
-    ~max_pairs_per_label pairs rather than n*(n-1)/2.
+    To avoid the O(n^2) memory blow-up of materializing all within-label pairs,
+    each label's texts are down-sampled to at most the number needed to produce
+    ``max_pairs_per_label`` pairs *before* pair construction. For a label with n
+    texts this caps memory at ~max_pairs_per_label pairs rather than n*(n-1)/2.
+
+    Args:
+        dataset: A HuggingFace ``Dataset`` with ``text`` and ``label`` columns.
+        max_pairs_per_label: Upper bound on pairs generated per label. <= 0 means
+            no cap (use with care on large labels).
+        seed: Random seed for the source-text down-sampling and pair sub-sampling.
+
+    Returns:
+        A HuggingFace ``Dataset`` with ``anchor`` and ``positive`` columns.
     """
     from datasets import Dataset
     from itertools import combinations
@@ -194,7 +230,12 @@ class SentenceTransformersBackend(Backend):
             )
 
         logger.info("Loading training data: %s", data_path)
-        train_dataset = _load_dataset(data_path, text_column, label_column)
+        # A custom loss_fn owns its data format (e.g. ContrastiveLoss wants
+        # sentence1/sentence2 + label), so don't force the text/label schema on it.
+        train_dataset = _load_dataset(
+            data_path, text_column, label_column,
+            require_text=not using_custom_loss, require_label=not using_custom_loss,
+        )
 
         # MNRL expects (anchor, positive) pairs rather than text/label rows. We
         # only auto-convert when using the built-in MNRL loss — a custom loss_fn
@@ -220,14 +261,15 @@ class SentenceTransformersBackend(Backend):
         eval_dataset = None
         if eval_data_path:
             # Eval data must match the training format: pairs for MNRL, text/label
-            # otherwise. A custom loss_fn owns its format, so we load text only.
+            # otherwise. A custom loss_fn owns its format, so we relax requirements.
             if use_mnrl_pairs:
                 eval_dataset = _load_dataset(eval_data_path, text_column, label_column)
                 eval_dataset = _to_pair_dataset(eval_dataset, seed=seed)
                 logger.info("Eval samples: %d (anchor, positive) pairs", len(eval_dataset))
             else:
                 eval_dataset = _load_dataset(
-                    eval_data_path, text_column, label_column, require_label=not using_custom_loss
+                    eval_data_path, text_column, label_column,
+                    require_text=not using_custom_loss, require_label=not using_custom_loss,
                 )
                 logger.info("Eval samples: %d", len(eval_dataset))
 
@@ -264,6 +306,9 @@ class SentenceTransformersBackend(Backend):
             batch_sampler=batch_sampler,
             save_strategy="epoch",
             save_total_limit=1,
+            # Only enable eval when an eval dataset was provided; otherwise the
+            # default "no" skips evaluation (and avoids the trainer requiring one).
+            eval_strategy="epoch" if eval_dataset is not None else "no",
             logging_steps=10,
             fp16=False,
             bf16=use_bf16,
