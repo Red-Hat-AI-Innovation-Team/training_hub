@@ -52,6 +52,9 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+s3 = [
+    "boto3>=1.26",
+]
 cuda = [
     "instructlab-training[cuda]>=0.16.2",
     "rhai-innovation-mini-trainer[cuda]>=0.8.3",
