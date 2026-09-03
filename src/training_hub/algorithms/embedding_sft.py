@@ -95,9 +95,26 @@ def _load_dataset(
     else:
         dataset = load_dataset(data_path, split="train")
 
+    # Rename the requested text/label columns to the canonical "text"/"label"
+    # names the rest of the pipeline expects. Guard against the case where the
+    # target name already exists (e.g. a dataset with both "text" and "sentence"
+    # columns passed with text_column="sentence") — datasets.rename_column would
+    # fail with an opaque error, so surface a clear one instead.
     if text_column != "text" and text_column in dataset.column_names:
+        if "text" in dataset.column_names:
+            raise ValueError(
+                f"Cannot rename column '{text_column}' to 'text': a 'text' column "
+                f"already exists. Set text_column='text' or remove the duplicate "
+                f"column from your data. Columns: {dataset.column_names}"
+            )
         dataset = dataset.rename_column(text_column, "text")
     if label_column != "label" and label_column in dataset.column_names:
+        if "label" in dataset.column_names:
+            raise ValueError(
+                f"Cannot rename column '{label_column}' to 'label': a 'label' "
+                f"column already exists. Set label_column='label' or remove the "
+                f"duplicate column from your data. Columns: {dataset.column_names}"
+            )
         dataset = dataset.rename_column(label_column, "label")
 
     if require_text and "text" not in dataset.column_names:
