@@ -7,7 +7,8 @@ from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
 from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.embedding_sft import embedding_sft, EmbeddingSFTAlgorithm, SentenceTransformersBackend
 from .algorithms.rewards import tool_call_reward, binary_reward
-from .callbacks import TrainingHubCallback, TrainingHubContext
+from .callbacks import TrainingHubCallback, TrainingHubContext, TrainingHubControl, merge_default_callbacks
+from .jit_checkpoint import JITCheckpointCallback
 from .hub_core import welcome
 from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
 from .algorithms.its_rollout import ITSRollout
@@ -50,6 +51,9 @@ __all__ = [
     'estimate',
     'TrainingHubCallback',
     'TrainingHubContext',
+    'TrainingHubControl',
+    'merge_default_callbacks',
+    'JITCheckpointCallback',
     'ITSRollout',
     'plot_loss',
 ]
