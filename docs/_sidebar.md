@@ -15,6 +15,7 @@
   * [LoRA + GRPO - Adapter RLVR](/algorithms/lora_grpo)
   * [GRPO - Full Fine-Tuning RLVR](/algorithms/grpo)
   * [GEPA - Prompt Optimization](/algorithms/gepa)
+  * [Embedding SFT - Semantic Routing](/algorithms/embedding_sft)
 
 * API Reference
   * [API Overview](/api/)
@@ -25,6 +26,7 @@
     * [lora_grpo()](/api/functions/lora_grpo)
     * [grpo()](/api/functions/grpo)
     * [gepa()](/api/functions/gepa)
+    * [embedding_sft()](/api/functions/embedding_sft)
     * [create_algorithm()](/api/functions/create-algorithm)
   * Classes
     * [Algorithm](/api/classes/Algorithm)
@@ -34,6 +36,7 @@
     * [LoRASFTAlgorithm](/api/classes/LoRASFTAlgorithm)
     * [LoRAGRPOAlgorithm](/api/classes/LoRAGRPOAlgorithm)
     * [GEPAAlgorithm](/api/classes/GEPAAlgorithm)
+    * [EmbeddingSFTAlgorithm](/api/classes/EmbeddingSFTAlgorithm)
     * [PEFTExtender](/api/classes/PEFTExtender)
     * [LoRAPEFTExtender](/api/classes/LoRAPEFTExtender)
     * [AlgorithmRegistry](/api/classes/AlgorithmRegistry)
@@ -45,6 +48,7 @@
     * [ART (GRPO)](/api/backends/art-grpo)
     * [verl (GRPO)](/api/backends/verl)
     * [GEPA (Prompt Optimization)](/api/backends/gepa)
+    * [SentenceTransformers (Embedding)](/api/backends/embedding_sft)
   * [Data Formats](/api/data-formats)
 
 * Guides
