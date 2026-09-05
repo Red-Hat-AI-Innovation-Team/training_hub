@@ -207,16 +207,17 @@ def _install_megatron_bridge_stub():
     class _StubMeta(type):
         """Metaclass that returns a new stub for any attribute access."""
         def __getattr__(cls, name):
-            logger.warning(
-                "megatron stub: attribute %s.%s accessed — stubs are import-only "
-                "placeholders; actual megatron functionality is not available",
-                cls.__name__, name,
-            )
-            return type(name, (), {"__init__": lambda self, *a, **kw: None})
+            return _Stub
+
+        def __call__(cls, *args, **kwargs):
+            return cls
 
     class _Stub(metaclass=_StubMeta):
-        """A class whose attributes are all no-op classes."""
+        """A no-op class usable as value, decorator, or base class."""
         def __init__(self, *args, **kwargs):
+            pass
+
+        def __init_subclass__(cls, **kwargs):
             pass
 
     def _make_stub_module(fqn, is_package=True, attrs=None):
@@ -283,7 +284,6 @@ def _install_megatron_bridge_stub():
 
     # Ensure megatron package itself and megatron.core exist as stubs if not
     # already installed (megatron-core --no-deps provides the real ones).
-    # Try real import first to avoid shadowing a real installation.
     for pkg in ("megatron", "megatron.core"):
         if pkg not in sys.modules:
             try:
@@ -295,7 +295,36 @@ def _install_megatron_bridge_stub():
                 )
                 _make_stub_module(pkg)
 
-    logger.debug("Installed megatron.bridge stub modules for ART 0.5.18 compat")
+    # Install a meta-path finder that auto-creates stub modules for any
+    # megatron.* import. ART 0.5.18 imports from megatron.core.models,
+    # megatron.core.ssm, and potentially other subpaths at module load
+    # time. Enumerating them is fragile; this catches all of them.
+    import importlib.abc
+    import importlib.machinery
+
+    class _MegatronStubFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if fullname.startswith("megatron.") and fullname not in sys.modules:
+                return importlib.machinery.ModuleSpec(fullname, _MegatronStubLoader(), is_package=True)
+            return None
+
+    class _MegatronStubLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            mod = _make_stub_module(spec.name)
+            mod.__class__ = _StubModuleType
+            return mod
+
+        def exec_module(self, module):
+            parts = module.__name__.rsplit(".", 1)
+            if len(parts) == 2 and parts[0] in sys.modules:
+                setattr(sys.modules[parts[0]], parts[1], module)
+
+    # Only install if megatron is a stub (not a real installation)
+    megatron_mod = sys.modules.get("megatron")
+    if megatron_mod and not hasattr(megatron_mod, "__file__"):
+        sys.meta_path.insert(0, _MegatronStubFinder())
+
+    logger.debug("Installed megatron stub modules for ART 0.5.18 compat")
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +836,18 @@ class ARTLoRAGRPOBackend(Backend):
             args=(algorithm_params, results_path, error_path),
         )
         proc.start()
-        proc.join()
+        # Join with timeout: vLLM's non-daemon EngineCore threads can prevent
+        # the subprocess from exiting even after os._exit is called from the
+        # training coroutine's finally block. Results are saved to disk inside
+        # the training loop before shutdown, so terminating is safe.
+        join_timeout = float(os.environ.get("TRAINING_HUB_JOIN_TIMEOUT", "7200"))
+        proc.join(timeout=join_timeout)
+        if proc.is_alive():
+            logger.warning("Training subprocess still alive after join timeout, terminating")
+            proc.terminate()
+            proc.join(timeout=10)
+            if proc.is_alive():
+                proc.kill()
 
         if os.path.exists(error_path):
             with open(error_path) as f:
@@ -856,6 +896,31 @@ class ARTLoRAGRPOBackend(Backend):
 
             import art
             from art.local.backend import LocalBackend
+
+            # ART passes reward_funcs=[] to GRPOTrainer, but trl 1.8+
+            # requires at least one reward source.  ART overrides compute_loss
+            # entirely, so the no-op is never called at runtime.
+            _noop_reward = lambda completions, **kw: [0.0] * len(completions)
+            import art.unsloth.train as _art_train
+            _OrigTrainer = _art_train.GRPOTrainer
+            class _GRPOTrainerWithDefaultReward(_OrigTrainer):
+                def __init__(self, *args, **kwargs):
+                    # reward_funcs is the 2nd positional param in trl GRPOTrainer
+                    if len(args) > 1 and not args[1]:
+                        args = (args[0], [_noop_reward]) + args[2:]
+                    elif not kwargs.get("reward_funcs"):
+                        kwargs["reward_funcs"] = [_noop_reward]
+                    super().__init__(*args, **kwargs)
+            # art 0.5.18 instantiates GRPOTrainer in art.unsloth.train;
+            # art 0.5.17 instantiates it in art.unsloth.service.  Patch the
+            # reference in both modules so either version gets the default.
+            _art_train.GRPOTrainer = _GRPOTrainerWithDefaultReward
+            try:
+                import art.unsloth.service as _art_service
+                if hasattr(_art_service, "GRPOTrainer"):
+                    _art_service.GRPOTrainer = _GRPOTrainerWithDefaultReward
+            except ImportError:
+                pass
             asyncio.run(
                 ARTLoRAGRPOBackend()._run_training(algorithm_params, art, LocalBackend)
             )
@@ -1239,11 +1304,18 @@ class ARTLoRAGRPOBackend(Backend):
                 json.dump(results, f, indent=2)
 
             # Train GRPO step — ART writes loss metrics to its own
-            # history.jsonl live during training
-            await model.train(
-                train_groups,
-                config=art.TrainConfig(learning_rate=learning_rate),
-            )
+            # history.jsonl live during training.
+            # art 0.5.18 moved train() from TrainableModel to LocalBackend.
+            if hasattr(model, "train"):
+                await model.train(
+                    train_groups,
+                    config=art.TrainConfig(learning_rate=learning_rate),
+                )
+            else:
+                await backend.train(
+                    model, train_groups,
+                    learning_rate=learning_rate,
+                )
 
             iter_time = time.time() - iter_start
             timing_history.append(iter_time)

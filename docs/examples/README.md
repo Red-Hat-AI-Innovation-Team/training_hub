@@ -116,6 +116,57 @@ result = lora_sft(
 )
 ```
 
+### GEPA (Genetic-Pareto Prompt Optimization)
+
+GEPA is a gradient-free algorithm that optimizes prompt *text* — system prompts, few-shot templates, agent instructions — without modifying model weights, so it requires no local GPU. It uses evolutionary search with Pareto-based selection and LLM-driven reflection, reaching the model through a hosted API or a local vLLM/OpenAI-compatible endpoint.
+
+**Documentation:**
+- [GEPA Usage Guide](/algorithms/gepa) - Conceptual overview, backends, data format, and tips
+- [gepa() Function Reference](/api/functions/gepa) - Full parameter reference
+
+**Tutorials:**
+- [GEPA Prompt Optimization](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/notebooks/gepa_prompt_optimization.ipynb) - Interactive notebook demonstrating both backends (direct and MLflow) against a local vLLM server
+
+**Quick Example:**
+```python
+from training_hub import gepa
+
+result = gepa(
+    seed_candidate={"system_prompt": "You are a helpful assistant. Answer the question."},
+    task_lm="openai/gpt-4o-mini",
+    data_path="/path/to/eval_data.jsonl",
+    output_dir="/path/to/gepa_output",
+    max_metric_calls=200,
+)
+print(result.best_candidate)
+```
+
+### Embedding Fine-Tuning (Semantic Routing)
+
+Contrastive fine-tuning of sentence embedding models so that inputs with the same label cluster together in embedding space. The primary use case is **semantic routing** — classifying a natural-language query into one of N lanes (e.g. routing a request to the right specialist model) via nearest-anchor cosine similarity. It also improves any task that benefits from tighter embedding clusters (retrieval, deduplication, clustering).
+
+**Documentation:**
+- [Embedding SFT Usage Guide](/algorithms/embedding_sft) - Conceptual overview, losses, data format, and tips
+- [embedding_sft() Function Reference](/api/functions/embedding_sft) - Full parameter reference
+
+**Tutorials:**
+- [Semantic Routing Demo](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/notebooks/routing_demo.ipynb) - Interactive notebook training a 4-class router end-to-end (data generation → fine-tuning → inference runtime → evaluation), including a confidence-threshold fallback
+
+**Quick Example:**
+```python
+from training_hub import embedding_sft
+
+result = embedding_sft(
+    model_path="sentence-transformers/all-MiniLM-L6-v2",
+    data_path="/path/to/routing_train.jsonl",    # {"text": "...", "label": 0}
+    ckpt_output_dir="/path/to/routing_model",
+    loss_type="batch_all_triplet",
+    num_epochs=20,
+    batch_size=32,
+    learning_rate=2e-5,
+)
+```
+
 ### Memory Estimation (Experimental)
 
 training_hub includes a library for estimating the expected amount of GPU memory that will be allocated during fine-tuning.

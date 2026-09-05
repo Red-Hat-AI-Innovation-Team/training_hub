@@ -15,6 +15,8 @@ Training Hub provides convenient top-level functions for common training tasks:
 | [`lora_sft()`](/api/functions/lora_sft) | Parameter-efficient fine-tuning with LoRA | [Details](/api/functions/lora_sft) |
 | [`lora_grpo()`](/api/functions/lora_grpo) | LoRA + GRPO for tool-calling agents (RLVR) | [Details](/api/functions/lora_grpo) |
 | [`grpo()`](/api/functions/grpo) | Full-parameter GRPO training (verl backend) | [Details](/api/functions/grpo) |
+| [`gepa()`](/api/functions/gepa) | Gradient-free prompt optimization (no weight training) | [Details](/api/functions/gepa) |
+| [`embedding_sft()`](/api/functions/embedding_sft) | Contrastive embedding fine-tuning for semantic routing/classification | [Details](/api/functions/embedding_sft) |
 | [`create_algorithm()`](/api/functions/create-algorithm) | Factory function to create algorithm instances | [Details](/api/functions/create-algorithm) |
 
 ### Classes
@@ -29,6 +31,8 @@ Training Hub uses an object-oriented architecture with algorithms and pluggable 
 | [`OSFTAlgorithm`](/api/classes/OSFTAlgorithm) | OSFT algorithm implementation | [Details](/api/classes/OSFTAlgorithm) |
 | [`LoRASFTAlgorithm`](/api/classes/LoRASFTAlgorithm) | LoRA fine-tuning algorithm implementation | [Details](/api/classes/LoRASFTAlgorithm) |
 | [`LoRAGRPOAlgorithm`](/api/classes/LoRAGRPOAlgorithm) | LoRA + GRPO for tool-calling agents | [Details](/api/classes/LoRAGRPOAlgorithm) |
+| [`GEPAAlgorithm`](/api/classes/GEPAAlgorithm) | Genetic-Pareto prompt optimization (gradient-free) | [Details](/api/classes/GEPAAlgorithm) |
+| [`EmbeddingSFTAlgorithm`](/api/classes/EmbeddingSFTAlgorithm) | Contrastive embedding fine-tuning for semantic routing | [Details](/api/classes/EmbeddingSFTAlgorithm) |
 | [`PEFTExtender`](/api/classes/PEFTExtender) | Base class for parameter-efficient fine-tuning extensions | [Details](/api/classes/PEFTExtender) |
 | [`LoRAPEFTExtender`](/api/classes/LoRAPEFTExtender) | LoRA-specific PEFT extension implementation | [Details](/api/classes/LoRAPEFTExtender) |
 | [`AlgorithmRegistry`](/api/classes/AlgorithmRegistry) | Central registry for algorithms and backends | [Details](/api/classes/AlgorithmRegistry) |
@@ -44,6 +48,8 @@ Backend implementations that power the algorithms:
 | [`UnslothLoRABackend`](/api/backends/unsloth) | LoRA | [Details](/api/backends/unsloth) |
 | [`ARTLoRAGRPOBackend`](/api/backends/art-grpo) | LoRA + GRPO (single-GPU) | [Details](/api/backends/art-grpo) |
 | [`VeRLLoRAGRPOBackend`](/api/backends/verl) | LoRA + GRPO (multi-GPU) | [Details](/api/backends/verl) |
+| [`GEPABackend` / `MLflowGEPABackend`](/api/backends/gepa) | GEPA prompt optimization | [Details](/api/backends/gepa) |
+| [`SentenceTransformersBackend`](/api/backends/embedding_sft) | Embedding fine-tuning | [Details](/api/backends/embedding_sft) |
 
 For an overview of the backend system, see [Backends Overview](/api/backends/).
 
