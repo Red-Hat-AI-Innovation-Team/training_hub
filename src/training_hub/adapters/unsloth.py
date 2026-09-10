@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING
 
 from transformers import TrainerCallback
 
-from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
+from training_hub.callbacks import (
+    TrainingHubCallback,
+    TrainingHubContext,
+    TrainingHubControl,
+)
 
 if TYPE_CHECKING:
     from transformers import TrainerControl, TrainerState, TrainingArguments
@@ -40,9 +44,14 @@ class UnslothCallbackAdapter(TrainerCallback):
 
     Args:
         hub_callback: A TrainingHubCallback instance to adapt.
+        hub_control: Shared mutable control bag for default-flow callbacks.
     """
 
-    def __init__(self, hub_callback: TrainingHubCallback) -> None:
+    def __init__(
+        self,
+        hub_callback: TrainingHubCallback,
+        hub_control: TrainingHubControl | None = None,
+    ) -> None:
         if not isinstance(hub_callback, TrainingHubCallback):
             raise TypeError(
                 "Expected TrainingHubCallback instance, "
@@ -50,12 +59,14 @@ class UnslothCallbackAdapter(TrainerCallback):
             )
         super().__init__()
         self._hub_callback = hub_callback
+        self._hub_control = hub_control
 
     @staticmethod
     def _build_context(
         args: TrainingArguments,
         state: TrainerState,
         logs: dict | None = None,
+        hub_control: TrainingHubControl | None = None,
     ) -> TrainingHubContext:
         """Build normalized context from HuggingFace trainer state."""
         metrics = dict(logs) if logs is not None else {}
@@ -64,7 +75,6 @@ class UnslothCallbackAdapter(TrainerCallback):
         if loss is None:
             loss = metrics.get("eval_loss")
         if loss is None and state.log_history:
-            # Prefer most recent training loss; otherwise last eval_loss
             eval_loss_fallback = None
             for entry in reversed(state.log_history):
                 if "loss" in entry:
@@ -90,6 +100,7 @@ class UnslothCallbackAdapter(TrainerCallback):
             is_main_process=state.is_world_process_zero,
             output_dir=args.output_dir,
             metrics=metrics,
+            control=hub_control,
         )
 
     def _safe_call(
@@ -106,7 +117,7 @@ class UnslothCallbackAdapter(TrainerCallback):
         ):
             return
         try:
-            ctx = self._build_context(args, state, logs)
+            ctx = self._build_context(args, state, logs, self._hub_control)
             getattr(self._hub_callback, method_name)(ctx)
         except Exception:
             logger.exception(
@@ -114,6 +125,14 @@ class UnslothCallbackAdapter(TrainerCallback):
                 type(self._hub_callback).__name__,
                 method_name,
             )
+
+    def _apply_hub_control(self, control) -> None:
+        if self._hub_control is None:
+            return
+        if self._hub_control.should_save:
+            control.should_save = True
+        if self._hub_control.should_training_stop:
+            control.should_training_stop = True
 
     # --- HuggingFace TrainerCallback hooks → TrainingHubCallback hooks ---
 
@@ -124,23 +143,34 @@ class UnslothCallbackAdapter(TrainerCallback):
         self._safe_call("on_epoch_begin", args, state)
 
     def on_step_begin(self, args, state, control, **kwargs):
+        if self._hub_control is not None:
+            self._hub_control.should_save = False
         self._safe_call("on_step_begin", args, state)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         self._safe_call("on_log", args, state, logs=logs)
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        # HF Trainer passes evaluation metrics via the `metrics` kwarg
         self._safe_call("on_evaluate", args, state, logs=metrics)
 
     def on_save(self, args, state, control, **kwargs):
-        self._safe_call("on_save", args, state)
+        checkpoint_dir = None
+        if state.global_step:
+            checkpoint_dir = f"{args.output_dir}/checkpoint-{state.global_step}"
+        logs = {}
+        if checkpoint_dir:
+            logs["checkpoint_path"] = checkpoint_dir
+        self._safe_call("on_save", args, state, logs=logs or None)
 
     def on_step_end(self, args, state, control, **kwargs):
         self._safe_call("on_step_end", args, state)
+        self._apply_hub_control(control)
+        return control
 
     def on_epoch_end(self, args, state, control, **kwargs):
         self._safe_call("on_epoch_end", args, state)
+        self._apply_hub_control(control)
+        return control
 
     def on_train_end(self, args, state, control, **kwargs):
         self._safe_call("on_train_end", args, state)
@@ -148,14 +178,17 @@ class UnslothCallbackAdapter(TrainerCallback):
 
 def adapt_hub_callbacks(
     callbacks: list[TrainingHubCallback],
+    hub_control: TrainingHubControl | None = None,
 ) -> list[TrainerCallback]:
     """Convert a list of TrainingHubCallbacks to HuggingFace TrainerCallbacks.
 
     Args:
         callbacks: List of TrainingHubCallback instances.
+        hub_control: Optional shared control bag for default-flow callbacks.
 
     Returns:
         List of UnslothCallbackAdapter instances ready for
         trainer.add_callback().
     """
-    return [UnslothCallbackAdapter(cb) for cb in callbacks]
+    control = hub_control or TrainingHubControl()
+    return [UnslothCallbackAdapter(cb, hub_control=control) for cb in callbacks]
