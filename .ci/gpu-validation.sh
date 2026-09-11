@@ -56,6 +56,8 @@ bad = [r for r in results if r.get("status") not in ("success", "skipped")]
 n = lambda s: sum(1 for r in results if r.get("status") == s)
 print(f"\n== verdict: {len(results)} runs, {n('success')} success, {n('skipped')} skipped, {len(bad)} failed")
 for r in bad:
-    print(f"   FAIL {r.get('model_key')} {r.get('mode')} liger={r.get('use_liger')} qlora={r.get('use_qlora')}: {(r.get('error') or r.get('status'))[:300]}")
+    who = r.get('model_id') or r.get('model_key')
+    variant = f"qlora={r.get('use_qlora')}" if r.get('mode') == 'lora' else f"liger={r.get('use_liger')}"
+    print(f"   FAIL {who} {r.get('mode')} {variant}: {(r.get('error') or r.get('status'))[:300]}")
 sys.exit(1 if bad else 0)
 PY
