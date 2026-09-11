@@ -106,6 +106,9 @@ jobs:
             echo "|---|---|---|---|---|---|"
             jq -r '"| \(.name) | \(.state) | \(.exit_code // "-") | \(.node // "-") | \(.started_at // "-") | \(.finished_at // "-") |"' job.json
           } >> "$GITHUB_STEP_SUMMARY"
+          # what the script left in the job's folder: the results JSON and a table
+          ./minic job get "${{ steps.submit.outputs.name }}" --dir results || true
+          if [ -f results/summary.md ]; then { echo; cat results/summary.md; } >> "$GITHUB_STEP_SUMMARY"; fi
           test "$(jq -r .state job.json)" = succeeded
 
       - name: Cancel the job when this run is cancelled
