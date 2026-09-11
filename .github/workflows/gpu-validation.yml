@@ -8,8 +8,10 @@ name: gpu-validation
 # throwaway copy of the `ci-base` workspace on the isolated CI node,
 # follows the log here, and fails when the job's exit code is not 0.
 #
-# PRs run the --simple smoke (tiny random models, 2 GPUs, every model and
-# mode; gated models are skipped). PRs from this repository run at once. A
+# PRs run the --simple smoke (tiny random models, 2 GPUs, every model in
+# sft and osft; gated models are skipped; lora is opt-in from Run
+# workflow until the [lora] extra resolves next to mini_trainer's
+# datasets pin). PRs from this repository run at once. A
 # PR from a fork runs only after a maintainer adds the `ok-to-test` label;
 # until then the check stays red, so the PR cannot merge without the
 # validation. With pull_request_target this workflow file always comes
@@ -30,9 +32,9 @@ on:
       models:
         description: "Model keys, space separated (see --list-models), or 'all'"
         default: all
-      mode:
-        description: "sft, osft, lora or all"
-        default: all
+      modes:
+        description: "Modes, space separated: sft osft lora, or 'all'"
+        default: sft osft
       simple:
         description: "Simple smoke (tiny random models on 2 GPUs)"
         type: boolean
@@ -60,7 +62,7 @@ jobs:
       CI_REF: ${{ github.event.pull_request.number && format('pull/{0}/head', github.event.pull_request.number) || github.ref }}
       CI_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       CI_MODELS: ${{ inputs.models || 'all' }}
-      CI_MODE: ${{ inputs.mode || 'all' }}
+      CI_MODES: ${{ inputs.modes || 'sft osft' }}
       CI_SIMPLE: ${{ (github.event_name != 'workflow_dispatch' || inputs.simple) && '1' || '0' }}
       CI_GPUS: ${{ (github.event_name == 'workflow_dispatch' && !inputs.simple) && inputs.gpus || '2' }}
     steps:
@@ -86,11 +88,11 @@ jobs:
         run: |
           NAME=$(./minic job submit ci-base --gpus "$CI_GPUS" --max-hours 4.5 --json \
                    -e CI_REPO="$CI_REPO" -e CI_REF="$CI_REF" -e CI_SHA="$CI_SHA" \
-                   -e CI_MODELS="$CI_MODELS" -e CI_MODE="$CI_MODE" -e CI_SIMPLE="$CI_SIMPLE" -e CI_GPUS="$CI_GPUS" \
+                   -e CI_MODELS="$CI_MODELS" -e CI_MODES="$CI_MODES" -e CI_SIMPLE="$CI_SIMPLE" -e CI_GPUS="$CI_GPUS" \
                    -- bash -c 'set -e; rm -rf ~/src; git clone -q "https://github.com/$CI_REPO" ~/src; cd ~/src; git fetch -q origin "$CI_REF"; git checkout -q "$CI_SHA"; exec bash .ci/gpu-validation.sh' \
                  | jq -r .name)
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "Submitted $NAME: $CI_REPO @ $CI_SHA ($CI_REF), models=$CI_MODELS mode=$CI_MODE simple=$CI_SIMPLE gpus=$CI_GPUS"
+          echo "Submitted $NAME: $CI_REPO @ $CI_SHA ($CI_REF), models=$CI_MODELS modes=$CI_MODES simple=$CI_SIMPLE gpus=$CI_GPUS"
 
       - name: Follow the log
         run: ./minic job logs --follow "${{ steps.submit.outputs.name }}"

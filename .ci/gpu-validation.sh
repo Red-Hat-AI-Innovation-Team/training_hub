@@ -7,12 +7,15 @@
 #
 # Knobs (environment, set by the workflow):
 #   CI_MODELS  model keys, space separated, or "all" (default)
-#   CI_MODE    sft | osft | lora | all (default all)
+#   CI_MODES   modes, space separated: sft osft lora, or all (default
+#              "sft osft": lora needs the [lora] extra, which does not
+#              resolve next to mini_trainer's datasets pin today)
 #   CI_SIMPLE  1 = --simple smoke on 2 GPUs (default), 0 = the real runs
 #   CI_GPUS    --nproc-per-node for a non-simple run (default 8)
 #
-# scripts/model_validation.py exits 0 whatever happened; the verdict here
-# reads its results file: every run must be "success" or "skipped".
+# scripts/model_validation.py takes one mode per call and exits 0
+# whatever happened; this runs it once per mode and reads every results
+# file: each run must be "success" or "skipped".
 set -euo pipefail
 
 echo "== $(date -u +%FT%TZ) $(git rev-parse --short HEAD) on $(hostname) =="
@@ -24,28 +27,31 @@ python -c "import torch, training_hub; print('torch', torch.__version__, 'cuda',
 
 OUT="$HOME/validation"
 rm -rf "$OUT"; mkdir -p "$OUT"
-ARGS=(--output-dir "$OUT" --dataset-dir "$OUT/data" --mode "${CI_MODE:-all}")
-if [ -n "${CI_MODELS:-}" ] && [ "${CI_MODELS}" != all ]; then
-  # shellcheck disable=SC2206  # the keys are space separated on purpose
-  ARGS+=(--models ${CI_MODELS})
-else
-  ARGS+=(--run-all)
-fi
-if [ "${CI_SIMPLE:-1}" = 1 ]; then
-  ARGS+=(--simple)
-else
-  ARGS+=(--nproc-per-node "${CI_GPUS:-8}")
-fi
-
-echo "== python scripts/model_validation.py ${ARGS[*]}"
-python scripts/model_validation.py "${ARGS[@]}"
+MODES="${CI_MODES:-sft osft}"
+[ "$MODES" = all ] && MODES="sft osft lora"
+for MODE in $MODES; do
+  ARGS=(--output-dir "$OUT/$MODE" --dataset-dir "$OUT/data" --mode "$MODE")
+  if [ -n "${CI_MODELS:-}" ] && [ "${CI_MODELS}" != all ]; then
+    # shellcheck disable=SC2206  # the keys are space separated on purpose
+    ARGS+=(--models ${CI_MODELS})
+  else
+    ARGS+=(--run-all)
+  fi
+  if [ "${CI_SIMPLE:-1}" = 1 ]; then
+    ARGS+=(--simple)
+  else
+    ARGS+=(--nproc-per-node "${CI_GPUS:-8}")
+  fi
+  echo "== python scripts/model_validation.py ${ARGS[*]}"
+  python scripts/model_validation.py "${ARGS[@]}"
+done
 
 python - "$OUT" <<'PY'
 import glob, json, os, sys
-files = sorted(glob.glob(os.path.join(sys.argv[1], "validation_results_*.json")))
+files = sorted(glob.glob(os.path.join(sys.argv[1], "*", "validation_results_*.json")))
 if not files:
     print("no validation_results_*.json written"); sys.exit(1)
-results = json.load(open(files[-1]))
+results = [r for f in files for r in json.load(open(f))]
 bad = [r for r in results if r.get("status") not in ("success", "skipped")]
 n = lambda s: sum(1 for r in results if r.get("status") == s)
 print(f"\n== verdict: {len(results)} runs, {n('success')} success, {n('skipped')} skipped, {len(bad)} failed")
