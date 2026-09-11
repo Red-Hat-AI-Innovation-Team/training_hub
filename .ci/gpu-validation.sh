@@ -19,7 +19,6 @@ echo "== $(date -u +%FT%TZ) $(git rev-parse --short HEAD) on $(hostname) =="
 nvidia-smi -L
 
 source ~/venvs/training_hub/bin/activate
-export UV_LINK_MODE=copy
 uv pip install -e ".[cuda]" --no-build-isolation
 python -c "import torch, training_hub; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpus', torch.cuda.device_count())"
 
