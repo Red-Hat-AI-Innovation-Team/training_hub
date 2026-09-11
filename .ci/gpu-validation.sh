@@ -46,18 +46,35 @@ for MODE in $MODES; do
   python scripts/model_validation.py "${ARGS[@]}"
 done
 
+# The verdict, and — for the workflow's step summary — the raw results and
+# a table in the job's folder, which MiniCloud keeps with the job's record
+# (the workflow fetches them with `minic job get`).
 python - "$OUT" <<'PY'
-import glob, json, os, sys
+import glob, json, os, shutil, sys
 files = sorted(glob.glob(os.path.join(sys.argv[1], "*", "validation_results_*.json")))
 if not files:
     print("no validation_results_*.json written"); sys.exit(1)
 results = [r for f in files for r in json.load(open(f))]
 bad = [r for r in results if r.get("status") not in ("success", "skipped")]
 n = lambda s: sum(1 for r in results if r.get("status") == s)
-print(f"\n== verdict: {len(results)} runs, {n('success')} success, {n('skipped')} skipped, {len(bad)} failed")
+verdict = f"{len(results)} runs, {n('success')} success, {n('skipped')} skipped, {len(bad)} failed"
+print(f"\n== verdict: {verdict}")
+def variant(r):
+    return f"qlora={r.get('use_qlora')}" if r.get('mode') == 'lora' else f"liger={r.get('use_liger')}"
 for r in bad:
     who = r.get('model_id') or r.get('model_key')
-    variant = f"qlora={r.get('use_qlora')}" if r.get('mode') == 'lora' else f"liger={r.get('use_liger')}"
-    print(f"   FAIL {who} {r.get('mode')} {variant}: {(r.get('error') or r.get('status'))[:300]}")
+    print(f"   FAIL {who} {r.get('mode')} {variant(r)}: {(r.get('error') or r.get('status'))[:300]}")
+job_dir = os.environ.get("MINICLOUD_JOB_DIR")
+if job_dir and os.path.isdir(job_dir):
+    for f in files:
+        shutil.copy(f, os.path.join(job_dir, f"{os.path.basename(os.path.dirname(f))}-{os.path.basename(f)}"))
+    rows = ["| model | mode | variant | status | seconds |", "|---|---|---|---|---|"]
+    for r in sorted(results, key=lambda r: (str(r.get('model_id')), str(r.get('mode')), variant(r))):
+        status = str(r.get('status'))
+        if status != 'success' and r.get('error'):
+            status += ' — ' + str(r['error'])[:80].replace('|', '/').replace('\n', ' ')
+        rows.append(f"| {r.get('model_id')} | {r.get('mode')} | {variant(r)} | {status} | {round(r.get('duration_seconds') or 0)} |")
+    with open(os.path.join(job_dir, "summary.md"), "w") as f:
+        f.write(f"**Validation: {verdict}**\n\n" + "\n".join(rows) + "\n")
 sys.exit(1 if bad else 0)
 PY
