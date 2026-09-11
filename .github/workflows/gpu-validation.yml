@@ -24,7 +24,7 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main, gpu-ci]
+    branches: [main]
   workflow_dispatch:
     inputs:
       models:
