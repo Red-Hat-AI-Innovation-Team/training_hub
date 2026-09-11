@@ -9,20 +9,22 @@ name: gpu-validation
 # follows the log here, and fails when the job's exit code is not 0.
 #
 # PRs run the --simple smoke (tiny random models, 2 GPUs, every model and
-# mode; gated models are skipped). Fork PRs run only after a maintainer
-# adds the `ok-to-test` label: with pull_request_target this workflow file
-# always comes from the base branch, so the label is the review gate for
-# running contributor code on team hardware. Later pushes to a labelled PR
-# re-run automatically. `Run workflow` lets you pick models and modes.
+# mode; gated models are skipped). PRs from this repository run at once. A
+# PR from a fork runs only after a maintainer adds the `ok-to-test` label;
+# until then the check stays red, so the PR cannot merge without the
+# validation. With pull_request_target this workflow file always comes
+# from the base branch, so the label is the review gate for running
+# contributor code on team hardware. Later pushes to a labelled PR re-run
+# automatically. `Run workflow` lets you pick models and modes.
 #
 # Secrets/variables (repo settings): MINIC_TOKEN (a service token of the
 # CI account on the portal) and MINIC_URL (the portal).
 
 on:
   pull_request_target:
-    types: [labeled, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main]
+    branches: [main, gpu-ci]
   workflow_dispatch:
     inputs:
       models:
@@ -48,10 +50,6 @@ permissions: {}
 jobs:
   gpu-validation:
     name: gpu-validation
-    if: >-
-      github.event_name != 'pull_request_target' ||
-      (contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test'))
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -66,6 +64,17 @@ jobs:
       CI_SIMPLE: ${{ (github.event_name != 'workflow_dispatch' || inputs.simple) && '1' || '0' }}
       CI_GPUS: ${{ (github.event_name == 'workflow_dispatch' && !inputs.simple) && inputs.gpus || '2' }}
     steps:
+      - name: Gate
+        if: github.event_name == 'pull_request_target'
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ok-to-test') }}
+        run: |
+          if [ "$FORK" = true ] && [ "$LABELLED" != true ]; then
+            echo "::error::This PR comes from a fork. A maintainer adds the ok-to-test label to run the validation on the team's node."
+            exit 1
+          fi
+
       - name: Install minic
         run: |
           curl -fsSL "$MINIC_URL/cli/download/linux/amd64" -o minic
