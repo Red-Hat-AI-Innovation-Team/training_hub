@@ -1,0 +1,113 @@
+name: gpu-validation
+
+# Model validation (scripts/model_validation.py) on the team's MiniCloud
+# CI node.
+#
+# The PR's code never runs on this GitHub runner. The runner asks the
+# portal (minic, the MiniCloud CLI) to run .ci/gpu-validation.sh in a
+# throwaway copy of the `ci-base` workspace on the isolated CI node,
+# follows the log here, and fails when the job's exit code is not 0.
+#
+# PRs run the --simple smoke (tiny random models, 2 GPUs, every model in
+# sft and osft; gated models are skipped; lora is opt-in from Run
+# workflow until the [lora] extra resolves next to mini_trainer's
+# datasets pin). PRs from this repository run at once. A
+# PR from a fork runs only after a maintainer adds the `ok-to-test` label;
+# until then the check stays red, so the PR cannot merge without the
+# validation. With pull_request_target this workflow file always comes
+# from the base branch, so the label is the review gate for running
+# contributor code on team hardware. Later pushes to a labelled PR re-run
+# automatically. `Run workflow` lets you pick models and modes.
+#
+# Secrets/variables (repo settings): MINIC_TOKEN (a service token of the
+# CI account on the portal) and MINIC_URL (the portal).
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Model keys, space separated (see --list-models), or 'all'"
+        default: all
+      modes:
+        description: "Modes, space separated: sft osft lora, or 'all'"
+        default: sft osft
+      simple:
+        description: "Simple smoke (tiny random models on 2 GPUs)"
+        type: boolean
+        default: true
+      gpus:
+        description: "GPUs for a non-simple run: 1, 2, 4 or 8"
+        default: "8"
+
+concurrency:
+  group: gpu-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  gpu-validation:
+    name: gpu-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      MINIC_URL: ${{ vars.MINIC_URL }}
+      MINIC_TOKEN: ${{ secrets.MINIC_TOKEN }}
+      MINIC_POLL_MS: "10000"
+      CI_REPO: ${{ github.repository }}
+      CI_REF: ${{ github.event.pull_request.number && format('pull/{0}/head', github.event.pull_request.number) || github.ref }}
+      CI_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_MODELS: ${{ inputs.models || 'all' }}
+      CI_MODES: ${{ inputs.modes || 'sft osft' }}
+      CI_SIMPLE: ${{ (github.event_name != 'workflow_dispatch' || inputs.simple) && '1' || '0' }}
+      CI_GPUS: ${{ (github.event_name == 'workflow_dispatch' && !inputs.simple) && inputs.gpus || '2' }}
+    steps:
+      - name: Gate
+        if: github.event_name == 'pull_request_target'
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ok-to-test') }}
+        run: |
+          if [ "$FORK" = true ] && [ "$LABELLED" != true ]; then
+            echo "::error::This PR comes from a fork. A maintainer adds the ok-to-test label to run the validation on the team's node."
+            exit 1
+          fi
+
+      - name: Install minic
+        run: |
+          curl -fsSL "$MINIC_URL/cli/download/linux/amd64" -o minic
+          chmod +x minic
+          ./minic version
+
+      - name: Submit the job
+        id: submit
+        run: |
+          NAME=$(./minic job submit ci-base --gpus "$CI_GPUS" --max-hours 4.5 --json \
+                   -e CI_REPO="$CI_REPO" -e CI_REF="$CI_REF" -e CI_SHA="$CI_SHA" \
+                   -e CI_MODELS="$CI_MODELS" -e CI_MODES="$CI_MODES" -e CI_SIMPLE="$CI_SIMPLE" -e CI_GPUS="$CI_GPUS" \
+                   -- bash -c 'set -e; rm -rf ~/src; git clone -q "https://github.com/$CI_REPO" ~/src; cd ~/src; git fetch -q origin "$CI_REF"; git checkout -q "$CI_SHA"; exec bash .ci/gpu-validation.sh' \
+                 | jq -r .name)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Submitted $NAME: $CI_REPO @ $CI_SHA ($CI_REF), models=$CI_MODELS modes=$CI_MODES simple=$CI_SIMPLE gpus=$CI_GPUS"
+
+      - name: Follow the log
+        run: ./minic job logs --follow "${{ steps.submit.outputs.name }}"
+
+      - name: Result
+        if: always() && steps.submit.outputs.name != ''
+        run: |
+          ./minic job status --json "${{ steps.submit.outputs.name }}" > job.json
+          {
+            echo "| job | state | exit | node | started | finished |"
+            echo "|---|---|---|---|---|---|"
+            jq -r '"| \(.name) | \(.state) | \(.exit_code // "-") | \(.node // "-") | \(.started_at // "-") | \(.finished_at // "-") |"' job.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$(jq -r .state job.json)" = succeeded
+
+      - name: Cancel the job when this run is cancelled
+        if: cancelled() && steps.submit.outputs.name != ''
+        run: ./minic job cancel "${{ steps.submit.outputs.name }}" || true
