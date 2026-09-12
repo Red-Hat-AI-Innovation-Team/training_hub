@@ -20,7 +20,9 @@ name: gpu-validation
 # automatically. `Run workflow` lets you pick models and modes.
 #
 # Secrets/variables (repo settings): MINIC_TOKEN (a service token of the
-# CI account on the portal) and MINIC_URL (the portal).
+# CI account on the portal) and MINIC_URL (the portal — a secret too, so
+# the runner masks the address wherever it would print: the env dump at
+# every step, `minic version`, error text).
 
 on:
   pull_request_target:
@@ -55,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
-      MINIC_URL: ${{ vars.MINIC_URL }}
+      MINIC_URL: ${{ secrets.MINIC_URL }}
       MINIC_TOKEN: ${{ secrets.MINIC_TOKEN }}
       MINIC_POLL_MS: "10000"
       CI_REPO: ${{ github.repository }}
