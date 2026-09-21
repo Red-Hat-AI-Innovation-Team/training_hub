@@ -91,11 +91,15 @@ class InstructLabTrainingSFTBackend(Backend):
         training_params.pop("enable_jit_checkpoint", None)
         training_params.pop("checkpoint_storage", None)
 
-        # Restore latest checkpoint from S3 when checkpoint_storage=s3://
-        # and the local dir is empty (fresh pod after preemption)
-        from training_hub.checkpoint_manager import maybe_restore_from_s3
+        from training_hub.checkpoint_manager import (
+            maybe_restore_checkpoint,
+            sync_latest_checkpoint,
+            sync_latest_checkpoint_best_effort,
+        )
 
-        maybe_restore_from_s3(training_params['ckpt_output_dir'])
+        # Fresh pod after preemption: pull the newest complete checkpoint from
+        # remote storage so instructlab's full_state auto-resume finds it.
+        maybe_restore_checkpoint(training_params['ckpt_output_dir'])
 
         # Older instructlab-training silently drops unknown TrainingArgs fields,
         # which would turn JIT checkpointing into a no-op — fail loudly instead.
@@ -116,11 +120,24 @@ class InstructLabTrainingSFTBackend(Backend):
         final_torchrun_params = utils.get_torchrun_params(torchrun_params)
         torchrun_args = TorchrunArgs(**final_torchrun_params)
 
-        # Execute training
-        return run_training(
-            torch_args=torchrun_args,
-            train_args=training_args
-        )
+        # The on-demand (SIGTERM) save happens inside the torchrun workers, which
+        # exit without firing on_save, so the launcher mirrors it afterwards —
+        # including when run_training raises, since a hard preemption (workers
+        # killed once the grace period expires) is exactly when the local copy
+        # is about to vanish with the node.
+        node_rank = final_torchrun_params.get('node_rank', 0)
+        try:
+            result = run_training(
+                torch_args=torchrun_args,
+                train_args=training_args
+            )
+        except BaseException:
+            sync_latest_checkpoint_best_effort(
+                training_params['ckpt_output_dir'], node_rank=node_rank
+            )
+            raise
+        sync_latest_checkpoint(training_params['ckpt_output_dir'], node_rank=node_rank)
+        return result
 
 
 class SFTAlgorithm(Algorithm):
@@ -223,9 +240,9 @@ class SFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
-        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+        from training_hub.checkpoint_utils import configure_checkpoint_storage
 
-        apply_checkpoint_storage_env(checkpoint_storage)
+        configure_checkpoint_storage(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),
@@ -283,9 +300,11 @@ class SFTAlgorithm(Algorithm):
             if value is not None:
                 params[key] = value
                 
-        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint, backend="sft")
+        # kwargs first: a caller-supplied on_demand_checkpointing must not
+        # silently override an explicit enable_jit_checkpoint=True afterwards.
         params.update(kwargs)
-        
+        apply_native_jit_params(params, enable_jit_checkpoint=enable_jit_checkpoint, backend="sft")
+
         return self.backend.execute_training(params)
     
     def get_required_params(self) -> Dict[str, Type]:

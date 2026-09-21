@@ -208,9 +208,9 @@ class OSFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
-        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+        from training_hub.checkpoint_utils import configure_checkpoint_storage
 
-        apply_checkpoint_storage_env(checkpoint_storage)
+        configure_checkpoint_storage(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),
@@ -498,11 +498,15 @@ class MiniTrainerOSFTBackend(Backend):
                 "on-demand checkpointing support."
             )
 
-        # Restore latest checkpoint from S3 when checkpoint_storage=s3://
-        # and the local dir is empty (fresh pod after preemption)
-        from training_hub.checkpoint_manager import maybe_restore_from_s3
+        from training_hub.checkpoint_manager import (
+            maybe_restore_checkpoint,
+            sync_latest_checkpoint,
+            sync_latest_checkpoint_best_effort,
+        )
 
-        maybe_restore_from_s3(algorithm_params['output_dir'])
+        # Fresh pod after preemption: pull the newest complete checkpoint from
+        # remote storage so mini-trainer's full_state_checkpoints auto-resume finds it.
+        maybe_restore_checkpoint(algorithm_params['output_dir'])
 
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
@@ -557,11 +561,22 @@ class MiniTrainerOSFTBackend(Backend):
         # but default it to True
         training_args_pre['osft'] = training_args_pre.get('osft', True)
 
-        # now we run training
-        return run_training(
-            torch_args=torch_args,
-            train_args=TrainingArgs(**training_args_pre),
-        )
+        # Mini-Trainer's on-demand save ends in os._exit(0) inside the workers
+        # (no on_save / on_train_end), so the launcher mirrors it afterwards,
+        # on the failure path too — a hard preemption kills the workers and the
+        # local copy may not outlive the node.
+        node_rank = torchrun_args_pre.get('node_rank', 0)
+        output_dir = algorithm_params['output_dir']
+        try:
+            result = run_training(
+                torch_args=torch_args,
+                train_args=TrainingArgs(**training_args_pre),
+            )
+        except BaseException:
+            sync_latest_checkpoint_best_effort(output_dir, node_rank=node_rank)
+            raise
+        sync_latest_checkpoint(output_dir, node_rank=node_rank)
+        return result
 
     def _process_data(
         self,

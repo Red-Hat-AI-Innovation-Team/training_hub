@@ -53,7 +53,7 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 s3 = [
-    "boto3>=1.26",
+    "s3fs>=2025.0",
 ]
 cuda = [
     "instructlab-training[cuda]>=0.16.2",

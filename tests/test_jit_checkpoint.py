@@ -10,7 +10,6 @@ import pytest
 from training_hub.callbacks import TrainingHubControl, merge_default_callbacks
 from training_hub.checkpoint_utils import (
     INCOMPLETE_SENTINEL,
-    INCOMPLETE_SIDECAR_PREFIX,
     find_latest_valid_checkpoint,
     incomplete_sidecar_path,
     is_valid_checkpoint_dir,
@@ -131,6 +130,88 @@ class TestJITCheckpointCallback:
         assert incomplete_sidecar_path(tmp_path, 5).exists()
         assert not (tmp_path / "checkpoint-5").exists()
 
+    def test_sigterm_handler_does_no_logging(self):
+        """logging takes non-reentrant locks, so a handler that logs can
+        deadlock the main thread and lose the checkpoint entirely."""
+        import signal as signal_mod
+
+        from training_hub import jit_checkpoint as jc
+
+        calls = []
+
+        class Boom:
+            def __getattr__(self, name):
+                def record(*args, **kwargs):
+                    calls.append(name)
+                    raise AssertionError("signal handler must not log")
+
+                return record
+
+        original_logger = jc.logger
+        jc.logger = Boom()
+        try:
+            jc._handle_sigterm(signal_mod.SIGTERM, None)
+        finally:
+            jc.logger = original_logger
+        assert calls == []
+        assert jc.preempt_requested() is True
+        assert jc._PREEMPT_SIGNUM == int(signal_mod.SIGTERM)
+        jc._PREEMPT_REQUESTED = False
+        jc._PREEMPT_LOGGED = False
+
+    def test_signal_notice_logged_at_step_boundary(self, monkeypatch, tmp_path, caplog):
+        """The cluster harness greps for this line, so it must still be emitted
+        — just from the hook rather than the handler."""
+        import signal as signal_mod
+
+        from training_hub import jit_checkpoint as jc
+
+        monkeypatch.setattr(jc, "_PREEMPT_REQUESTED", False)
+        monkeypatch.setattr(jc, "_PREEMPT_LOGGED", False)
+        jc._handle_sigterm(signal_mod.SIGTERM, None)
+        try:
+            control = TrainingHubControl()
+            ctx = SimpleNamespace(
+                output_dir=str(tmp_path),
+                step=5,
+                is_main_process=True,
+                metrics={},
+                control=control,
+            )
+            with caplog.at_level("WARNING"):
+                JITCheckpointCallback().on_step_end(ctx)
+                JITCheckpointCallback().on_step_end(ctx)
+            assert sum("Received signal" in r.message for r in caplog.records) == 1
+        finally:
+            jc._PREEMPT_REQUESTED = False
+            jc._PREEMPT_LOGGED = False
+
+    def test_preemption_requests_the_save_only_once(self, monkeypatch, tmp_path: Path):
+        """_handle_preemption runs from on_step_end AND on_epoch_end while the
+        flag stays set. Without a one-shot guard HF writes the same checkpoint
+        twice and the mirror uploads it twice (seen on cluster: checkpoint-55
+        mirrored 2x during one grace period)."""
+        from training_hub import jit_checkpoint as jc
+
+        monkeypatch.setattr(jc, "preempt_requested", lambda: True)
+        monkeypatch.setattr(jc, "_PREEMPT_SAVE_REQUESTED", False)
+        cb = JITCheckpointCallback()
+        saves = 0
+        for hook in (cb.on_step_end, cb.on_epoch_end, cb.on_step_end):
+            control = TrainingHubControl()
+            cb_ctx = SimpleNamespace(
+                output_dir=str(tmp_path),
+                step=55,
+                is_main_process=True,
+                metrics={},
+                control=control,
+            )
+            hook(cb_ctx)
+            saves += int(control.should_save)
+            # stopping must stay sticky on every hook, only saving is one-shot
+            assert control.should_training_stop is True
+        assert saves == 1
+
     def test_no_preempt_is_noop(self):
         cb = JITCheckpointCallback()
         control = TrainingHubControl()
@@ -175,6 +256,40 @@ class TestUnslothControlWiring:
         result = adapter.on_step_end(args, state, control)
         assert result.should_save is True
         assert result.should_training_stop is True
+
+    def test_stale_should_save_is_not_reapplied(self):
+        """A preemption stops training, so on_step_begin never runs again. If
+        the adapter does not consume should_save, on_epoch_end re-applies it
+        and HF writes (and the mirror uploads) the same checkpoint twice —
+        observed on cluster as 'Mirrored checkpoint checkpoint-18' x2."""
+        from training_hub.adapters.unsloth import adapt_hub_callbacks
+        from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
+
+        class Preempt(TrainingHubCallback):
+            run_on_all_ranks = True
+            fired = False
+
+            def on_step_end(self, context: TrainingHubContext) -> None:
+                if not Preempt.fired:
+                    Preempt.fired = True
+                    context.control.should_save = True
+                context.control.should_training_stop = True
+
+        adapter = adapt_hub_callbacks([Preempt()])[0]
+        args = SimpleNamespace(output_dir="/out")
+        state = SimpleNamespace(
+            global_step=18, epoch=1.0, is_world_process_zero=True, log_history=[]
+        )
+
+        c1 = SimpleNamespace(should_save=False, should_training_stop=False)
+        adapter.on_step_end(args, state, c1)
+        assert c1.should_save is True
+
+        # training is stopping, so no on_step_begin resets anything
+        c2 = SimpleNamespace(should_save=False, should_training_stop=False)
+        adapter.on_epoch_end(args, state, c2)
+        assert c2.should_save is False, "stale should_save caused a duplicate save"
+        assert c2.should_training_stop is True
 
     def test_on_save_uses_global_step_not_best_checkpoint(self):
         from training_hub.adapters.unsloth import adapt_hub_callbacks

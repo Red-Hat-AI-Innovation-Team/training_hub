@@ -14,6 +14,7 @@ INCOMPLETE_SIDECAR_PREFIX = ".incomplete-checkpoint-"
 
 _HF_CHECKPOINT_RE = re.compile(r"^checkpoint-(\d+)$")
 _MINI_TRAINER_STEP_RE = re.compile(r"^step_(\d+)$")
+_INSTRUCTLAB_EPOCH_RE = re.compile(r"^epoch_(\d+)$")
 
 
 def incomplete_sidecar_path(output_dir: str | Path, step: int) -> Path:
@@ -43,6 +44,19 @@ def mark_checkpoint_complete(output_dir: str | Path, step: int) -> None:
         pass
 
 
+def clear_stale_incomplete_marker(
+    output_dir: str | Path, checkpoint_dir: str | Path
+) -> None:
+    """Drop the in-progress marker of a checkpoint replaced by a complete copy.
+
+    Without this a restored checkpoint keeps the sidecar written by the pod that
+    died mid-save, so resume would still skip it.
+    """
+    step = _checkpoint_step(Path(checkpoint_dir), _HF_CHECKPOINT_RE)
+    if step is not None:
+        mark_checkpoint_complete(output_dir, step)
+
+
 def is_valid_checkpoint_dir(
     checkpoint_dir: Path,
     output_dir: Path | None = None,
@@ -66,13 +80,26 @@ def _checkpoint_step(path: Path, pattern: re.Pattern[str]) -> int | None:
     return int(match.group(1))
 
 
-def find_latest_valid_checkpoint(output_dir: str | None) -> str | None:
+HF_LAYOUT = "hf"
+NATIVE_LAYOUTS = ("mini_trainer", "instructlab")
+ALL_LAYOUTS = (HF_LAYOUT, *NATIVE_LAYOUTS)
+
+
+def find_latest_valid_checkpoint(
+    output_dir: str | None,
+    layouts: tuple[str, ...] = ALL_LAYOUTS,
+) -> str | None:
     """Return the newest valid checkpoint path under *output_dir*, if any.
 
-    Supports HuggingFace ``checkpoint-{step}`` dirs and Mini-Trainer
-    ``full_state_checkpoints/step_{n}`` dirs. Directories containing
-    ``.incomplete`` or a matching ``.incomplete-checkpoint-{step}`` sidecar
-    are skipped.
+    Supports HuggingFace ``checkpoint-{step}``, Mini-Trainer
+    ``full_state_checkpoints/step_{n}`` and InstructLab ``full_state/epoch_{n}``
+    layouts. Directories containing ``.incomplete`` or a matching
+    ``.incomplete-checkpoint-{step}`` sidecar are skipped, as are native
+    full-state dirs whose metadata file has not been written yet.
+
+    Pass *layouts* to restrict the search: a caller that feeds the result to
+    HuggingFace ``resume_from_checkpoint`` must ask for ``("hf",)`` only, since
+    Trainer cannot load the native full-state layouts.
     """
     if not output_dir:
         return None
@@ -83,21 +110,33 @@ def find_latest_valid_checkpoint(output_dir: str | None) -> str | None:
 
     candidates: list[tuple[int, str]] = []
 
-    for child in root.iterdir():
-        if not child.is_dir() or not is_valid_checkpoint_dir(child, root):
-            continue
-        step = _checkpoint_step(child, _HF_CHECKPOINT_RE)
-        if step is not None:
-            candidates.append((step, str(child.resolve())))
+    if HF_LAYOUT in layouts:
+        for child in root.iterdir():
+            if not child.is_dir() or not is_valid_checkpoint_dir(child, root):
+                continue
+            step = _checkpoint_step(child, _HF_CHECKPOINT_RE)
+            if step is not None:
+                candidates.append((step, str(child.resolve())))
 
     mini_root = root / "full_state_checkpoints"
-    if mini_root.is_dir():
+    if "mini_trainer" in layouts and mini_root.is_dir():
         for child in mini_root.iterdir():
             if not child.is_dir() or not is_valid_checkpoint_dir(child):
                 continue
             if not (child / "training_state.pt").exists():
                 continue
             step = _checkpoint_step(child, _MINI_TRAINER_STEP_RE)
+            if step is not None:
+                candidates.append((step, str(child.resolve())))
+
+    ilab_root = root / "full_state"
+    if "instructlab" in layouts and ilab_root.is_dir():
+        for child in ilab_root.iterdir():
+            if not child.is_dir() or not is_valid_checkpoint_dir(child):
+                continue
+            if not (child / "training_metadata.json").exists():
+                continue
+            step = _checkpoint_step(child, _INSTRUCTLAB_EPOCH_RE)
             if step is not None:
                 candidates.append((step, str(child.resolve())))
 
@@ -145,28 +184,44 @@ UPLOAD_URI_ENV = "TRAINING_HUB_CHECKPOINT_UPLOAD_URI"
 
 
 def resolve_checkpoint_storage(checkpoint_storage: str | None) -> str | None:
-    """Validate the checkpoint_storage selector and return the S3 URI, if any.
+    """Validate the checkpoint_storage selector and return the remote URI, if any.
 
-    Accepted values: None / "pvc" (filesystem only, the default) or an
-    "s3://bucket/prefix" URI (mirror checkpoints to S3, restore on resume).
+    Accepted values: None / "pvc" (filesystem only, the default) or any
+    fsspec URI such as "s3://bucket/prefix" (mirror checkpoints there and
+    restore from it on resume).
     """
     if checkpoint_storage in (None, "", "pvc"):
         return None
-    if isinstance(checkpoint_storage, str) and checkpoint_storage.startswith("s3://"):
+    if isinstance(checkpoint_storage, str) and "://" in checkpoint_storage:
         return checkpoint_storage
     raise ValueError(
-        "checkpoint_storage must be None, 'pvc', or an 's3://bucket/prefix' "
-        f"URI; got {checkpoint_storage!r}"
+        "checkpoint_storage must be None, 'pvc', or a remote URI such as "
+        f"'s3://bucket/prefix'; got {checkpoint_storage!r}"
     )
 
 
 def apply_checkpoint_storage_env(checkpoint_storage: str | None) -> None:
-    """Export the S3 upload URI so callbacks and torchrun workers inherit it."""
+    """Export the remote storage URI so callbacks and torchrun workers inherit it."""
     import os
 
     uri = resolve_checkpoint_storage(checkpoint_storage)
     if uri:
         os.environ[UPLOAD_URI_ENV] = uri
     else:
-        # clear any URI left by an earlier S3 run in the same process
+        # clear any URI left by an earlier remote-storage run in the same process
         os.environ.pop(UPLOAD_URI_ENV, None)
+
+
+def configure_checkpoint_storage(checkpoint_storage: str | None) -> str | None:
+    """Export the storage URI and fail fast when the remote is unusable
+    (missing fsspec backend, bad credentials, no write access).
+
+    Returns the resolved URI, or None for filesystem-only storage.
+    """
+    apply_checkpoint_storage_env(checkpoint_storage)
+    uri = resolve_checkpoint_storage(checkpoint_storage)
+    if uri:
+        from training_hub.checkpoint_manager import verify_storage_access
+
+        verify_storage_access(uri)
+    return uri

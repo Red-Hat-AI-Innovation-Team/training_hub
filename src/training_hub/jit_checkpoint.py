@@ -5,15 +5,20 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from pathlib import Path
 
 from training_hub.callbacks import TrainingHubCallback, TrainingHubContext
 from training_hub.checkpoint_utils import mark_checkpoint_complete, mark_checkpoint_incomplete
 
 logger = logging.getLogger(__name__)
 
+# getsignal() returns None for a handler installed from C, so None cannot mean
+# "nothing saved"; a private sentinel does.
+_UNSET = object()
 _PREEMPT_REQUESTED = False
-_ORIGINAL_SIGTERM_HANDLER: signal.Handlers | int | None = None
+_PREEMPT_SIGNUM: int | None = None
+_PREEMPT_LOGGED = False
+_PREEMPT_SAVE_REQUESTED = False
+_ORIGINAL_SIGTERM_HANDLER: object = _UNSET
 
 
 def preempt_requested() -> bool:
@@ -22,12 +27,12 @@ def preempt_requested() -> bool:
 
 
 def _handle_sigterm(signum: int, frame) -> None:  # noqa: ARG001
-    global _PREEMPT_REQUESTED
+    # Set flags only. `logging` takes non-reentrant locks, so logging here
+    # deadlocks the main thread whenever the signal lands while another thread
+    # holds a handler lock — and then no checkpoint is ever saved.
+    global _PREEMPT_REQUESTED, _PREEMPT_SIGNUM
+    _PREEMPT_SIGNUM = signum
     _PREEMPT_REQUESTED = True
-    logger.warning(
-        "Received signal %s; will checkpoint at the next training step boundary.",
-        signum,
-    )
 
 
 def register_preemption_handler() -> None:
@@ -42,22 +47,26 @@ def register_preemption_handler() -> None:
         _ORIGINAL_SIGTERM_HANDLER = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _handle_sigterm)
     except (OSError, ValueError):
+        _ORIGINAL_SIGTERM_HANDLER = _UNSET
         logger.exception("JIT checkpoint: failed to register SIGTERM handler")
 
 
 def restore_preemption_handler() -> None:
-    """Restore the original SIGTERM handler."""
+    """Restore the SIGTERM handler that was active before registration."""
     global _ORIGINAL_SIGTERM_HANDLER
-    if _ORIGINAL_SIGTERM_HANDLER is None:
+    if _ORIGINAL_SIGTERM_HANDLER is _UNSET:
         return
     if threading.current_thread() is not threading.main_thread():
         return
+    original = _ORIGINAL_SIGTERM_HANDLER
     try:
-        signal.signal(signal.SIGTERM, _ORIGINAL_SIGTERM_HANDLER)
+        signal.signal(
+            signal.SIGTERM, signal.SIG_DFL if original is None else original
+        )
     except (OSError, ValueError):
         logger.exception("JIT checkpoint: failed to restore SIGTERM handler")
     finally:
-        _ORIGINAL_SIGTERM_HANDLER = None
+        _ORIGINAL_SIGTERM_HANDLER = _UNSET
 
 
 class JITCheckpointCallback(TrainingHubCallback):
@@ -67,17 +76,18 @@ class JITCheckpointCallback(TrainingHubCallback):
     HuggingFace ``TrainerControl.should_save`` / ``should_training_stop``.
     No constructor arguments — reads ``context.output_dir`` at hook time.
 
-    ponytail: ``run_on_all_ranks`` is set for future multi-GPU LoRA, but SIGTERM
-    can land between ranks' ``on_step_end`` checks and cause mismatched save
-    flags across processes. Unsloth LoRA is single-process today; a distributed
-    fix would need a collective preemption barrier before ``should_save``.
+    Runs on every rank: the process-local SIGTERM flag is reduced across ranks
+    (MAX) before any rank sets the control flags, so all ranks save and stop at
+    the same step boundary.
     """
 
     run_on_all_ranks = True
 
     def on_train_begin(self, context: TrainingHubContext) -> None:
-        global _PREEMPT_REQUESTED
+        global _PREEMPT_REQUESTED, _PREEMPT_LOGGED, _PREEMPT_SAVE_REQUESTED
         _PREEMPT_REQUESTED = False
+        _PREEMPT_LOGGED = False
+        _PREEMPT_SAVE_REQUESTED = False
         register_preemption_handler()
 
     def on_train_end(self, context: TrainingHubContext) -> None:
@@ -91,7 +101,7 @@ class JITCheckpointCallback(TrainingHubCallback):
 
     def on_save(self, context: TrainingHubContext) -> None:
         # Clear the incomplete sidecar for the just-saved checkpoint.
-        # S3 mirroring is owned by S3CheckpointSyncCallback, not this hook.
+        # Remote mirroring is owned by RemoteCheckpointSyncCallback, not this hook.
         if not context.is_main_process:
             return
         if context.output_dir and context.step > 0:
@@ -101,27 +111,27 @@ class JITCheckpointCallback(TrainingHubCallback):
     def _preempt_requested_any_rank() -> bool:
         """Aggregate the process-local SIGTERM flag across ranks (MAX), so a
         signal seen by one rank stops all ranks at the same step boundary."""
-        flag = preempt_requested()
-        try:
-            import torch
-            import torch.distributed as dist
+        from training_hub.checkpoint_manager import any_rank
 
-            if dist.is_available() and dist.is_initialized():
-                device = (
-                    torch.device("cuda", torch.cuda.current_device())
-                    if torch.cuda.is_available()
-                    else torch.device("cpu")
-                )
-                t = torch.tensor([1 if flag else 0], device=device)
-                dist.all_reduce(t, op=dist.ReduceOp.MAX)
-                return bool(t.item())
-        except Exception:
-            logger.exception("JIT checkpoint: preemption rank-sync failed")
-        return flag
+        return any_rank(preempt_requested())
+
+    @staticmethod
+    def _log_preemption_once() -> None:
+        """Emit the signal notice here rather than in the handler itself."""
+        global _PREEMPT_LOGGED
+        if _PREEMPT_LOGGED:
+            return
+        _PREEMPT_LOGGED = True
+        logger.warning(
+            "Received signal %s; checkpointing at this training step boundary.",
+            _PREEMPT_SIGNUM,
+        )
 
     def _handle_preemption(self, context: TrainingHubContext) -> None:
+        global _PREEMPT_SAVE_REQUESTED
         if not self._preempt_requested_any_rank():
             return
+        self._log_preemption_once()
         control = context.control
         if control is None:
             logger.error(
@@ -130,33 +140,64 @@ class JITCheckpointCallback(TrainingHubCallback):
             )
             return
 
+        # This runs from both on_step_end and on_epoch_end and the flag stays
+        # set, so without a one-shot guard HF writes the same checkpoint twice
+        # and the mirror uploads it twice — wasted grace-period seconds on a
+        # multi-GB save. Keep asking to stop, ask to save only once.
+        control.should_training_stop = True
+        if _PREEMPT_SAVE_REQUESTED:
+            return
+        _PREEMPT_SAVE_REQUESTED = True
+
         if context.is_main_process and context.output_dir and context.step > 0:
             mark_checkpoint_incomplete(context.output_dir, context.step)
 
         control.should_save = True
-        control.should_training_stop = True
 
 
-class S3CheckpointSyncCallback(TrainingHubCallback):
-    """Mirror every saved checkpoint to S3 (checkpoint_storage="s3://...").
+class RemoteCheckpointSyncCallback(TrainingHubCallback):
+    """Mirror every saved checkpoint to ``checkpoint_storage`` (any fsspec URI).
 
-    Serialization-safe for torchrun backends: no constructor arguments —
-    the S3 URI is read from TRAINING_HUB_CHECKPOINT_UPLOAD_URI inside hooks.
-    Uploads happen on rank 0 only, via the background upload queue.
+    Runs on every rank: ``on_save`` first waits at a barrier so all ranks have
+    finished writing their shards, then rank 0 stages the checkpoint and queues
+    the upload. Reads the URI from TRAINING_HUB_CHECKPOINT_UPLOAD_URI, so it
+    needs no constructor arguments.
     """
 
-    def on_save(self, context: TrainingHubContext) -> None:
-        from training_hub.checkpoint_manager import enqueue_checkpoint_upload
+    run_on_all_ranks = True
 
+    def on_save(self, context: TrainingHubContext) -> None:
+        import os
+
+        from training_hub.checkpoint_manager import (
+            any_rank,
+            enqueue_checkpoint_upload,
+            has_pending_upload_error,
+            wait_for_all_ranks,
+        )
+
+        wait_for_all_ranks()
+        # Only rank 0 owns an uploader, so the failure has to be reduced across
+        # ranks before anyone acts on it: stopping on rank 0 alone would leave
+        # the others blocked on the next collective.
+        if any_rank(has_pending_upload_error()):
+            # Adapters isolate hook exceptions, so raising here would be
+            # swallowed; stop training and let the backend re-raise afterwards.
+            logger.error("Checkpoint upload failed; stopping training.")
+            if context.control is not None:
+                context.control.should_training_stop = True
+            return
+        if not context.is_main_process:
+            return
         checkpoint_path = context.metrics.get("checkpoint_path")
         if not checkpoint_path and context.output_dir and context.step > 0:
-            candidate = f"{context.output_dir}/checkpoint-{context.step}"
-            import os
-
-            if os.path.isdir(candidate):
-                checkpoint_path = candidate
-        if checkpoint_path:
-            enqueue_checkpoint_upload(checkpoint_path, base_dir=context.output_dir or None)
+            checkpoint_path = os.path.join(
+                context.output_dir, f"checkpoint-{context.step}"
+            )
+        if checkpoint_path and os.path.isdir(checkpoint_path):
+            enqueue_checkpoint_upload(
+                checkpoint_path, base_dir=context.output_dir or None
+            )
 
     def on_train_end(self, context: TrainingHubContext) -> None:
         from training_hub.checkpoint_manager import shutdown_upload_worker

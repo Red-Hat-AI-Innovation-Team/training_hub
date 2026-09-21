@@ -226,24 +226,31 @@ class UnslothLoRABackend(Backend):
             for hf_cb in adapt_hub_callbacks(hub_callbacks, hub_control=hub_control):
                 trainer.add_callback(hf_cb)
 
-        resume_path = None
-        from training_hub.checkpoint_manager import maybe_restore_from_s3
+        from training_hub.checkpoint_manager import (
+            maybe_restore_checkpoint,
+            raise_pending_upload_error,
+            shutdown_upload_worker,
+            storage_uri,
+        )
         from training_hub.checkpoint_utils import (
+            HF_LAYOUT,
             find_latest_valid_checkpoint,
             jit_checkpoint_enabled,
         )
 
-        # Restore mirrored checkpoints whenever S3 storage is configured
-        # (env-gated no-op otherwise), independent of the JIT flag
-        if training_params.get("ckpt_output_dir"):
-            maybe_restore_from_s3(training_params["ckpt_output_dir"])
-
-        if jit_checkpoint_enabled(
-            training_params.get("enable_jit_checkpoint"),
-            training_params.get("ckpt_output_dir"),
+        output_dir = training_params['ckpt_output_dir']
+        maybe_restore_checkpoint(output_dir)
+        # Remote storage is an explicit opt-in to checkpoint persistence, so it
+        # implies resume even without the JIT flag; restoring a checkpoint and
+        # then ignoring it would silently retrain from step 0.
+        resume_path = None
+        if storage_uri() or jit_checkpoint_enabled(
+            training_params.get("enable_jit_checkpoint"), output_dir
         ):
+            # HF layout only: Trainer cannot load the native full-state dirs a
+            # shared output_dir may also contain.
             resume_path = find_latest_valid_checkpoint(
-                training_params["ckpt_output_dir"]
+                output_dir, layouts=(HF_LAYOUT,)
             )
 
         # Execute training with error handling for known Unsloth issues
@@ -269,15 +276,17 @@ class UnslothLoRABackend(Backend):
                 trainer.save_model(training_params['ckpt_output_dir'])
                 tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
 
-            return {
+            result = {
                 'model': model,
                 'tokenizer': tokenizer_or_processor,
                 'trainer': trainer
             }
         finally:
-            from training_hub.checkpoint_manager import shutdown_upload_worker
-
             shutdown_upload_worker()
+        # Callback adapters isolate hook exceptions, so an upload failure is
+        # surfaced here instead: the run must not finish green with no mirror.
+        raise_pending_upload_error()
+        return result
 
     @staticmethod
     def _is_vlm_model_id(model_path: str, trust_remote_code: bool = False) -> bool:
@@ -901,9 +910,9 @@ class LoRASFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
-        from training_hub.checkpoint_utils import apply_checkpoint_storage_env
+        from training_hub.checkpoint_utils import configure_checkpoint_storage
 
-        apply_checkpoint_storage_env(checkpoint_storage)
+        configure_checkpoint_storage(checkpoint_storage)
         callbacks = merge_default_callbacks(
             callbacks,
             enable_jit_checkpoint=bool(enable_jit_checkpoint),

@@ -131,6 +131,12 @@ class UnslothCallbackAdapter(TrainerCallback):
             return
         if self._hub_control.should_save:
             control.should_save = True
+            # Consume it. on_step_begin is the only other reset, and a
+            # preemption stops training, so the flag would otherwise survive
+            # into on_epoch_end and make HF save the same step a second time
+            # (and the mirror upload it twice). Adapters share one control
+            # bag, so consuming also stops a second adapter re-applying it.
+            self._hub_control.should_save = False
         if self._hub_control.should_training_stop:
             control.should_training_stop = True
 
