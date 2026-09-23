@@ -569,8 +569,18 @@ class MiniTrainerOSFTBackend(Backend):
             # Original instruction tuning flow
             # if we received unmask then we need to add that
             processing_data_path = data_path
-            if unmask_messages:
-                ds = datasets.load_dataset('json', data_files=data_path, split='train')
+            if not data_path.endswith(('.jsonl', '.json')):
+                # process_messages_into_input_ids reads JSONL only, so convert
+                # non-JSONL inputs (parquet/csv) first, applying unmask if requested.
+                from training_hub.utils import load_training_dataset
+                ds = load_training_dataset(data_path)
+                if unmask_messages:
+                    ds = ds.map(lambda _: {'unmask': True})
+                processing_data_path = os.path.join(output_dir, 'converted_data.jsonl')
+                ds.to_json(processing_data_path)
+            elif unmask_messages:
+                from training_hub.utils import load_training_dataset
+                ds = load_training_dataset(data_path)
                 ds = ds.map(lambda _: {'unmask': True})
                 processing_data_path = os.path.join(output_dir, 'intermediate_data.jsonl')
                 ds.to_json(processing_data_path)

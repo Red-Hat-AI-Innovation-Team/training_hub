@@ -439,13 +439,10 @@ class UnslothLoRABackend(Backend):
             is_vlm: If True, skip chat template preprocessing since the
                 UnslothVisionDataCollator handles it.
         """
-        from datasets import load_dataset
+        from training_hub.utils import load_training_dataset
 
-        # Load dataset
-        if params['data_path'].endswith('.jsonl') or params['data_path'].endswith('.json'):
-            dataset = load_dataset('json', data_files=params['data_path'], split='train')
-        else:
-            dataset = load_dataset(params['data_path'], split='train')
+        # Load dataset (auto-detects jsonl/json/parquet/csv, HF-name fallback).
+        dataset = load_training_dataset(params['data_path'])
 
         # For VLMs, the UnslothVisionDataCollator handles chat template
         # application and tokenization, so return the raw dataset
