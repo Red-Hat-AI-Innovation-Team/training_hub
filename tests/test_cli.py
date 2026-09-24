@@ -307,3 +307,110 @@ def test_backend_failure_with_traceback(monkeypatch, capsys):
         ])
     err = capsys.readouterr().err
     assert "Traceback" in err  # full traceback when --traceback is set
+
+
+# ---------------------------------------------------------------------------
+# _coerce_value type-safety hardening
+# ---------------------------------------------------------------------------
+
+def test_coerce_callable_non_string_rejected():
+    with pytest.raises(ValueError):
+        cli._coerce_value(["os", "system"], {"type": str, "callable": True})
+
+
+def test_coerce_callable_resolving_to_non_callable_rejected():
+    with pytest.raises(ValueError, match="non-callable"):
+        cli._coerce_value("os.sep", {"type": str, "callable": True})  # os.sep is a str
+
+
+def test_coerce_json_native_dict_passthrough():
+    assert cli._coerce_value({"a": 1}, {"type": str, "json": True}) == {"a": 1}
+
+
+def test_coerce_bool_from_int_0_1():
+    assert cli._coerce_value(1, {"type": bool}) is True
+    assert cli._coerce_value(0, {"type": bool}) is False
+
+
+def test_coerce_bool_rejects_other_int():
+    with pytest.raises(ValueError):
+        cli._coerce_value(2, {"type": bool})
+
+
+def test_coerce_int_rejects_bool():
+    # `num_epochs: true` in YAML must not silently become 1
+    with pytest.raises(ValueError, match="boolean"):
+        cli._coerce_value(True, {"type": int})
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "nan", "-inf"])
+def test_coerce_float_rejects_non_finite(bad):
+    with pytest.raises(ValueError):
+        cli._coerce_value(bad, {"type": float})
+
+
+def test_coerce_str_from_yaml_scalar():
+    # YAML may parse an intended string as a number (e.g. `nproc_per_node: 8`)
+    assert cli._coerce_value(8, {"type": str}) == "8"
+
+
+def test_coerce_nargs_scalar_is_wrapped():
+    assert cli._coerce_value("q_proj", {"type": str, "nargs": "+"}) == ["q_proj"]
+
+
+def test_coerce_nargs_list():
+    assert cli._coerce_value(["a", "b"], {"type": str, "nargs": "+"}) == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Spec defaults + callable/JSON through full dispatch
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fake_grpo(monkeypatch):
+    calls = {}
+
+    def recorder(**kwargs):
+        calls["kwargs"] = kwargs
+        return None
+
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "training_hub.algorithms.lora_grpo":
+            return SimpleNamespace(grpo=recorder, lora_grpo=recorder)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(cli.importlib, "import_module", fake_import)
+    return calls
+
+
+def test_dispatch_applies_spec_defaults_and_resolves_callable(fake_grpo):
+    cli.main(["grpo", "--model-path", "m", "--ckpt-output-dir", "o",
+              "--reward-fn", "json.dumps"])
+    kw = fake_grpo["kwargs"]
+    assert kw["reward_fn"] is __import__("json").dumps  # callable resolved through dispatch
+    assert kw["data_config"] == "Qwen3"                 # spec default applied
+    assert kw["n_train"] == 5000                        # spec default applied
+
+
+def test_config_value_beats_spec_default(fake_grpo, tmp_path):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("model_path: m\nckpt_output_dir: o\ndata_config: Custom\n", encoding="utf-8")
+    cli.main(["grpo", "--config", str(cfg)])
+    assert fake_grpo["kwargs"]["data_config"] == "Custom"  # config wins over spec default
+
+
+def test_dispatch_json_param_via_cli(monkeypatch):
+    calls = {}
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "training_hub.algorithms.gepa":
+            return SimpleNamespace(gepa=lambda **kw: calls.update(kwargs=kw))
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(cli.importlib, "import_module", fake_import)
+    cli.main(["gepa", "--seed-candidate", '{"system_prompt": "x"}',
+              "--task-lm", "openai/gpt-4o-mini"])
+    assert calls["kwargs"]["seed_candidate"] == {"system_prompt": "x"}  # JSON parsed via CLI

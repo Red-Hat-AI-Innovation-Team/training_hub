@@ -15,13 +15,14 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import sys
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 _ALGO_PARAM_DEFS: dict[str, dict] = {}
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     """Print a clean CLI error to stderr and exit with status 1."""
     print(f"error: {message}", file=sys.stderr)
     sys.exit(1)
@@ -126,7 +127,7 @@ def _define_params() -> None:
         "--checkpoint-at-epoch": {"type": bool, "help": "Checkpoint at each epoch"},
         "--save-final-checkpoint": {"type": bool, "help": "Save final checkpoint"},
         "--num-epochs": {"type": int, "help": "Number of training epochs"},
-        "--trust-remote-code": {"type": bool, "help": "Trust remote code when loading models"},
+        "--trust-remote-code": {"type": bool, "help": "Trust remote code when loading models (executes arbitrary code from the model repo; enable only for trusted models)"},
         **adamw_params,
         **torchrun_params,
         **logging_params,
@@ -181,7 +182,7 @@ def _define_params() -> None:
         "--finetune-vision-layers": {"type": bool, "help": "Fine-tune vision layers (VLM)"},
         "--finetune-language-layers": {"type": bool, "help": "Fine-tune language layers (VLM)"},
         # Model loading
-        "--trust-remote-code": {"type": bool, "help": "Trust remote code when loading models"},
+        "--trust-remote-code": {"type": bool, "help": "Trust remote code when loading models (executes arbitrary code from the model repo; enable only for trusted models)"},
         **torchrun_params,
         **logging_params,
     }
@@ -197,7 +198,7 @@ def _define_params() -> None:
         "--n-val": {"type": int, "default": 500, "help": "Number of validation samples (default: 500)"},
         # Custom rollout
         "--rollout-fn": {"type": str, "callable": True, "help": "Dotted import path to async rollout function"},
-        "--tasks": {"type": str, "json": True, "help": "Tasks as JSON array, or dotted path to a list/callable that returns tasks"},
+        "--tasks": {"type": str, "json": True, "help": "Tasks as a JSON array (e.g. '[{\"prompt\": ...}]')"},
         "--reward-fn": {"type": str, "callable": True, "help": "Dotted import path to reward function"},
         # GRPO hyperparameters
         "--num-iterations": {"type": int, "default": 15, "help": "GRPO training iterations (default: 15)"},
@@ -300,7 +301,7 @@ def _define_params() -> None:
         # Logging
         "--run-dir": {"type": str, "help": "Directory for GEPA run logs"},
         "--use-wandb": {"type": bool, "help": "Enable Weights & Biases logging"},
-        "--wandb-api-key": {"type": str, "help": "W&B API key"},
+        "--wandb-api-key": {"type": str, "help": "W&B API key (visible in process listings/shell history; prefer the WANDB_API_KEY environment variable)"},
         "--wandb-init-kwargs": {"type": str, "json": True, "help": "Additional W&B init kwargs as JSON"},
         "--use-mlflow": {"type": bool, "help": "Enable MLflow logging"},
         "--mlflow-tracking-uri": {"type": str, "help": "MLflow tracking server URI"},
@@ -483,7 +484,8 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         sub.add_argument(
             "--config", "-c", type=str, metavar="FILE",
-            help="YAML config file. CLI arguments override config values.",
+            help="YAML config file (CLI arguments override its values). Only use "
+                 "configs you trust — callable params import arbitrary modules.",
         )
         sub.add_argument(
             "--traceback", action="store_true",
@@ -518,26 +520,64 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _coerce_value(value: Any, spec: dict) -> Any:
-    """Coerce a value from YAML config to the expected type."""
+    """Coerce a value to the type expected by the backend.
+
+    Handles both YAML config values (which ``yaml.safe_load`` may parse into
+    native ints/floats/bools/lists/dicts) and already-typed CLI values. Raises
+    ``ValueError`` with a clear message on type mismatches rather than silently
+    passing the wrong type through to the backend.
+    """
     if value is None:
         return None
 
-    if spec.get("callable") and isinstance(value, str):
-        return _resolve_dotted_path(value)
+    # Callable params: must be a dotted-path string that resolves to a callable.
+    if spec.get("callable"):
+        if not isinstance(value, str):
+            raise ValueError("expected a dotted-path string (e.g. 'my_module.my_fn')")
+        obj = _resolve_dotted_path(value)
+        if not callable(obj):
+            raise ValueError(f"'{value}' resolved to a non-callable {type(obj).__name__}")
+        return obj
 
-    if spec.get("json") and isinstance(value, str):
-        return json.loads(value)
-
-    if spec["type"] is bool and isinstance(value, str):
-        return _parse_bool(value)
-
-    if spec["type"] is bool and isinstance(value, bool):
+    # JSON params: parse a string; accept a YAML-native list/dict as-is.
+    if spec.get("json"):
+        if isinstance(value, str):
+            return json.loads(value)
         return value
 
-    if "nargs" in spec and isinstance(value, list):
-        return [spec["type"](v) for v in value]
+    if spec["type"] is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return _parse_bool(value)
+        if isinstance(value, int):  # YAML 0/1 for a boolean flag
+            if value in (0, 1):
+                return bool(value)
+            raise ValueError(f"expected a boolean, got {value!r}")
+        raise ValueError(f"expected a boolean, got {type(value).__name__}")
 
-    if spec["type"] is not str and not isinstance(value, spec["type"]):
+    if "nargs" in spec:
+        # Accept a single scalar as a one-element list (YAML: `x: a` == `x: [a]`).
+        items = value if isinstance(value, list) else [value]
+        return [spec["type"](v) for v in items]
+
+    if spec["type"] is int:
+        # bool is a subclass of int; reject it so `num_epochs: true` isn't read as 1.
+        if isinstance(value, bool):
+            raise ValueError(f"expected an integer, got boolean {value!r}")
+        return value if isinstance(value, int) else int(value)
+
+    if spec["type"] is float:
+        result = value if isinstance(value, float) else float(value)
+        if math.isnan(result) or math.isinf(result):
+            raise ValueError(f"expected a finite number, got {value!r}")
+        return result
+
+    if spec["type"] is str and not isinstance(value, str):
+        # YAML may parse an intended string as int/bool (e.g. `nproc_per_node: 8`).
+        return str(value)
+
+    if not isinstance(value, spec["type"]):
         return spec["type"](value)
 
     return value
@@ -580,7 +620,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 except (ValueError, TypeError, argparse.ArgumentTypeError) as e:
                     _fail(f"invalid value for '{key}' in config '{args.config}': {e}")
 
-    # Step 2: Overlay CLI args (they take precedence)
+    # Step 2: Overlay CLI args (they take precedence over config). Coerce through
+    # the same path as config values so callable/JSON/type validation is uniform.
     cli_dict = vars(args)
     for flag, spec in param_defs.items():
         python_name = _flag_to_python_name(flag)
@@ -588,14 +629,18 @@ def main(argv: Optional[list[str]] = None) -> None:
 
         if cli_value is not None:
             try:
-                if spec.get("callable"):
-                    config_values[python_name] = _resolve_dotted_path(cli_value)
-                elif spec.get("json"):
-                    config_values[python_name] = json.loads(cli_value)
-                else:
-                    config_values[python_name] = cli_value
-            except (ValueError, ImportError) as e:
+                config_values[python_name] = _coerce_value(cli_value, spec)
+            except (ValueError, TypeError, ImportError, argparse.ArgumentTypeError) as e:
                 _fail(f"invalid value for '{flag}': {e}")
+
+    # Step 2.5: Apply spec-defined defaults for anything still unset. Precedence is
+    # CLI > config > spec default. (argparse defaults can't be used here — they'd
+    # be indistinguishable from user input and would override config values.)
+    for flag, spec in param_defs.items():
+        if "default" in spec:
+            python_name = _flag_to_python_name(flag)
+            if config_values.get(python_name) is None:
+                config_values[python_name] = spec["default"]
 
     # Step 3: Check for missing required params
     missing = []
