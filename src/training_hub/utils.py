@@ -1,8 +1,12 @@
 import json
 import os
-from typing import Literal, get_origin, get_args
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Literal, get_origin, get_args
 import torch
 import warnings
+
+if TYPE_CHECKING:
+    import datasets
 
 _FORMAT_MAP = {
     ".jsonl": "json",
@@ -69,7 +73,7 @@ def normalize_messages_column(
                     f"Column '{messages_field}' contains a string that is not "
                     f"valid JSON: {e}"
                 ) from e
-        if not isinstance(value, list) or not all(isinstance(m, dict) for m in value):
+        if not isinstance(value, list) or not all(isinstance(m, Mapping) for m in value):
             raise ValueError(
                 f"Column '{messages_field}' must be a list of message objects, "
                 f"got {type(value).__name__}"

@@ -569,7 +569,7 @@ class MiniTrainerOSFTBackend(Backend):
             # Original instruction tuning flow
             # if we received unmask then we need to add that
             processing_data_path = data_path
-            if not data_path.endswith('.jsonl'):
+            if not data_path.lower().endswith('.jsonl'):
                 # process_messages_into_input_ids reads JSONL only. Everything
                 # else — a .json array, parquet, csv, or a HuggingFace dataset
                 # name — is loaded and exported to JSONL first. (A .json file is a

@@ -439,7 +439,7 @@ class UnslothLoRABackend(Backend):
             is_vlm: If True, skip chat template preprocessing since the
                 UnslothVisionDataCollator handles it.
         """
-        from training_hub.utils import load_training_dataset
+        from training_hub.utils import load_training_dataset, normalize_messages_column
 
         # Load dataset (auto-detects jsonl/json/parquet/csv, HF-name fallback).
         dataset = load_training_dataset(params['data_path'])
@@ -458,7 +458,6 @@ class UnslothLoRABackend(Backend):
 
             # CSV/parquet sources may serialize each conversation as a JSON
             # string; decode to a list of message dicts before templating.
-            from training_hub.utils import normalize_messages_column
             dataset = normalize_messages_column(dataset, messages_field)
 
             def format_chat_template(examples):
