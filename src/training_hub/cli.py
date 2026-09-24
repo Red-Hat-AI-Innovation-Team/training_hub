@@ -565,9 +565,17 @@ def _coerce_value(value: Any, spec: dict) -> Any:
         # bool is a subclass of int; reject it so `num_epochs: true` isn't read as 1.
         if isinstance(value, bool):
             raise ValueError(f"expected an integer, got boolean {value!r}")
+        if isinstance(value, float):
+            # Don't silently truncate `max_seq_len: 2048.5` to 2048.
+            if not value.is_integer():
+                raise ValueError(f"expected an integer, got {value!r}")
+            return int(value)
         return value if isinstance(value, int) else int(value)
 
     if spec["type"] is float:
+        # bool is a subclass of int/float-castable; reject `learning_rate: true` → 1.0.
+        if isinstance(value, bool):
+            raise ValueError(f"expected a number, got boolean {value!r}")
         result = value if isinstance(value, float) else float(value)
         if math.isnan(result) or math.isinf(result):
             raise ValueError(f"expected a finite number, got {value!r}")
@@ -617,7 +625,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             else:
                 try:
                     config_values[python_key] = _coerce_value(value, spec)
-                except (ValueError, TypeError, argparse.ArgumentTypeError) as e:
+                except (ValueError, TypeError, ImportError, argparse.ArgumentTypeError) as e:
                     _fail(f"invalid value for '{key}' in config '{args.config}': {e}")
 
     # Step 2: Overlay CLI args (they take precedence over config). Coerce through
@@ -665,7 +673,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     try:
         module = importlib.import_module(module_name)
         func: Callable = getattr(module, attr_name)
-    except ImportError as e:
+    except (ImportError, AttributeError) as e:
         _fail(f"could not import the backend for '{subcmd}' ({module_name}): {e}")
 
     # Remove None values so the function uses its own defaults

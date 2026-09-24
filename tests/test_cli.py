@@ -163,15 +163,17 @@ def test_load_yaml_config_missing_file_exits(tmp_path):
 def test_load_yaml_config_non_mapping_exits(tmp_path):
     cfg = tmp_path / "c.yaml"
     cfg.write_text("- just\n- a\n- list\n", encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         cli._load_yaml_config(str(cfg))
+    assert exc.value.code == 1
 
 
 def test_load_yaml_config_bad_yaml_exits(tmp_path):
     cfg = tmp_path / "c.yaml"
     cfg.write_text("key: : : bad\n", encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         cli._load_yaml_config(str(cfg))
+    assert exc.value.code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -278,13 +280,18 @@ def test_unknown_config_key_warns(fake_sft, tmp_path, capsys):
     assert fake_sft["kwargs"]["lerning_rate"] == 0.001
 
 
-def test_backend_failure_without_traceback(monkeypatch, capsys):
-    def boom(name, *a, **k):
-        if name == "training_hub.algorithms.sft":
-            return SimpleNamespace(sft=lambda **kw: (_ for _ in ()).throw(RuntimeError("kaboom")))
-        return importlib.import_module(name, *a, **k)
+def _raising_sft(**kwargs):
+    raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(cli.importlib, "import_module", boom)
+
+def _boom_import(name, *args, **kwargs):
+    if name == "training_hub.algorithms.sft":
+        return SimpleNamespace(sft=_raising_sft)
+    return importlib.import_module(name, *args, **kwargs)
+
+
+def test_backend_failure_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(cli.importlib, "import_module", _boom_import)
     with pytest.raises(SystemExit) as exc:
         cli.main(["sft", "--model-path", "m", "--data-path", "d", "--ckpt-output-dir", "o"])
     assert exc.value.code == 1
@@ -294,17 +301,13 @@ def test_backend_failure_without_traceback(monkeypatch, capsys):
 
 
 def test_backend_failure_with_traceback(monkeypatch, capsys):
-    def boom(name, *a, **k):
-        if name == "training_hub.algorithms.sft":
-            return SimpleNamespace(sft=lambda **kw: (_ for _ in ()).throw(RuntimeError("kaboom")))
-        return importlib.import_module(name, *a, **k)
-
-    monkeypatch.setattr(cli.importlib, "import_module", boom)
-    with pytest.raises(SystemExit):
+    monkeypatch.setattr(cli.importlib, "import_module", _boom_import)
+    with pytest.raises(SystemExit) as exc:
         cli.main([
             "sft", "--traceback",
             "--model-path", "m", "--data-path", "d", "--ckpt-output-dir", "o",
         ])
+    assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "Traceback" in err  # full traceback when --traceback is set
 
@@ -347,6 +350,22 @@ def test_coerce_int_rejects_bool():
 def test_coerce_float_rejects_non_finite(bad):
     with pytest.raises(ValueError):
         cli._coerce_value(bad, {"type": float})
+
+
+def test_coerce_float_rejects_bool():
+    # `learning_rate: true` must not become 1.0
+    with pytest.raises(ValueError, match="boolean"):
+        cli._coerce_value(True, {"type": float})
+
+
+def test_coerce_int_rejects_truncating_float():
+    # `max_seq_len: 2048.5` must not be silently truncated to 2048
+    with pytest.raises(ValueError):
+        cli._coerce_value(2048.5, {"type": int})
+
+
+def test_coerce_int_accepts_integer_valued_float():
+    assert cli._coerce_value(2048.0, {"type": int}) == 2048
 
 
 def test_coerce_str_from_yaml_scalar():
@@ -399,6 +418,18 @@ def test_config_value_beats_spec_default(fake_grpo, tmp_path):
     cfg.write_text("model_path: m\nckpt_output_dir: o\ndata_config: Custom\n", encoding="utf-8")
     cli.main(["grpo", "--config", str(cfg)])
     assert fake_grpo["kwargs"]["data_config"] == "Custom"  # config wins over spec default
+
+
+def test_config_bad_callable_gives_clean_error(fake_grpo, tmp_path, capsys):
+    # A bad dotted path in YAML must produce a clean CLI error, not a raw traceback
+    # (the config path must catch ImportError like the CLI path does).
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("model_path: m\nckpt_output_dir: o\nreward_fn: nonexistent_pkg.func\n",
+                   encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["grpo", "--config", str(cfg)])
+    assert exc.value.code == 1
+    assert "invalid value for 'reward_fn'" in capsys.readouterr().err
 
 
 def test_dispatch_json_param_via_cli(monkeypatch):
