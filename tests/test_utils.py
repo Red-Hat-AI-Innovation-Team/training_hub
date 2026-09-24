@@ -162,3 +162,30 @@ def test_normalize_messages_rejects_wrong_shape():
     ds = Dataset.from_list([{"messages": json.dumps("just a string")}])
     with pytest.raises(ValueError, match="list of message"):
         normalize_messages_column(ds)
+
+
+def test_normalize_messages_passes_through_none():
+    # A null cell (common in CSV / nullable parquet) must not crash the map.
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": None}, {"messages": json.dumps(_CONVO)}])
+    out = normalize_messages_column(ds)
+    assert out[0]["messages"] is None
+    assert out[1]["messages"] == _CONVO
+
+
+def test_normalize_messages_empty_list_ok():
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": []}])
+    assert normalize_messages_column(ds)[0]["messages"] == []
+
+
+def test_normalize_messages_error_names_row_index():
+    # A serialized-string column where the second row is invalid JSON.
+    # (An Arrow column can't mix list and string values, so both rows are strings.)
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": json.dumps(_CONVO)}, {"messages": "not json"}])
+    with pytest.raises(ValueError, match="row 1"):
+        normalize_messages_column(ds)

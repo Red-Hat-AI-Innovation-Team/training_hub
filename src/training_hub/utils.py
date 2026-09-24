@@ -50,8 +50,10 @@ def normalize_messages_column(
     rendering, JSONL export, and ``process_messages_into_input_ids`` — expect a
     list of message dicts. This maps over ``dataset`` decoding any string values
     in ``messages_field`` and rejects rows whose value is neither a list of
-    message objects nor a JSON string that decodes to one. If the column is
-    absent, the dataset is returned unchanged.
+    message objects nor a JSON string that decodes to one (the error names the
+    offending row index). ``None`` values (a null CSV cell or nullable parquet
+    column) are passed through unchanged so one bad row doesn't crash the map. If
+    the column is absent, the dataset is returned unchanged.
 
     Args:
         dataset: The dataset to normalize.
@@ -63,24 +65,28 @@ def normalize_messages_column(
     if messages_field not in dataset.column_names:
         return dataset
 
-    def _decode(example):
+    def _decode(example, idx):
         value = example[messages_field]
+        if value is None:
+            # Null/empty cell — leave it for downstream processing to handle
+            # rather than crashing the whole map on one bad row.
+            return {messages_field: value}
         if isinstance(value, str):
             try:
                 value = json.loads(value)
             except json.JSONDecodeError as e:
                 raise ValueError(
-                    f"Column '{messages_field}' contains a string that is not "
-                    f"valid JSON: {e}"
+                    f"Column '{messages_field}' in row {idx} contains a string "
+                    f"that is not valid JSON: {e}"
                 ) from e
         if not isinstance(value, list) or not all(isinstance(m, Mapping) for m in value):
             raise ValueError(
-                f"Column '{messages_field}' must be a list of message objects, "
-                f"got {type(value).__name__}"
+                f"Column '{messages_field}' in row {idx} must be a list of message "
+                f"objects, got {type(value).__name__}"
             )
         return {messages_field: value}
 
-    return dataset.map(_decode)
+    return dataset.map(_decode, with_indices=True)
 
 
 def format_type_name(tp):
