@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from training_hub.utils import _FORMAT_MAP, load_training_dataset
+from training_hub.utils import (
+    _FORMAT_MAP,
+    load_training_dataset,
+    normalize_messages_column,
+)
 
 
 def test_format_map_covers_supported_extensions():
@@ -84,3 +88,77 @@ def test_reads_real_jsonl(tmp_path):
 
     assert len(ds) == 2
     assert [r["text"] for r in ds] == ["a", "b"]
+
+
+def test_reads_real_csv(tmp_path):
+    from datasets import Dataset
+
+    p = tmp_path / "train.csv"
+    Dataset.from_list([{"text": "a"}, {"text": "b"}]).to_csv(str(p))
+
+    ds = load_training_dataset(str(p))
+
+    assert len(ds) == 2
+    assert [r["text"] for r in ds] == ["a", "b"]
+
+
+def test_reads_real_parquet(tmp_path):
+    from datasets import Dataset
+
+    p = tmp_path / "train.parquet"
+    Dataset.from_list([{"text": "a"}, {"text": "b"}]).to_parquet(str(p))
+
+    ds = load_training_dataset(str(p))
+
+    assert len(ds) == 2
+    assert [r["text"] for r in ds] == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# normalize_messages_column
+# ---------------------------------------------------------------------------
+
+_CONVO = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+
+def test_normalize_messages_decodes_json_strings():
+    # CSV/parquet may store `messages` as a serialized JSON string.
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": json.dumps(_CONVO)}])
+    out = normalize_messages_column(ds)
+
+    assert out[0]["messages"] == _CONVO
+
+
+def test_normalize_messages_passes_through_lists():
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": _CONVO}])
+    out = normalize_messages_column(ds)
+
+    assert out[0]["messages"] == _CONVO
+
+
+def test_normalize_messages_missing_column_is_noop():
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"text": "a"}])
+    assert normalize_messages_column(ds) is ds
+
+
+def test_normalize_messages_rejects_non_json_string():
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"messages": "not json at all"}])
+    with pytest.raises(ValueError, match="not.*valid JSON|list of message"):
+        normalize_messages_column(ds)
+
+
+def test_normalize_messages_rejects_wrong_shape():
+    from datasets import Dataset
+
+    # decodes to a JSON scalar, not a list of message dicts
+    ds = Dataset.from_list([{"messages": json.dumps("just a string")}])
+    with pytest.raises(ValueError, match="list of message"):
+        normalize_messages_column(ds)

@@ -456,6 +456,11 @@ class UnslothLoRABackend(Backend):
             # Convert messages format using chat template
             messages_field = params.get('field_messages', 'messages')
 
+            # CSV/parquet sources may serialize each conversation as a JSON
+            # string; decode to a list of message dicts before templating.
+            from training_hub.utils import normalize_messages_column
+            dataset = normalize_messages_column(dataset, messages_field)
+
             def format_chat_template(examples):
                 # examples[messages_field] is a list of conversations (batched)
                 texts = []

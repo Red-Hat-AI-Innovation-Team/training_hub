@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Literal, get_origin, get_args
 import torch
@@ -11,12 +12,20 @@ _FORMAT_MAP = {
 }
 
 
-def load_training_dataset(data_path: str, split: str = "train"):
+def load_training_dataset(data_path: str, split: str = "train") -> "datasets.Dataset":
     """Load a dataset from a local file, auto-detecting format from extension.
 
     Supports .jsonl, .json, .parquet, and .csv files. Falls back to treating
     ``data_path`` as a HuggingFace dataset name when the extension is
     unrecognized.
+
+    Args:
+        data_path: Path to a local dataset file (.jsonl/.json/.parquet/.csv) or,
+            when the extension is unrecognized, a HuggingFace dataset name.
+        split: Dataset split to load (default: ``"train"``).
+
+    Returns:
+        The loaded ``datasets.Dataset`` for the requested split.
     """
     from datasets import load_dataset
 
@@ -25,6 +34,49 @@ def load_training_dataset(data_path: str, split: str = "train"):
     if builder:
         return load_dataset(builder, data_files=data_path, split=split)
     return load_dataset(data_path, split=split)
+
+
+def normalize_messages_column(
+    dataset: "datasets.Dataset", messages_field: str = "messages"
+) -> "datasets.Dataset":
+    """Decode JSON-string ``messages`` values into lists of message objects.
+
+    Tabular sources (CSV, and some parquet/HF datasets) serialize the
+    conversation as a JSON *string*, whereas downstream consumers — chat-template
+    rendering, JSONL export, and ``process_messages_into_input_ids`` — expect a
+    list of message dicts. This maps over ``dataset`` decoding any string values
+    in ``messages_field`` and rejects rows whose value is neither a list of
+    message objects nor a JSON string that decodes to one. If the column is
+    absent, the dataset is returned unchanged.
+
+    Args:
+        dataset: The dataset to normalize.
+        messages_field: Name of the conversation column (default: ``"messages"``).
+
+    Returns:
+        A dataset whose ``messages_field`` column holds lists of message dicts.
+    """
+    if messages_field not in dataset.column_names:
+        return dataset
+
+    def _decode(example):
+        value = example[messages_field]
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Column '{messages_field}' contains a string that is not "
+                    f"valid JSON: {e}"
+                ) from e
+        if not isinstance(value, list) or not all(isinstance(m, dict) for m in value):
+            raise ValueError(
+                f"Column '{messages_field}' must be a list of message objects, "
+                f"got {type(value).__name__}"
+            )
+        return {messages_field: value}
+
+    return dataset.map(_decode)
 
 
 def format_type_name(tp):
