@@ -21,6 +21,21 @@ from typing import Any, Callable, Optional
 _ALGO_PARAM_DEFS: dict[str, dict] = {}
 
 
+def _fail(message: str) -> None:
+    """Print a clean CLI error to stderr and exit with status 1."""
+    print(f"error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _get_version() -> str:
+    """Return a human-readable version string for ``--version``."""
+    try:
+        from training_hub._version import version
+        return f"training-hub {version}"
+    except ImportError:
+        return "training-hub (version unknown — not installed from a tagged release)"
+
+
 def _define_params() -> None:
     """Define parameter specs for each algorithm subcommand.
 
@@ -321,6 +336,19 @@ _SUBCOMMAND_TO_FUNC = {
     "gepa": "gepa",
 }
 
+# Maps the convenience function name to its (module, attribute). Imports are done
+# lazily for the selected subcommand only — algorithm modules transitively pull in
+# heavy deps (torch, transformers, vLLM, ...), so importing all of them up front is
+# slow and lets one algorithm's missing dependency break every other subcommand.
+_FUNC_IMPORTS: dict[str, tuple[str, str]] = {
+    "sft": ("training_hub.algorithms.sft", "sft"),
+    "osft": ("training_hub.algorithms.osft", "osft"),
+    "lora_sft": ("training_hub.algorithms.lora", "lora_sft"),
+    "lora_grpo": ("training_hub.algorithms.lora_grpo", "lora_grpo"),
+    "grpo": ("training_hub.algorithms.lora_grpo", "grpo"),
+    "gepa": ("training_hub.algorithms.gepa", "gepa"),
+}
+
 
 def _flag_to_python_name(flag: str) -> str:
     """Convert a CLI flag like ``--learning-rate`` to a Python kwarg ``learning_rate``."""
@@ -331,32 +359,50 @@ def _resolve_dotted_path(path: str) -> Any:
     """Import and return the object at a dotted path like ``my_module.my_func``.
 
     Supports nested attributes: ``pkg.module.Class.method``.
+
+    Security note: this executes ``importlib.import_module()`` on the caller's
+    string with no allowlist, and callable parameters (``--reward-fn``,
+    ``--rollout-fn``, etc.) resolve to arbitrary imported objects. A shared YAML
+    config file is therefore a **trust boundary** — a config authored by an
+    untrusted party can execute arbitrary code (e.g. ``reward_fn: os.system``).
+    Only run configs you trust.
     """
-    parts = path.rsplit(".", 1)
-    if len(parts) == 1:
+    if "." not in path:
         raise ValueError(
             f"Cannot resolve '{path}': expected a dotted path like 'module.function'"
         )
-    module_path, attr_name = parts
-    try:
-        module = importlib.import_module(module_path)
-        return getattr(module, attr_name)
-    except (ImportError, AttributeError):
-        pass
 
-    # Try progressively shorter module paths for nested attributes
+    # Try progressively shorter module prefixes (longest first) so nested
+    # attributes like ``pkg.module.Class.method`` resolve correctly.
     parts = path.split(".")
+    last_missing: Optional[ModuleNotFoundError] = None
     for i in range(len(parts) - 1, 0, -1):
         module_path = ".".join(parts[:i])
         try:
-            obj = importlib.import_module(module_path)
+            module = importlib.import_module(module_path)
+        except ModuleNotFoundError as e:
+            # Only treat "this prefix isn't a module" as a signal to try a
+            # shorter prefix. A *missing dependency* of a module that does
+            # exist is a real error — surface it instead of masking it.
+            if e.name and (e.name == module_path or module_path.startswith(f"{e.name}.")):
+                last_missing = e
+                continue
+            raise
+        # The module imported cleanly; resolving the remaining attributes must
+        # succeed or fail loudly (don't fall through and hide a real typo/bug).
+        obj = module
+        try:
             for attr in parts[i:]:
                 obj = getattr(obj, attr)
-            return obj
-        except (ImportError, AttributeError):
-            continue
+        except AttributeError as e:
+            raise ImportError(
+                f"Cannot resolve dotted path '{path}': imported module "
+                f"'{module_path}' but attribute lookup failed ({e})."
+            ) from e
+        return obj
 
-    raise ImportError(f"Cannot resolve dotted path: '{path}'")
+    hint = f" (last import error: {last_missing})" if last_missing else ""
+    raise ImportError(f"Cannot resolve dotted path '{path}': no importable module prefix found{hint}.")
 
 
 def _load_yaml_config(path: str) -> dict[str, Any]:
@@ -371,12 +417,18 @@ def _load_yaml_config(path: str) -> dict[str, Any]:
         )
         sys.exit(1)
 
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except FileNotFoundError:
+        _fail(f"config file not found: {path}")
+    except OSError as e:
+        _fail(f"could not read config file '{path}': {e}")
+    except yaml.YAMLError as e:
+        _fail(f"could not parse YAML config '{path}': {e}")
 
     if not isinstance(data, dict):
-        print(f"error: Config file must contain a YAML mapping, got {type(data).__name__}", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"config file must contain a YAML mapping, got {type(data).__name__}")
 
     return data
 
@@ -407,7 +459,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--version", action="store_true",
+        "--version", action="version", version=_get_version(),
         help="Show training-hub version and exit",
     )
 
@@ -433,6 +485,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "--config", "-c", type=str, metavar="FILE",
             help="YAML config file. CLI arguments override config values.",
         )
+        sub.add_argument(
+            "--traceback", action="store_true",
+            help="Print the full Python traceback on training failure.",
+        )
+        sub.add_argument(
+            "--version", action="version", version=_get_version(),
+            help="Show training-hub version and exit",
+        )
 
         for flag, spec in param_defs.items():
             kwargs: dict[str, Any] = {"help": spec.get("help", "")}
@@ -448,8 +508,9 @@ def _build_parser() -> argparse.ArgumentParser:
             if "nargs" in spec:
                 kwargs["nargs"] = spec["nargs"]
 
-            if spec.get("required"):
-                kwargs["dest"] = _flag_to_python_name(flag)
+            # Set dest explicitly for every param (not just required ones) so the
+            # kwarg name is unambiguous and independent of argparse's auto-derivation.
+            kwargs["dest"] = _flag_to_python_name(flag)
 
             sub.add_argument(flag, **kwargs)
 
@@ -487,14 +548,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.version:
-        try:
-            from training_hub._version import version
-            print(f"training-hub {version}")
-        except ImportError:
-            print("training-hub (version unknown — not installed from a tagged release)")
-        sys.exit(0)
-
     if not args.algorithm:
         parser.print_help()
         sys.exit(1)
@@ -513,9 +566,19 @@ def main(argv: Optional[list[str]] = None) -> None:
             cli_flag = "--" + key.replace("_", "-")
             spec = param_defs.get(cli_flag)
             if spec is None:
+                # Pass through, but warn — this is usually a typo (e.g.
+                # `lerning_rate`) that would otherwise fail obscurely at call time.
+                print(
+                    f"warning: config key '{key}' is not a recognized '{subcmd}' "
+                    "parameter; passing it through unchanged",
+                    file=sys.stderr,
+                )
                 config_values[python_key] = value
             else:
-                config_values[python_key] = _coerce_value(value, spec)
+                try:
+                    config_values[python_key] = _coerce_value(value, spec)
+                except (ValueError, TypeError, argparse.ArgumentTypeError) as e:
+                    _fail(f"invalid value for '{key}' in config '{args.config}': {e}")
 
     # Step 2: Overlay CLI args (they take precedence)
     cli_dict = vars(args)
@@ -524,12 +587,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         cli_value = cli_dict.get(python_name)
 
         if cli_value is not None:
-            if spec.get("callable"):
-                config_values[python_name] = _resolve_dotted_path(cli_value)
-            elif spec.get("json"):
-                config_values[python_name] = json.loads(cli_value)
-            else:
-                config_values[python_name] = cli_value
+            try:
+                if spec.get("callable"):
+                    config_values[python_name] = _resolve_dotted_path(cli_value)
+                elif spec.get("json"):
+                    config_values[python_name] = json.loads(cli_value)
+                else:
+                    config_values[python_name] = cli_value
+            except (ValueError, ImportError) as e:
+                _fail(f"invalid value for '{flag}': {e}")
 
     # Step 3: Check for missing required params
     missing = []
@@ -541,33 +607,21 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     if missing:
         print(f"error: the following arguments are required: {', '.join(missing)}", file=sys.stderr)
-        print(f"hint: provide them via CLI flags or in a YAML config file with --config", file=sys.stderr)
+        print("hint: provide them via CLI flags or in a YAML config file with --config", file=sys.stderr)
         sys.exit(1)
 
     # Step 4: Remove internal keys
-    config_values.pop("config", None)
-    config_values.pop("algorithm", None)
-    config_values.pop("version", None)
+    for internal in ("config", "algorithm", "version", "traceback"):
+        config_values.pop(internal, None)
 
-    # Step 5: Call the convenience function
+    # Step 5: Import only the selected algorithm's backend and call it
     func_name = _SUBCOMMAND_TO_FUNC[subcmd]
-    from training_hub import algorithms
-    from training_hub.algorithms.sft import sft as _sft
-    from training_hub.algorithms.osft import osft as _osft
-    from training_hub.algorithms.lora import lora_sft as _lora_sft
-    from training_hub.algorithms.lora_grpo import lora_grpo as _lora_grpo, grpo as _grpo
-    from training_hub.algorithms.gepa import gepa as _gepa
-
-    func_map: dict[str, Callable] = {
-        "sft": _sft,
-        "osft": _osft,
-        "lora_sft": _lora_sft,
-        "lora_grpo": _lora_grpo,
-        "grpo": _grpo,
-        "gepa": _gepa,
-    }
-
-    func = func_map[func_name]
+    module_name, attr_name = _FUNC_IMPORTS[func_name]
+    try:
+        module = importlib.import_module(module_name)
+        func: Callable = getattr(module, attr_name)
+    except ImportError as e:
+        _fail(f"could not import the backend for '{subcmd}' ({module_name}): {e}")
 
     # Remove None values so the function uses its own defaults
     final_kwargs = {k: v for k, v in config_values.items() if v is not None}
@@ -578,6 +632,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         print("\nTraining interrupted.", file=sys.stderr)
         sys.exit(130)
     except Exception as e:
+        if getattr(args, "traceback", False):
+            import traceback
+            traceback.print_exc()
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)
 
