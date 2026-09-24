@@ -57,6 +57,44 @@ from .rewards import tool_call_reward
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# wandb stub for ART 0.5.18+
+# ---------------------------------------------------------------------------
+
+def _install_wandb_stub():
+    """Install a minimal wandb module so ART 0.5.18 can import it.
+
+    ART 0.5.18's LocalBackend.train() unconditionally calls
+    ``model._get_wandb_run()`` after each training step to record provenance,
+    and that method does ``import wandb`` *before* checking whether
+    ``WANDB_API_KEY`` is set. Without wandb installed, the import raises
+    ModuleNotFoundError, which kills the training loop after the first
+    iteration (and, due to nest_asyncio re-entrancy, leaves the training
+    subprocess hung instead of exiting with the error).
+
+    The stub is only installed when the real wandb is absent and no API key
+    is configured. In that case ``_get_wandb_run()`` returns None right
+    after the (stubbed) import, so no wandb functionality is ever used.
+
+    Remove this stub when ART guards the import with the API-key check.
+    """
+    import importlib.util
+    import sys
+    import types
+
+    if "wandb" in sys.modules:
+        return
+    if importlib.util.find_spec("wandb") is not None:
+        return  # real wandb installed - let ART use it
+    if os.environ.get("WANDB_API_KEY"):
+        return  # wandb is configured but missing - surface the error
+
+    mod = types.ModuleType("wandb")
+    mod.__package__ = "wandb"
+    mod.__path__ = []
+    sys.modules["wandb"] = mod
+
+
 async def _shutdown_art_backend(backend) -> None:
     """Shut down the ART LocalBackend and its vLLM engine cleanly.
 
@@ -893,6 +931,7 @@ class ARTLoRAGRPOBackend(Backend):
 
             # ART 0.5.18 has module-level megatron imports for Qwen3.5 support
             _install_megatron_bridge_stub()
+            _install_wandb_stub()
 
             import art
             from art.local.backend import LocalBackend
