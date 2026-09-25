@@ -81,7 +81,9 @@ def _checkpoint_step(path: Path, pattern: re.Pattern[str]) -> int | None:
 
 
 HF_LAYOUT = "hf"
-NATIVE_LAYOUTS = ("mini_trainer", "instructlab")
+MINI_TRAINER_LAYOUT = "mini_trainer"
+INSTRUCTLAB_LAYOUT = "instructlab"
+NATIVE_LAYOUTS = (MINI_TRAINER_LAYOUT, INSTRUCTLAB_LAYOUT)
 ALL_LAYOUTS = (HF_LAYOUT, *NATIVE_LAYOUTS)
 
 
@@ -97,9 +99,12 @@ def find_latest_valid_checkpoint(
     ``.incomplete-checkpoint-{step}`` sidecar are skipped, as are native
     full-state dirs whose metadata file has not been written yet.
 
-    Pass *layouts* to restrict the search: a caller that feeds the result to
-    HuggingFace ``resume_from_checkpoint`` must ask for ``("hf",)`` only, since
-    Trainer cannot load the native full-state layouts.
+    Pass *layouts* naming the single layout the caller can consume. The
+    per-layout counters are not comparable — an HF ``checkpoint-500`` and an
+    InstructLab ``epoch_1`` would be ranked against each other as 500 vs 1 —
+    so when several layouts are requested the newest is resolved *within* a
+    layout and layouts are then preferred in the order given, rather than
+    ranking a step number against an epoch number.
     """
     if not output_dir:
         return None
@@ -107,6 +112,12 @@ def find_latest_valid_checkpoint(
     root = Path(output_dir)
     if not root.is_dir():
         return None
+
+    # keyed by layout, so ranking never crosses layouts
+    found: dict[str, list[tuple[int, str]]] = {}
+
+    def add(layout: str, step: int, path: str) -> None:
+        found.setdefault(layout, []).append((step, path))
 
     candidates: list[tuple[int, str]] = []
 
@@ -116,10 +127,10 @@ def find_latest_valid_checkpoint(
                 continue
             step = _checkpoint_step(child, _HF_CHECKPOINT_RE)
             if step is not None:
-                candidates.append((step, str(child.resolve())))
+                add(HF_LAYOUT, step, str(child.resolve()))
 
     mini_root = root / "full_state_checkpoints"
-    if "mini_trainer" in layouts and mini_root.is_dir():
+    if MINI_TRAINER_LAYOUT in layouts and mini_root.is_dir():
         for child in mini_root.iterdir():
             if not child.is_dir() or not is_valid_checkpoint_dir(child):
                 continue
@@ -127,10 +138,10 @@ def find_latest_valid_checkpoint(
                 continue
             step = _checkpoint_step(child, _MINI_TRAINER_STEP_RE)
             if step is not None:
-                candidates.append((step, str(child.resolve())))
+                add(MINI_TRAINER_LAYOUT, step, str(child.resolve()))
 
     ilab_root = root / "full_state"
-    if "instructlab" in layouts and ilab_root.is_dir():
+    if INSTRUCTLAB_LAYOUT in layouts and ilab_root.is_dir():
         for child in ilab_root.iterdir():
             if not child.is_dir() or not is_valid_checkpoint_dir(child):
                 continue
@@ -138,13 +149,14 @@ def find_latest_valid_checkpoint(
                 continue
             step = _checkpoint_step(child, _INSTRUCTLAB_EPOCH_RE)
             if step is not None:
-                candidates.append((step, str(child.resolve())))
+                add(INSTRUCTLAB_LAYOUT, step, str(child.resolve()))
 
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+    for layout in layouts:
+        candidates = found.get(layout) or []
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
+    return None
 
 
 def jit_checkpoint_enabled(

@@ -20,6 +20,25 @@ from training_hub.checkpoint_utils import (
 from training_hub.jit_checkpoint import JITCheckpointCallback
 
 
+@pytest.fixture(autouse=True)
+def _reset_preemption_state():
+    """Clear the module-level preemption flags between tests.
+
+    on_train_begin resets them in a real run, but tests drive the hooks
+    directly, so without this a test that trips preemption leaks into the next
+    one and makes failures order-dependent.
+    """
+    from training_hub import jit_checkpoint as jc
+
+    for name in ("_PREEMPT_REQUESTED", "_PREEMPT_LOGGED", "_PREEMPT_SAVE_REQUESTED"):
+        setattr(jc, name, False)
+    jc._PREEMPT_SIGNUM = None
+    yield
+    for name in ("_PREEMPT_REQUESTED", "_PREEMPT_LOGGED", "_PREEMPT_SAVE_REQUESTED"):
+        setattr(jc, name, False)
+    jc._PREEMPT_SIGNUM = None
+
+
 class TestCheckpointUtils:
     def test_incomplete_sidecar_skipped_on_resume(self, tmp_path: Path):
         valid = tmp_path / "checkpoint-10"
@@ -65,6 +84,29 @@ class TestCheckpointUtils:
         mark_checkpoint_incomplete(tmp_path, 5)
         assert incomplete_sidecar_path(tmp_path, 5).exists()
         assert not (tmp_path / "checkpoint-5").exists()
+
+    def test_layouts_are_not_ranked_against_each_other(self, tmp_path: Path):
+        """HF step numbers and InstructLab epoch numbers are different counters.
+        Ranking them together would let checkpoint-500 beat epoch_1 on an
+        unrelated comparison, so selection stays within a layout."""
+        from training_hub.checkpoint_utils import HF_LAYOUT, INSTRUCTLAB_LAYOUT
+
+        hf = tmp_path / "checkpoint-500"
+        hf.mkdir()
+        ilab = tmp_path / "full_state" / "epoch_1"
+        ilab.mkdir(parents=True)
+        (ilab / "training_metadata.json").write_text("{}")
+
+        assert find_latest_valid_checkpoint(
+            str(tmp_path), layouts=(HF_LAYOUT,)
+        ) == str(hf.resolve())
+        assert find_latest_valid_checkpoint(
+            str(tmp_path), layouts=(INSTRUCTLAB_LAYOUT,)
+        ) == str(ilab.resolve())
+        # asking for both prefers the order given, never a cross-layout compare
+        assert find_latest_valid_checkpoint(
+            str(tmp_path), layouts=(INSTRUCTLAB_LAYOUT, HF_LAYOUT)
+        ) == str(ilab.resolve())
 
     def test_jit_checkpoint_enabled_requires_both(self):
         assert not jit_checkpoint_enabled(False, "/tmp")

@@ -110,7 +110,14 @@ class JITCheckpointCallback(TrainingHubCallback):
     @staticmethod
     def _preempt_requested_any_rank() -> bool:
         """Aggregate the process-local SIGTERM flag across ranks (MAX), so a
-        signal seen by one rank stops all ranks at the same step boundary."""
+        signal seen by one rank stops all ranks at the same step boundary.
+
+        Every rank must reach this on the same step: skipping the collective on
+        ranks whose local flag is still clear would leave the signalled rank
+        blocked in all_reduce with no peer, so the check stays unconditional
+        until the aggregated result is known (see ``_handle_preemption``, which
+        stops calling it once the ranks have agreed).
+        """
         from training_hub.checkpoint_manager import any_rank
 
         return any_rank(preempt_requested())
@@ -129,6 +136,15 @@ class JITCheckpointCallback(TrainingHubCallback):
 
     def _handle_preemption(self, context: TrainingHubContext) -> None:
         global _PREEMPT_SAVE_REQUESTED
+        if _PREEMPT_SAVE_REQUESTED:
+            # Already agreed across ranks and asked for the save. Skipping the
+            # collective here is safe precisely because every rank flipped this
+            # on the same step, via the same completed all_reduce. Keep the stop
+            # request sticky; asking to save twice would make HF write, and the
+            # mirror upload, the same checkpoint twice.
+            if context.control is not None:
+                context.control.should_training_stop = True
+            return
         if not self._preempt_requested_any_rank():
             return
         self._log_preemption_once()
@@ -140,13 +156,7 @@ class JITCheckpointCallback(TrainingHubCallback):
             )
             return
 
-        # This runs from both on_step_end and on_epoch_end and the flag stays
-        # set, so without a one-shot guard HF writes the same checkpoint twice
-        # and the mirror uploads it twice — wasted grace-period seconds on a
-        # multi-GB save. Keep asking to stop, ask to save only once.
         control.should_training_stop = True
-        if _PREEMPT_SAVE_REQUESTED:
-            return
         _PREEMPT_SAVE_REQUESTED = True
 
         if context.is_main_process and context.output_dir and context.step > 0:

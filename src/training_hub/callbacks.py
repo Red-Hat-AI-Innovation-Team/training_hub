@@ -154,6 +154,13 @@ def merge_default_callbacks(
 
     user_cbs = normalize_hub_callbacks(user_callbacks)
     defaults: list[TrainingHubCallback] = []
+    # Neither default is injected for sft/osft. Their preemption save happens in
+    # torchrun workers that exit without firing on_save (mini-trainer calls
+    # os._exit), so a callback there could not observe it; the launcher calls
+    # sync_latest_checkpoint after run_training instead. Consequence worth
+    # knowing: periodic saves during an sft/osft run are not mirrored either,
+    # so the whole checkpoint uploads inside the grace period. lora_sft mirrors
+    # each save as it is written, which is why only it gets the sync callback.
     hub_owned = backend not in _NATIVE_JIT_BACKENDS
     if hub_owned and enable_jit_checkpoint and ckpt_output_dir:
         defaults.append(JITCheckpointCallback())

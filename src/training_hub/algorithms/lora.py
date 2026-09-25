@@ -239,7 +239,9 @@ class UnslothLoRABackend(Backend):
         )
 
         output_dir = training_params['ckpt_output_dir']
-        maybe_restore_checkpoint(output_dir)
+        # HF layout only, both for the restore gate and the resume path: an
+        # unrelated native full-state dir must not suppress the download.
+        maybe_restore_checkpoint(output_dir, layouts=(HF_LAYOUT,))
         # Remote storage is an explicit opt-in to checkpoint persistence, so it
         # implies resume even without the JIT flag; restoring a checkpoint and
         # then ignoring it would silently retrain from step 0.
@@ -247,11 +249,18 @@ class UnslothLoRABackend(Backend):
         if storage_uri() or jit_checkpoint_enabled(
             training_params.get("enable_jit_checkpoint"), output_dir
         ):
-            # HF layout only: Trainer cannot load the native full-state dirs a
-            # shared output_dir may also contain.
             resume_path = find_latest_valid_checkpoint(
                 output_dir, layouts=(HF_LAYOUT,)
             )
+            # The resume decision was previously silent, so a run that picked up
+            # mid-training looked identical to one starting fresh.
+            if resume_path:
+                logger.warning("Resuming training from checkpoint: %s", resume_path)
+            else:
+                logger.warning(
+                    "No valid checkpoint under %s; training starts from step 0",
+                    output_dir,
+                )
 
         # Execute training with error handling for known Unsloth issues
         try:

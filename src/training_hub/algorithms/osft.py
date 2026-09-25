@@ -503,10 +503,15 @@ class MiniTrainerOSFTBackend(Backend):
             sync_latest_checkpoint,
             sync_latest_checkpoint_best_effort,
         )
+        from training_hub.checkpoint_utils import MINI_TRAINER_LAYOUT
+
+        # mini-trainer writes full_state_checkpoints/step_N; gate and mirror on
+        # that layout only.
+        MT = (MINI_TRAINER_LAYOUT,)
 
         # Fresh pod after preemption: pull the newest complete checkpoint from
         # remote storage so mini-trainer's full_state_checkpoints auto-resume finds it.
-        maybe_restore_checkpoint(algorithm_params['output_dir'])
+        maybe_restore_checkpoint(algorithm_params['output_dir'], layouts=MT)
 
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
@@ -573,9 +578,11 @@ class MiniTrainerOSFTBackend(Backend):
                 train_args=TrainingArgs(**training_args_pre),
             )
         except BaseException:
-            sync_latest_checkpoint_best_effort(output_dir, node_rank=node_rank)
+            sync_latest_checkpoint_best_effort(
+                output_dir, node_rank=node_rank, layouts=MT
+            )
             raise
-        sync_latest_checkpoint(output_dir, node_rank=node_rank)
+        sync_latest_checkpoint(output_dir, node_rank=node_rank, layouts=MT)
         return result
 
     def _process_data(

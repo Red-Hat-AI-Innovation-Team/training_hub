@@ -339,6 +339,26 @@ class TestRestore:
             cm.restore_latest_checkpoint(REMOTE, dest)
         assert not list(tmp_path.rglob("escape.txt"))
 
+    def test_foreign_layout_does_not_suppress_restore(self, remote, tmp_path):
+        """A leftover native full_state/ dir in an output_dir now used for LoRA
+        must not count as 'already have one'. Gating on every layout skipped the
+        download, and the HF-only resume path then found nothing and trained
+        from step 0."""
+        from training_hub.checkpoint_utils import HF_LAYOUT
+
+        self._upload(tmp_path, "checkpoint-20")
+        local = tmp_path / "local"
+        stale = local / "full_state" / "epoch_3"
+        stale.mkdir(parents=True)
+        (stale / "training_metadata.json").write_text("{}")
+
+        assert cm.maybe_restore_checkpoint(local, layouts=(HF_LAYOUT,)) == str(
+            local / "checkpoint-20"
+        )
+        assert find_latest_valid_checkpoint(
+            str(local), layouts=(HF_LAYOUT,)
+        ) == str((local / "checkpoint-20").resolve())
+
     def test_maybe_restore_skips_when_local_checkpoint_exists(self, remote, tmp_path):
         self._upload(tmp_path, "checkpoint-20")
         local = tmp_path / "local"

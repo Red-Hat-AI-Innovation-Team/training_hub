@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 from training_hub.checkpoint_utils import (
+    ALL_LAYOUTS,
     UPLOAD_URI_ENV,
     clear_stale_incomplete_marker,
     find_latest_valid_checkpoint,
@@ -357,16 +358,20 @@ def upload_checkpoint_now(
     logger.warning("Mirrored checkpoint %s to %s", rel, uri)
 
 
-def sync_latest_checkpoint(output_dir: str | Path, node_rank: int = 0) -> str | None:
+def sync_latest_checkpoint(
+    output_dir: str | Path,
+    node_rank: int = 0,
+    layouts: tuple[str, ...] = ALL_LAYOUTS,
+) -> str | None:
     """Mirror the newest valid local checkpoint under *output_dir*.
 
     Used by the sft/osft launchers: their on-demand (SIGTERM) save happens in
-    torchrun workers that exit without firing ``on_save``. Returns the local
-    path that was mirrored, or None.
+    torchrun workers that exit without firing ``on_save``. Pass *layouts* naming
+    the layout that backend writes. Returns the local path mirrored, or None.
     """
     if not storage_uri() or not _is_node_zero(node_rank):
         return None
-    latest = find_latest_valid_checkpoint(str(output_dir))
+    latest = find_latest_valid_checkpoint(str(output_dir), layouts=layouts)
     if latest is None:
         return None
     upload_checkpoint_now(latest, base_dir=output_dir)
@@ -374,11 +379,13 @@ def sync_latest_checkpoint(output_dir: str | Path, node_rank: int = 0) -> str | 
 
 
 def sync_latest_checkpoint_best_effort(
-    output_dir: str | Path, node_rank: int = 0
+    output_dir: str | Path,
+    node_rank: int = 0,
+    layouts: tuple[str, ...] = ALL_LAYOUTS,
 ) -> None:
     """Mirror on a failure path without masking the exception being propagated."""
     try:
-        sync_latest_checkpoint(output_dir, node_rank=node_rank)
+        sync_latest_checkpoint(output_dir, node_rank=node_rank, layouts=layouts)
     except Exception:
         logger.exception("Could not mirror the checkpoint after a training failure")
 
@@ -427,17 +434,33 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
         # one (interrupted save, stale sentinel) must be replaced, otherwise we
         # would keep it and silently retrain from step 0.
         if is_valid_checkpoint_dir(dest, local):
+            logger.warning(
+                "Checkpoint %s already present locally; skipping download", dest
+            )
             return str(dest)
         tmp_root = local / f"{RESTORE_TMP_DIR}-{os.getpid()}"
         tmp = tmp_root / name
         shutil.rmtree(tmp_root, ignore_errors=True)
         tmp.mkdir(parents=True)
+        # Announced before the transfer: a multi-GB checkpoint takes minutes and
+        # would otherwise look like a hang.
+        keys = [
+            k
+            for k in fs.find(name)
+            if k.startswith(name + "/") and k[len(name) + 1:] != COMPLETE_MARKER
+        ]
         try:
-            for key in fs.find(name):
-                if not key.startswith(name + "/"):
-                    continue
+            total_mb = sum(fs.size(k) or 0 for k in keys) / (1024 * 1024)
+        except Exception:
+            total_mb = 0
+        logger.warning(
+            "Restoring checkpoint %s from %s (%d files, %.0f MB) into %s",
+            name, uri, len(keys), total_mb, dest,
+        )
+        try:
+            for key in keys:
                 rel = key[len(name) + 1:]
-                if not rel or rel == COMPLETE_MARKER:
+                if not rel:
                     continue
                 target = _safe_target(tmp, rel)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -460,9 +483,16 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
     return None
 
 
-def maybe_restore_checkpoint(local_dir: str | Path) -> str | None:
+def maybe_restore_checkpoint(
+    local_dir: str | Path, layouts: tuple[str, ...] = ALL_LAYOUTS
+) -> str | None:
     """Restore from remote storage when configured and *local_dir* holds no
     valid checkpoint. Local rank 0 downloads; other ranks wait at the barrier.
+
+    *layouts* must name the layout the caller consumes. Gating on every layout
+    lets an unrelated leftover — say a native ``full_state/`` dir in an
+    output_dir now used for LoRA — count as "already have one", skip the
+    download, and leave the caller resuming from nothing.
 
     Raises on failure: silently retraining from step 0 is the one outcome this
     feature exists to prevent.
@@ -472,11 +502,18 @@ def maybe_restore_checkpoint(local_dir: str | Path) -> str | None:
         return None
     restored = None
     if _is_local_rank_zero():
-        if find_latest_valid_checkpoint(str(local_dir)) is None:
+        local_existing = find_latest_valid_checkpoint(str(local_dir), layouts=layouts)
+        if local_existing is None:
             restored = restore_latest_checkpoint(uri, local_dir)
             if restored is None:
                 logger.warning(
                     "No complete checkpoint under %s; training starts from step 0", uri
                 )
+        else:
+            logger.warning(
+                "Local checkpoint %s already present; not restoring from %s",
+                local_existing,
+                uri,
+            )
     wait_for_all_ranks()
     return restored

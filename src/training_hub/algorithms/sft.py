@@ -96,10 +96,15 @@ class InstructLabTrainingSFTBackend(Backend):
             sync_latest_checkpoint,
             sync_latest_checkpoint_best_effort,
         )
+        from training_hub.checkpoint_utils import INSTRUCTLAB_LAYOUT
+
+        # instructlab writes full_state/epoch_N; gate and mirror on that layout
+        # only, so an unrelated HF or mini-trainer dir cannot interfere.
+        ILAB = (INSTRUCTLAB_LAYOUT,)
 
         # Fresh pod after preemption: pull the newest complete checkpoint from
         # remote storage so instructlab's full_state auto-resume finds it.
-        maybe_restore_checkpoint(training_params['ckpt_output_dir'])
+        maybe_restore_checkpoint(training_params['ckpt_output_dir'], layouts=ILAB)
 
         # Older instructlab-training silently drops unknown TrainingArgs fields,
         # which would turn JIT checkpointing into a no-op — fail loudly instead.
@@ -133,10 +138,12 @@ class InstructLabTrainingSFTBackend(Backend):
             )
         except BaseException:
             sync_latest_checkpoint_best_effort(
-                training_params['ckpt_output_dir'], node_rank=node_rank
+                training_params['ckpt_output_dir'], node_rank=node_rank, layouts=ILAB
             )
             raise
-        sync_latest_checkpoint(training_params['ckpt_output_dir'], node_rank=node_rank)
+        sync_latest_checkpoint(
+            training_params['ckpt_output_dir'], node_rank=node_rank, layouts=ILAB
+        )
         return result
 
 
