@@ -8,7 +8,8 @@ from . import Algorithm, Backend, AlgorithmRegistry
 from .sft import SFTAlgorithm
 from .peft_extender import LoRAPEFTExtender, get_lora_parameters, apply_lora_defaults
 from training_hub import utils
-from training_hub.callbacks import TrainingHubCallback
+from training_hub.callbacks import TrainingHubCallback, merge_default_callbacks
+from training_hub.checkpoint_utils import apply_native_jit_params
 
 # TrainerCallback import - transformers is required for LoRA functionality
 from transformers import TrainerCallback
@@ -216,41 +217,85 @@ class UnslothLoRABackend(Backend):
         trainer.add_callback(jsonl_callback)
 
         # Add user-provided TrainingHub callbacks (adapted to HuggingFace)
-        if training_params.get('callbacks'):
+        hub_callbacks = training_params.get('callbacks') or []
+        if hub_callbacks:
             from training_hub.adapters.unsloth import adapt_hub_callbacks
-            for hf_cb in adapt_hub_callbacks(training_params['callbacks']):
+            from training_hub.callbacks import TrainingHubControl
+
+            hub_control = TrainingHubControl()
+            for hf_cb in adapt_hub_callbacks(hub_callbacks, hub_control=hub_control):
                 trainer.add_callback(hf_cb)
+
+        from training_hub.checkpoint_manager import (
+            maybe_restore_checkpoint,
+            raise_pending_upload_error,
+            shutdown_upload_worker,
+            storage_uri,
+        )
+        from training_hub.checkpoint_utils import (
+            HF_LAYOUT,
+            find_latest_valid_checkpoint,
+            jit_checkpoint_enabled,
+        )
+
+        output_dir = training_params['ckpt_output_dir']
+        # HF layout only, both for the restore gate and the resume path: an
+        # unrelated native full-state dir must not suppress the download.
+        maybe_restore_checkpoint(output_dir, layouts=(HF_LAYOUT,))
+        # Remote storage is an explicit opt-in to checkpoint persistence, so it
+        # implies resume even without the JIT flag; restoring a checkpoint and
+        # then ignoring it would silently retrain from step 0.
+        resume_path = None
+        if storage_uri() or jit_checkpoint_enabled(
+            training_params.get("enable_jit_checkpoint"), output_dir
+        ):
+            resume_path = find_latest_valid_checkpoint(
+                output_dir, layouts=(HF_LAYOUT,)
+            )
+            # The resume decision was previously silent, so a run that picked up
+            # mid-training looked identical to one starting fresh.
+            if resume_path:
+                logger.warning("Resuming training from checkpoint: %s", resume_path)
+            else:
+                logger.warning(
+                    "No valid checkpoint under %s; training starts from step 0",
+                    output_dir,
+                )
 
         # Execute training with error handling for known Unsloth issues
         try:
-            trainer.train()
-        except AssertionError as e:
-            if "wrong number of dimensions" in str(e) and "int8_mixed_scaled_mm" in str(e):
-                # Known Unsloth 8-bit quantization issue: https://github.com/unslothai/unsloth/issues/3501
-                raise RuntimeError(
-                    f"❌ Unsloth 8-bit quantization compatibility issue detected.\n"
-                    f"This is a known issue with Unsloth + 8-bit quantization + some model architectures.\n"
-                    f"See: https://github.com/unslothai/unsloth/issues/3501\n\n"
-                    f"💡 Recommended solutions:\n"
-                    f"• Try 4-bit quantization instead: load_in_4bit=True, load_in_8bit=False\n"
-                    f"• Use standard training without quantization: load_in_4bit=False, load_in_8bit=False\n"
-                    f"• Update Unsloth to the latest version in case this issue is fixed\n\n"
-                    f"Original error: {e}"
-                ) from e
-            else:
-                # Re-raise other AssertionErrors
+            try:
+                trainer.train(resume_from_checkpoint=resume_path)
+            except AssertionError as e:
+                if "wrong number of dimensions" in str(e) and "int8_mixed_scaled_mm" in str(e):
+                    raise RuntimeError(
+                        f"❌ Unsloth 8-bit quantization compatibility issue detected.\n"
+                        f"This is a known issue with Unsloth + 8-bit quantization + some model architectures.\n"
+                        f"See: https://github.com/unslothai/unsloth/issues/3501\n\n"
+                        f"💡 Recommended solutions:\n"
+                        f"• Try 4-bit quantization instead: load_in_4bit=True, load_in_8bit=False\n"
+                        f"• Use standard training without quantization: load_in_4bit=False, load_in_8bit=False\n"
+                        f"• Update Unsloth to the latest version in case this issue is fixed\n\n"
+                        f"Original error: {e}"
+                    ) from e
                 raise
 
-        # Save model
-        if training_params.get('save_model', True):
-            trainer.save_model(training_params['ckpt_output_dir'])
-            tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
+            # Save model
+            if training_params.get('save_model', True):
+                trainer.save_model(training_params['ckpt_output_dir'])
+                tokenizer_or_processor.save_pretrained(training_params['ckpt_output_dir'])
 
-        return {
-            'model': model,
-            'tokenizer': tokenizer_or_processor,
-            'trainer': trainer
-        }
+            result = {
+                'model': model,
+                'tokenizer': tokenizer_or_processor,
+                'trainer': trainer
+            }
+        finally:
+            shutdown_upload_worker()
+        # Callback adapters isolate hook exceptions, so an upload failure is
+        # surfaced here instead: the run must not finish green with no mirror.
+        raise_pending_upload_error()
+        return result
 
     @staticmethod
     def _is_vlm_model_id(model_path: str, trust_remote_code: bool = False) -> bool:
@@ -761,6 +806,8 @@ class LoRASFTAlgorithm(Algorithm):
               callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
               eval_data_path: Optional[str] = None,
               per_device_eval_batch_size: Optional[int] = None,
+              enable_jit_checkpoint: Optional[bool] = None,
+              checkpoint_storage: Optional[str] = None,
               **kwargs) -> Any:
         """Execute LoRA + SFT training combining supervised fine-tuning with LoRA parameter-efficient training.
 
@@ -857,6 +904,8 @@ class LoRASFTAlgorithm(Algorithm):
 
             Callbacks / Evaluation:
             callbacks: TrainingHubCallback or list of them for lifecycle hooks
+            enable_jit_checkpoint: When True, enable SIGTERM JIT checkpointing
+                (requires ckpt_output_dir). Off by default.
             eval_data_path: Optional JSON/JSONL (or HF dataset) path for evaluation.
                             When set, enables eval_strategy=steps and fires on_evaluate.
             per_device_eval_batch_size: Per-device eval batch size (defaults to
@@ -870,6 +919,17 @@ class LoRASFTAlgorithm(Algorithm):
         """
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
+
+        from training_hub.checkpoint_utils import configure_checkpoint_storage
+
+        configure_checkpoint_storage(checkpoint_storage)
+        callbacks = merge_default_callbacks(
+            callbacks,
+            enable_jit_checkpoint=bool(enable_jit_checkpoint),
+            ckpt_output_dir=ckpt_output_dir,
+            backend="lora_sft",
+            checkpoint_storage=checkpoint_storage,
+        )
 
         # Build base parameters dict (required parameters)
         params = {
@@ -958,6 +1018,8 @@ class LoRASFTAlgorithm(Algorithm):
             'callbacks': callbacks,
             'eval_data_path': eval_data_path,
             'per_device_eval_batch_size': per_device_eval_batch_size,
+            'enable_jit_checkpoint': enable_jit_checkpoint,
+            'checkpoint_storage': checkpoint_storage,
         }
 
         # Only add non-None parameters
@@ -1054,6 +1116,8 @@ class LoRASFTAlgorithm(Algorithm):
             'callbacks': list,
             'eval_data_path': str,
             'per_device_eval_batch_size': int,
+            'enable_jit_checkpoint': bool,
+            'checkpoint_storage': str,
         }
 
         # Combine all parameter types
@@ -1139,6 +1203,8 @@ def lora_sft(model_path: str,
          callbacks: Optional[list[TrainingHubCallback] | TrainingHubCallback] = None,
          eval_data_path: Optional[str] = None,
          per_device_eval_batch_size: Optional[int] = None,
+         enable_jit_checkpoint: Optional[bool] = None,
+         checkpoint_storage: Optional[str] = None,
          **kwargs) -> Any:
     """Convenience function to run LoRA + SFT training.
 
@@ -1304,5 +1370,7 @@ def lora_sft(model_path: str,
         callbacks=callbacks,
         eval_data_path=eval_data_path,
         per_device_eval_batch_size=per_device_eval_batch_size,
+        enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
         **kwargs
     )

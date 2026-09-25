@@ -41,6 +41,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# Backends with native on_demand_checkpointing (no hub JIT callback injection).
+_NATIVE_JIT_BACKENDS = frozenset({"sft", "osft"})
+
+
+@dataclass
+class TrainingHubControl:
+    """Mutable control flags for hub default callbacks (HF TrainerControl-like)."""
+
+    should_save: bool = False
+    should_training_stop: bool = False
+
 
 @dataclass
 class TrainingHubContext:
@@ -58,6 +69,7 @@ class TrainingHubContext:
         is_main_process: Whether this is rank 0 in distributed training.
         output_dir: Checkpoint output directory.
         metrics: Backend-specific metrics dict, flattened.
+        control: Mutable control bag for default-flow callbacks (optional).
     """
 
     step: int = 0
@@ -67,6 +79,7 @@ class TrainingHubContext:
     is_main_process: bool = True
     output_dir: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
+    control: TrainingHubControl | None = None
 
 
 class TrainingHubCallback:
@@ -113,3 +126,44 @@ class TrainingHubCallback:
 
     def on_train_end(self, context: TrainingHubContext) -> None:
         """Called after training completes."""
+
+
+def merge_default_callbacks(
+    user_callbacks: list[TrainingHubCallback] | TrainingHubCallback | None,
+    *,
+    enable_jit_checkpoint: bool = False,
+    ckpt_output_dir: str | None = None,
+    backend: str | None = None,
+    checkpoint_storage: str | None = None,
+) -> list[TrainingHubCallback]:
+    """Prepend platform default callbacks before user callbacks.
+
+    Hub defaults run first on each lifecycle event. JIT checkpointing is
+    injected only when ``enable_jit_checkpoint=True`` and ``ckpt_output_dir``
+    is set, and remote mirroring only when ``checkpoint_storage`` is a remote
+    URI. Both apply to hub-owned backends only: SFT/OSFT use native
+    ``on_demand_checkpointing``, and their workers exit without firing
+    ``on_save``, so the launcher process mirrors their checkpoint instead.
+    """
+    from training_hub.adapters.serialize import normalize_hub_callbacks
+    from training_hub.checkpoint_utils import resolve_checkpoint_storage
+    from training_hub.jit_checkpoint import (
+        JITCheckpointCallback,
+        RemoteCheckpointSyncCallback,
+    )
+
+    user_cbs = normalize_hub_callbacks(user_callbacks)
+    defaults: list[TrainingHubCallback] = []
+    # Neither default is injected for sft/osft. Their preemption save happens in
+    # torchrun workers that exit without firing on_save (mini-trainer calls
+    # os._exit), so a callback there could not observe it; the launcher calls
+    # sync_latest_checkpoint after run_training instead. Consequence worth
+    # knowing: periodic saves during an sft/osft run are not mirrored either,
+    # so the whole checkpoint uploads inside the grace period. lora_sft mirrors
+    # each save as it is written, which is why only it gets the sync callback.
+    hub_owned = backend not in _NATIVE_JIT_BACKENDS
+    if hub_owned and enable_jit_checkpoint and ckpt_output_dir:
+        defaults.append(JITCheckpointCallback())
+    if hub_owned and resolve_checkpoint_storage(checkpoint_storage):
+        defaults.append(RemoteCheckpointSyncCallback())
+    return [*defaults, *user_cbs]
