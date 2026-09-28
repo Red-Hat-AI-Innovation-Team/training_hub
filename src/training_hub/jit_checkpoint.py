@@ -129,6 +129,8 @@ class JITCheckpointCallback(TrainingHubCallback):
         if _PREEMPT_LOGGED:
             return
         _PREEMPT_LOGGED = True
+        # WARNING: an external signal is cutting this run short. The save that
+        # follows is routine, the interruption is not.
         logger.warning(
             "Received signal %s; checkpointing at this training step boundary.",
             _PREEMPT_SIGNUM,

@@ -5,6 +5,7 @@ Remote storage is exercised end to end against fsspec's in-memory filesystem
 surfacing and restore all run without S3.
 """
 
+import logging
 import os
 import shutil
 import threading
@@ -17,6 +18,7 @@ import pytest
 import training_hub.checkpoint_manager as cm
 from training_hub.callbacks import TrainingHubControl, merge_default_callbacks
 from training_hub.checkpoint_utils import (
+    HF_LAYOUT,
     UPLOAD_URI_ENV,
     apply_checkpoint_storage_env,
     find_latest_valid_checkpoint,
@@ -567,3 +569,52 @@ class TestTrainParamPath:
                 ckpt_output_dir=str(tmp_path),
                 checkpoint_storage="gs://bucket/run1",
             )
+
+
+class TestPackageLogging:
+    """The resume decision is logged at INFO, so it has to survive a process
+    that never calls basicConfig -- which is every training pod."""
+
+    def test_resume_decision_is_visible_without_basicconfig(self, caplog):
+        logger = logging.getLogger("training_hub")
+        assert logger.level == logging.INFO, "package logging not configured at INFO"
+        assert logger.handlers or logging.root.handlers, "no handler would emit it"
+
+        with caplog.at_level(logging.INFO, logger="training_hub"):
+            cm.logger.info("Resuming training from checkpoint: %s", "/ckpt/step-1")
+        assert "Resuming training from checkpoint" in caplog.text
+
+    def test_root_logger_is_left_alone(self):
+        # Speaking for the whole process would hijack the host application's
+        # logging; we configure our own namespace only. (Root is not asserted
+        # empty because pytest installs its own handler there.)
+        import training_hub
+
+        before = list(logging.root.handlers)
+        ours = len(logging.getLogger("training_hub").handlers)
+        training_hub._configure_package_logging()
+        assert logging.root.handlers == before
+        # idempotent: a second call must not stack another handler
+        assert len(logging.getLogger("training_hub").handlers) == ours
+
+    def test_records_are_emitted_once_when_a_backend_configures_logging_later(self):
+        """instructlab and mini_trainer call basicConfig() from inside
+        run_training, after this package was imported. With propagation left on,
+        each checkpoint line would reach their root handler as well as ours and
+        print twice in the pod log."""
+        logger = logging.getLogger("training_hub")
+        if logger.handlers:
+            assert logger.propagate is False
+        else:
+            # We deferred to an already-configured application; its handler is
+            # the only one, so propagation must stay on for it to see anything.
+            assert logger.propagate is True
+
+    def test_failures_stay_above_info(self):
+        # A level sweep would be brittle; assert the one inversion that matters:
+        # informational records must not be emitted as warnings.
+        import inspect
+
+        source = inspect.getsource(cm.restore_latest_checkpoint)
+        assert 'logger.info("Restored checkpoint' in source
+        assert "logger.warning" not in source

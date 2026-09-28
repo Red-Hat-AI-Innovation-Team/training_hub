@@ -255,9 +255,9 @@ class UnslothLoRABackend(Backend):
             # The resume decision was previously silent, so a run that picked up
             # mid-training looked identical to one starting fresh.
             if resume_path:
-                logger.warning("Resuming training from checkpoint: %s", resume_path)
+                logger.info("Resuming training from checkpoint: %s", resume_path)
             else:
-                logger.warning(
+                logger.info(
                     "No valid checkpoint under %s; training starts from step 0",
                     output_dir,
                 )

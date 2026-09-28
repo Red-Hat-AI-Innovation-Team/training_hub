@@ -233,7 +233,7 @@ class _Uploader:
                 _upload_dir(self.fs, Path(local_dir), remote_prefix)
                 if cleanup:
                     shutil.rmtree(local_dir, ignore_errors=True)
-                logger.warning(
+                logger.info(
                     "Mirrored checkpoint %s to %s", remote_prefix, storage_uri()
                 )
             except Exception as e:
@@ -355,7 +355,7 @@ def upload_checkpoint_now(
         logger.info("Checkpoint %s already mirrored to %s", rel, uri)
         return
     _upload_dir(fs, src, rel)
-    logger.warning("Mirrored checkpoint %s to %s", rel, uri)
+    logger.info("Mirrored checkpoint %s to %s", rel, uri)
 
 
 def sync_latest_checkpoint(
@@ -434,7 +434,7 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
         # one (interrupted save, stale sentinel) must be replaced, otherwise we
         # would keep it and silently retrain from step 0.
         if is_valid_checkpoint_dir(dest, local):
-            logger.warning(
+            logger.info(
                 "Checkpoint %s already present locally; skipping download", dest
             )
             return str(dest)
@@ -453,7 +453,7 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
             total_mb = sum(fs.size(k) or 0 for k in keys) / (1024 * 1024)
         except Exception:
             total_mb = 0
-        logger.warning(
+        logger.info(
             "Restoring checkpoint %s from %s (%d files, %.0f MB) into %s",
             name, uri, len(keys), total_mb, dest,
         )
@@ -475,10 +475,7 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
         finally:
             shutil.rmtree(tmp_root, ignore_errors=True)
         clear_stale_incomplete_marker(local, dest)
-        # WARNING, not INFO: nothing configures logging in a training pod, so
-        # INFO is invisible and the operator cannot tell a resume from a silent
-        # restart at step 0 — the one thing this feature exists to prevent.
-        logger.warning("Restored checkpoint %s from %s -> %s", name, uri, dest)
+        logger.info("Restored checkpoint %s from %s -> %s", name, uri, dest)
         return str(dest)
     return None
 
@@ -506,11 +503,11 @@ def maybe_restore_checkpoint(
         if local_existing is None:
             restored = restore_latest_checkpoint(uri, local_dir)
             if restored is None:
-                logger.warning(
+                logger.info(
                     "No complete checkpoint under %s; training starts from step 0", uri
                 )
         else:
-            logger.warning(
+            logger.info(
                 "Local checkpoint %s already present; not restoring from %s",
                 local_existing,
                 uri,
