@@ -326,6 +326,31 @@ def _define_params() -> None:
         "--gepa-kwargs": {"type": str, "json": True, "help": "Additional kwargs for gepa.optimize() as JSON"},
     }
 
+    # --- Embedding SFT (contrastive fine-tuning for classifiers/routers) ---
+    _ALGO_PARAM_DEFS["embedding-sft"] = {
+        "--model-path": {"type": str, "required": True, "help": "HuggingFace model ID or local path to a sentence-transformers model"},
+        "--data-path": {"type": str, "required": True, "help": "Path to training data (.jsonl/.json/.parquet/.csv or HF dataset ID) with a text and integer label field"},
+        "--ckpt-output-dir": {"type": str, "required": True, "help": "Directory to save the fine-tuned model"},
+        "--backend": {"type": str, "default": "sentence-transformers", "help": "Backend implementation (default: sentence-transformers)"},
+        # Loss
+        "--loss-type": {"type": str, "help": "Loss function: batch_all_triplet (default), batch_hard_triplet, or mnrl"},
+        "--loss-fn": {"type": str, "callable": True, "help": "Dotted import path to a custom loss (overrides --loss-type)"},
+        # Training
+        "--num-epochs": {"type": int, "help": "Number of training epochs (default: 20)"},
+        "--batch-size": {"type": int, "help": "Per-device batch size (default: 32)"},
+        "--learning-rate": {"type": float, "help": "Learning rate (default: 2e-5)"},
+        "--warmup-ratio": {"type": float, "help": "Warmup fraction of total steps (default: 0.1)"},
+        # Batch sampling
+        "--batch-sampler": {"type": str, "help": "Batch sampler: group_by_label, no_duplicates, or default (auto-selected by loss when unset)"},
+        # Evaluation
+        "--eval-data-path": {"type": str, "help": "Optional evaluation data (same format as --data-path)"},
+        # Data format
+        "--text-column": {"type": str, "help": "Name of the text column in the dataset (default: text)"},
+        "--label-column": {"type": str, "help": "Name of the label column in the dataset (default: label)"},
+        # Standard
+        "--seed": {"type": int, "help": "Random seed (default: 42)"},
+    }
+
 
 # Maps CLI subcommand name to the Python convenience function name
 _SUBCOMMAND_TO_FUNC = {
@@ -335,6 +360,7 @@ _SUBCOMMAND_TO_FUNC = {
     "lora-grpo": "lora_grpo",
     "grpo": "grpo",
     "gepa": "gepa",
+    "embedding-sft": "embedding_sft",
 }
 
 # Maps the convenience function name to its (module, attribute). Imports are done
@@ -348,6 +374,7 @@ _FUNC_IMPORTS: dict[str, tuple[str, str]] = {
     "lora_grpo": ("training_hub.algorithms.lora_grpo", "lora_grpo"),
     "grpo": ("training_hub.algorithms.lora_grpo", "grpo"),
     "gepa": ("training_hub.algorithms.gepa", "gepa"),
+    "embedding_sft": ("training_hub.algorithms.embedding_sft", "embedding_sft"),
 }
 
 
@@ -473,6 +500,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "lora-grpo": "LoRA + Group Relative Policy Optimization",
         "grpo": "Full-parameter Group Relative Policy Optimization",
         "gepa": "Genetic-Pareto prompt optimization (gradient-free)",
+        "embedding-sft": "Embedding fine-tuning (contrastive; classifiers/routers)",
     }
 
     for subcmd, param_defs in _ALGO_PARAM_DEFS.items():

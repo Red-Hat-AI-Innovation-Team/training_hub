@@ -91,11 +91,15 @@ class TestLoadDataset:
         ds = _load_dataset(path, text_column="sentence", label_column="category")
         assert ds.column_names == ["text", "label"]
 
-    def test_unknown_extension_raises(self, tmp_path):
-        path = tmp_path / "data.parquet"
-        path.write_text("not actually parquet")
-        with pytest.raises(ValueError, match="Unsupported file extension"):
-            _load_dataset(str(path))
+    def test_loads_parquet(self, tmp_path):
+        from datasets import Dataset
+
+        path = tmp_path / "train.parquet"
+        Dataset.from_list([
+            {"text": "a", "label": 0}, {"text": "b", "label": 1},
+        ]).to_parquet(str(path))
+        ds = _load_dataset(str(path))
+        assert len(ds) == 2 and "text" in ds.column_names and "label" in ds.column_names
 
     def test_missing_text_column_raises(self, tmp_path):
         path = _write_jsonl(tmp_path / "train.jsonl", [{"foo": "a", "label": 0}])

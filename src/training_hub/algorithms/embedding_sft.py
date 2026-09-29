@@ -58,10 +58,11 @@ def _load_dataset(
     require_text: bool = True,
     require_label: bool = True,
 ) -> Any:
-    """Load a text/label dataset from a JSONL/CSV file or HuggingFace dataset ID.
+    """Load a text/label dataset from a local file or HuggingFace dataset ID.
 
     Args:
-        data_path: Path to a .jsonl/.json/.csv file, or a HuggingFace dataset ID.
+        data_path: Path to a .jsonl/.json/.parquet/.csv file, or a HuggingFace
+            dataset ID.
         text_column: Name of the column to rename to ``text`` (if present).
         label_column: Name of the column to rename to ``label`` (if present).
         require_text: When True (default), require a ``text`` column after renaming.
@@ -76,24 +77,13 @@ def _load_dataset(
         requirements are relaxed).
 
     Raises:
-        ValueError: If the file extension is unsupported, or if a required
-            column is missing after renaming.
+        ValueError: If a required column is missing after renaming.
     """
-    from datasets import load_dataset
+    from training_hub.utils import load_training_dataset
 
-    if os.path.isfile(data_path):
-        ext = os.path.splitext(data_path)[1].lower()
-        if ext in (".jsonl", ".json"):
-            dataset = load_dataset("json", data_files=data_path, split="train")
-        elif ext == ".csv":
-            dataset = load_dataset("csv", data_files=data_path, split="train")
-        else:
-            raise ValueError(
-                f"Unsupported file extension '{ext}' for data_path '{data_path}'. "
-                f"Use .jsonl, .json, or .csv (or pass a HuggingFace dataset ID)."
-            )
-    else:
-        dataset = load_dataset(data_path, split="train")
+    # Auto-detects .jsonl/.json/.parquet/.csv by extension, with a HuggingFace
+    # dataset-name fallback for non-file paths.
+    dataset = load_training_dataset(data_path)
 
     # Rename the requested text/label columns to the canonical "text"/"label"
     # names the rest of the pipeline expects. Guard against the case where the
