@@ -118,6 +118,23 @@ def _load_dataset(
             f"Found: {dataset.column_names}"
         )
 
+    if require_label and "label" in dataset.column_names:
+        # The triplet/label losses need integer class labels — a string (or
+        # float) label column makes sentence-transformers raise a cryptic
+        # "too many dimensions 'str'". Transparently encode non-integer labels
+        # (e.g. category names like "billing"/"technical") to contiguous ints so
+        # string-labeled classification data works out of the box.
+        labels = dataset["label"]
+        first = next((v for v in labels if v is not None), None)
+        if first is not None and not isinstance(first, bool) and not isinstance(first, int):
+            uniques = sorted(set(labels))
+            mapping = {value: idx for idx, value in enumerate(uniques)}
+            logger.info(
+                "Encoding %d non-integer '%s' labels to integers: %s",
+                len(uniques), label_column, mapping,
+            )
+            dataset = dataset.map(lambda row: {"label": mapping[row["label"]]})
+
     return dataset
 
 

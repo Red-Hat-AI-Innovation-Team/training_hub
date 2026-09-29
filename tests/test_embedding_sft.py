@@ -101,6 +101,27 @@ class TestLoadDataset:
         ds = _load_dataset(str(path))
         assert len(ds) == 2 and "text" in ds.column_names and "label" in ds.column_names
 
+    def test_string_labels_are_encoded_to_ints(self, tmp_path):
+        # Category-string labels (Data Designer / user CSVs) must be encoded to
+        # contiguous ints — triplet losses require integer classes.
+        path = _write_jsonl(tmp_path / "train.jsonl", [
+            {"text": "a", "label": "billing"},
+            {"text": "b", "label": "technical"},
+            {"text": "c", "label": "billing"},
+        ])
+        ds = _load_dataset(path)
+        labels = ds["label"]
+        assert all(isinstance(x, int) for x in labels)
+        # deterministic sorted-unique encoding: billing=0, technical=1
+        assert labels == [0, 1, 0]
+
+    def test_int_labels_are_left_unchanged(self, tmp_path):
+        path = _write_jsonl(tmp_path / "train.jsonl", [
+            {"text": "a", "label": 2}, {"text": "b", "label": 0},
+        ])
+        ds = _load_dataset(path)
+        assert ds["label"] == [2, 0]
+
     def test_missing_text_column_raises(self, tmp_path):
         path = _write_jsonl(tmp_path / "train.jsonl", [{"foo": "a", "label": 0}])
         with pytest.raises(ValueError, match="text"):
