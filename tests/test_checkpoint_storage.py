@@ -19,6 +19,8 @@ import training_hub.checkpoint_manager as cm
 from training_hub.callbacks import TrainingHubControl, merge_default_callbacks
 from training_hub.checkpoint_utils import (
     HF_LAYOUT,
+    INSTRUCTLAB_LAYOUT,
+    MINI_TRAINER_LAYOUT,
     UPLOAD_URI_ENV,
     apply_checkpoint_storage_env,
     find_latest_valid_checkpoint,
@@ -618,3 +620,140 @@ class TestPackageLogging:
         source = inspect.getsource(cm.restore_latest_checkpoint)
         assert 'logger.info("Restored checkpoint' in source
         assert "logger.warning" not in source
+
+
+class TestRemoteLayoutIsolation:
+    """A remote prefix may hold checkpoints from several runs. Restoring one the
+    caller cannot read looks like success and then trains from step 0."""
+
+    def _put(self, fs, uri, prefix, payload=b"x"):
+        fs.pipe(f"{prefix}/weights.bin", payload)
+        fs.pipe(f"{prefix}/{cm.COMPLETE_MARKER}", b"fingerprint")
+
+    def test_hf_caller_ignores_a_native_remote_checkpoint(self, tmp_path, monkeypatch):
+        uri = "memory://layout-iso-hf"
+        monkeypatch.setenv(UPLOAD_URI_ENV, uri)
+        fs = cm.remote_filesystem(uri)
+        # epoch_3 would outrank checkpoint-2 if layouts were ranked together
+        self._put(fs, uri, "full_state/epoch_3")
+        self._put(fs, uri, "checkpoint-2")
+
+        restored = cm.restore_latest_checkpoint(uri, tmp_path, layouts=(HF_LAYOUT,))
+        assert restored is not None
+        assert Path(restored).name == "checkpoint-2", (
+            "restored a layout the caller cannot read"
+        )
+
+    def test_native_caller_ignores_a_higher_numbered_hf_checkpoint(
+        self, tmp_path, monkeypatch
+    ):
+        uri = "memory://layout-iso-native"
+        monkeypatch.setenv(UPLOAD_URI_ENV, uri)
+        fs = cm.remote_filesystem(uri)
+        self._put(fs, uri, "checkpoint-500")
+        self._put(fs, uri, "full_state/epoch_1")
+
+        restored = cm.restore_latest_checkpoint(
+            uri, tmp_path, layouts=(INSTRUCTLAB_LAYOUT,)
+        )
+        assert restored is not None
+        assert Path(restored).name == "epoch_1"
+
+    def test_maybe_restore_passes_its_layouts_through(self, tmp_path, monkeypatch):
+        uri = "memory://layout-iso-passthrough"
+        monkeypatch.setenv(UPLOAD_URI_ENV, uri)
+        fs = cm.remote_filesystem(uri)
+        self._put(fs, uri, "full_state/epoch_9")
+
+        # LoRA asks for HF only; nothing readable exists, so it must report that
+        # rather than downloading the native checkpoint.
+        assert cm.maybe_restore_checkpoint(tmp_path, layouts=(HF_LAYOUT,)) is None
+        assert not (tmp_path / "full_state").exists()
+
+    def test_unsafe_remote_name_is_refused(self, tmp_path, monkeypatch):
+        uri = "memory://layout-iso-traversal"
+        monkeypatch.setenv(UPLOAD_URI_ENV, uri)
+        fs = cm.remote_filesystem(uri)
+        # a remote operator controls these keys; ".." must not escape local_dir
+        self._put(fs, uri, "../escaped/checkpoint-1")
+        self._put(fs, uri, "checkpoint-1")
+
+        restored = cm.restore_latest_checkpoint(uri, tmp_path, layouts=(HF_LAYOUT,))
+        assert restored is not None
+        assert Path(restored).resolve().is_relative_to(tmp_path.resolve())
+        assert not (tmp_path.parent / "escaped").exists()
+
+
+class TestReviewHardening:
+    """Findings from the 2026-09-29 review round."""
+
+    def test_every_upload_failure_is_reported(self):
+        # Two uploads can fail before any on_save checks; surfacing only one
+        # hides the other from whoever debugs the run.
+        uploader = cm._Uploader.__new__(cm._Uploader)
+        uploader._errors = []
+        uploader._lock = threading.Lock()
+        for prefix in ("checkpoint-1", "checkpoint-2"):
+            err = RuntimeError(f"upload failed for {prefix}")
+            uploader._errors.append(err)
+
+        assert uploader.peek_error() is not None
+        raised = uploader.take_error()
+        assert "checkpoint-1" in str(raised)
+        notes = getattr(raised, "__notes__", [])
+        assert any("checkpoint-2" in n for n in notes), notes
+        assert uploader.take_error() is None  # drained
+
+    def test_barrier_skips_device_ids_on_gloo(self, monkeypatch):
+        # device_ids is NCCL-only and raises under Gloo, which a CUDA-capable
+        # host does not rule out.
+        calls = []
+
+        class FakeDist:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def is_initialized():
+                return True
+
+            @staticmethod
+            def get_backend():
+                return "gloo"
+
+            @staticmethod
+            def barrier(**kwargs):
+                calls.append(kwargs)
+
+        import torch
+
+        monkeypatch.setattr(torch.distributed, "is_available", FakeDist.is_available)
+        monkeypatch.setattr(
+            torch.distributed, "is_initialized", FakeDist.is_initialized
+        )
+        monkeypatch.setattr(torch.distributed, "get_backend", FakeDist.get_backend)
+        monkeypatch.setattr(torch.distributed, "barrier", FakeDist.barrier)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+        cm.wait_for_all_ranks()
+        assert calls == [{}], f"device_ids passed under Gloo: {calls}"
+
+    def test_checkpoint_is_marked_complete_only_after_a_barrier(self, monkeypatch):
+        # Rank 0 finishes its shards first. Clearing the sidecar is what makes a
+        # checkpoint count as resumable, so doing it before the other ranks are
+        # done publishes a truncated checkpoint that resume later chokes on.
+        order = []
+        monkeypatch.setattr(
+            cm, "wait_for_all_ranks", lambda: order.append("barrier")
+        )
+        import training_hub.jit_checkpoint as jc
+
+        monkeypatch.setattr(
+            jc, "mark_checkpoint_complete", lambda *a, **k: order.append("mark")
+        )
+        ctx = SimpleNamespace(
+            is_main_process=True, output_dir="/tmp/out", step=5, control=None
+        )
+        JITCheckpointCallback().on_save(ctx)
+        assert order == ["barrier", "mark"], order

@@ -102,6 +102,17 @@ class JITCheckpointCallback(TrainingHubCallback):
     def on_save(self, context: TrainingHubContext) -> None:
         # Clear the incomplete sidecar for the just-saved checkpoint.
         # Remote mirroring is owned by RemoteCheckpointSyncCallback, not this hook.
+        #
+        # Barrier first: each rank writes its own shards, and clearing the
+        # sidecar is what makes the checkpoint count as resumable. Rank 0
+        # finishes first, so marking it complete before the others are done
+        # would publish a truncated checkpoint -- and because validity is
+        # decided by the sidecar alone, a crash in that window leaves a
+        # checkpoint that every later resume accepts and then fails on.
+        # This hook has run_on_all_ranks = True, so every rank reaches this.
+        from training_hub.checkpoint_manager import wait_for_all_ranks
+
+        wait_for_all_ranks()
         if not context.is_main_process:
             return
         if context.output_dir and context.step > 0:

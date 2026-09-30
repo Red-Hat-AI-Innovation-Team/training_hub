@@ -29,6 +29,9 @@ from pathlib import Path, PurePosixPath
 
 from training_hub.checkpoint_utils import (
     ALL_LAYOUTS,
+    HF_LAYOUT,
+    INSTRUCTLAB_LAYOUT,
+    MINI_TRAINER_LAYOUT,
     UPLOAD_URI_ENV,
     clear_stale_incomplete_marker,
     find_latest_valid_checkpoint,
@@ -109,7 +112,13 @@ def wait_for_all_ranks() -> None:
         return
     if not (dist.is_available() and dist.is_initialized()):
         return
-    if torch.cuda.is_available():
+    # device_ids is NCCL-only: passing it on a Gloo process group raises, and a
+    # CUDA-capable host says nothing about which backend this group uses.
+    try:
+        nccl = dist.get_backend() == "nccl"
+    except Exception:
+        nccl = False
+    if nccl and torch.cuda.is_available():
         dist.barrier(device_ids=[torch.cuda.current_device()])
     else:
         dist.barrier()
@@ -214,7 +223,9 @@ class _Uploader:
         self.fs = fs
         self.queue: queue.LifoQueue = queue.LifoQueue()
         self.stop = threading.Event()
-        self._error: BaseException | None = None
+        # every failure, not just the latest: two uploads can fail before any
+        # on_save checks, and reporting one of them hides the other
+        self._errors: list[BaseException] = []
         self._lock = threading.Lock()
         self.thread = threading.Thread(
             target=self._run, name="training-hub-checkpoint-upload", daemon=False
@@ -238,22 +249,32 @@ class _Uploader:
                 )
             except Exception as e:
                 logger.exception("Checkpoint upload failed: %s", remote_prefix)
+                error = RuntimeError(
+                    f"Background checkpoint upload failed for {remote_prefix}: {e}"
+                )
+                error.__cause__ = e
                 with self._lock:
-                    self._error = RuntimeError(
-                        f"Background checkpoint upload failed for {remote_prefix}: {e}"
-                    )
-                    self._error.__cause__ = e
+                    self._errors.append(error)
             finally:
                 self.queue.task_done()
 
     def peek_error(self) -> BaseException | None:
         with self._lock:
-            return self._error
+            return self._errors[0] if self._errors else None
 
     def take_error(self) -> BaseException | None:
+        """Return the first failure, with any later ones chained onto it."""
         with self._lock:
-            error, self._error = self._error, None
-        return error
+            errors, self._errors = self._errors, []
+        if not errors:
+            return None
+        first = errors[0]
+        if len(errors) > 1:
+            first.add_note(
+                f"{len(errors) - 1} further checkpoint upload(s) also failed: "
+                + "; ".join(str(e) for e in errors[1:])
+            )
+        return first
 
 
 _uploader: _Uploader | None = None
@@ -395,14 +416,66 @@ def _checkpoint_order(prefix: str) -> int:
     return int(match.group(1)) if match else -1
 
 
-def _complete_checkpoints(fs) -> list[str]:
+def _remote_layout(name: str) -> str | None:
+    """Classify a remote checkpoint prefix by the layout that can consume it."""
+    path = PurePosixPath(name)
+    parent = path.parent.name
+    if parent == "full_state_checkpoints":
+        return MINI_TRAINER_LAYOUT
+    if parent == "full_state":
+        return INSTRUCTLAB_LAYOUT
+    if path.name.startswith("checkpoint-"):
+        return HF_LAYOUT
+    return None
+
+
+def _is_safe_remote_name(name: str) -> bool:
+    """Whether a remote prefix is safe to join onto a local directory.
+
+    Object-store keys are attacker-controllable in a way filenames on our own
+    disk are not: ".." segments or an absolute key would send shutil.move
+    outside local_dir. Files inside a checkpoint go through _safe_target; the
+    checkpoint directory name needs the same guarantee.
+    """
+    path = PurePosixPath(name)
+    return bool(name) and not path.is_absolute() and ".." not in path.parts
+
+
+def _complete_checkpoints(
+    fs, layouts: tuple[str, ...] = ALL_LAYOUTS
+) -> list[str]:
+    """Remote prefixes holding a complete checkpoint, best first.
+
+    Ranked *within* a layout and layouts preferred in the order given, matching
+    find_latest_valid_checkpoint. Ranking across layouts would compare an HF
+    step number against an epoch number, so a stale ``checkpoint-500`` from one
+    run would beat the ``epoch_1`` this caller can actually read; the download
+    would log success and training would still start from step 0.
+    """
     try:
         keys = fs.find("")
     except FileNotFoundError:
         return []
     suffix = "/" + COMPLETE_MARKER
     names = [key[: -len(suffix)] for key in keys if key.endswith(suffix)]
-    return sorted(names, key=_checkpoint_order, reverse=True)
+
+    by_layout: dict[str, list[str]] = {}
+    for name in names:
+        if not _is_safe_remote_name(name):
+            logger.warning(
+                "Ignoring remote checkpoint with an unsafe name: %r", name
+            )
+            continue
+        layout = _remote_layout(name)
+        if layout in layouts:
+            by_layout.setdefault(layout, []).append(name)
+
+    ordered: list[str] = []
+    for layout in layouts:
+        ordered.extend(
+            sorted(by_layout.get(layout, []), key=_checkpoint_order, reverse=True)
+        )
+    return ordered
 
 
 def _safe_target(root: Path, rel: str) -> Path:
@@ -419,7 +492,9 @@ def _safe_target(root: Path, rel: str) -> Path:
     return target
 
 
-def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
+def restore_latest_checkpoint(
+    uri: str, local_dir: str | Path, layouts: tuple[str, ...] = ALL_LAYOUTS
+) -> str | None:
     """Download the newest complete checkpoint under *uri* into *local_dir*.
 
     Files land in a temporary directory and are moved into place only once the
@@ -428,7 +503,7 @@ def restore_latest_checkpoint(uri: str, local_dir: str | Path) -> str | None:
     """
     fs = remote_filesystem(uri)
     local = Path(local_dir).resolve()
-    for name in _complete_checkpoints(fs):
+    for name in _complete_checkpoints(fs, layouts):
         dest = local / name
         # Only a *valid* local copy makes the download unnecessary. A partial
         # one (interrupted save, stale sentinel) must be replaced, otherwise we
@@ -501,7 +576,7 @@ def maybe_restore_checkpoint(
     if _is_local_rank_zero():
         local_existing = find_latest_valid_checkpoint(str(local_dir), layouts=layouts)
         if local_existing is None:
-            restored = restore_latest_checkpoint(uri, local_dir)
+            restored = restore_latest_checkpoint(uri, local_dir, layouts=layouts)
             if restored is None:
                 logger.info(
                     "No complete checkpoint under %s; training starts from step 0", uri
