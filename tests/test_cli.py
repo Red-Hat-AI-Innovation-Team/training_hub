@@ -445,3 +445,56 @@ def test_dispatch_json_param_via_cli(monkeypatch):
     cli.main(["gepa", "--seed-candidate", '{"system_prompt": "x"}',
               "--task-lm", "openai/gpt-4o-mini"])
     assert calls["kwargs"]["seed_candidate"] == {"system_prompt": "x"}  # JSON parsed via CLI
+
+
+# ---------------------------------------------------------------------------
+# embedding-sft subcommand (classifier / router training)
+# ---------------------------------------------------------------------------
+
+def test_embedding_sft_listed_in_help(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "embedding-sft" in capsys.readouterr().out
+
+
+def test_embedding_sft_missing_required_args(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["embedding-sft"])
+    assert exc.value.code == 1
+    assert "required" in capsys.readouterr().err.lower()
+
+
+def test_embedding_sft_dispatch(monkeypatch):
+    calls = {}
+
+    def recorder(**kwargs):
+        calls["kwargs"] = kwargs
+        return {"status": "success"}
+
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "training_hub.algorithms.embedding_sft":
+            return SimpleNamespace(embedding_sft=recorder)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(cli.importlib, "import_module", fake_import)
+    cli.main([
+        "embedding-sft",
+        "--model-path", "sentence-transformers/all-MiniLM-L6-v2",
+        "--data-path", "./train.jsonl",
+        "--ckpt-output-dir", "./out",
+        "--eval-data-path", "./eval.jsonl",
+        "--loss-type", "batch_all_triplet",
+        "--batch-sampler", "group_by_label",
+        "--num-epochs", "40",
+        "--batch-size", "32",
+    ])
+    kw = calls["kwargs"]
+    assert kw["model_path"].endswith("all-MiniLM-L6-v2")
+    assert kw["data_path"] == "./train.jsonl"
+    assert kw["eval_data_path"] == "./eval.jsonl"
+    assert kw["loss_type"] == "batch_all_triplet"
+    assert kw["batch_sampler"] == "group_by_label"
+    assert kw["num_epochs"] == 40           # int coercion
+    assert kw["batch_size"] == 32

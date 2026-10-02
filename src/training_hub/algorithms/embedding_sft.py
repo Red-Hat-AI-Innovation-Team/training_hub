@@ -58,10 +58,11 @@ def _load_dataset(
     require_text: bool = True,
     require_label: bool = True,
 ) -> Any:
-    """Load a text/label dataset from a JSONL/CSV file or HuggingFace dataset ID.
+    """Load a text/label dataset from a local file or HuggingFace dataset ID.
 
     Args:
-        data_path: Path to a .jsonl/.json/.csv file, or a HuggingFace dataset ID.
+        data_path: Path to a .jsonl/.json/.parquet/.csv file, or a HuggingFace
+            dataset ID.
         text_column: Name of the column to rename to ``text`` (if present).
         label_column: Name of the column to rename to ``label`` (if present).
         require_text: When True (default), require a ``text`` column after renaming.
@@ -76,24 +77,13 @@ def _load_dataset(
         requirements are relaxed).
 
     Raises:
-        ValueError: If the file extension is unsupported, or if a required
-            column is missing after renaming.
+        ValueError: If a required column is missing after renaming.
     """
-    from datasets import load_dataset
+    from training_hub.utils import load_training_dataset
 
-    if os.path.isfile(data_path):
-        ext = os.path.splitext(data_path)[1].lower()
-        if ext in (".jsonl", ".json"):
-            dataset = load_dataset("json", data_files=data_path, split="train")
-        elif ext == ".csv":
-            dataset = load_dataset("csv", data_files=data_path, split="train")
-        else:
-            raise ValueError(
-                f"Unsupported file extension '{ext}' for data_path '{data_path}'. "
-                f"Use .jsonl, .json, or .csv (or pass a HuggingFace dataset ID)."
-            )
-    else:
-        dataset = load_dataset(data_path, split="train")
+    # Auto-detects .jsonl/.json/.parquet/.csv by extension, with a HuggingFace
+    # dataset-name fallback for non-file paths.
+    dataset = load_training_dataset(data_path)
 
     # Rename the requested text/label columns to the canonical "text"/"label"
     # names the rest of the pipeline expects. Guard against the case where the
@@ -127,6 +117,50 @@ def _load_dataset(
             f"Dataset must have a 'label' column (or specify label_column). "
             f"Found: {dataset.column_names}"
         )
+
+    if require_label and "label" in dataset.column_names:
+        # The triplet/label losses need integer class labels — a string (or
+        # float) label column makes sentence-transformers raise a cryptic
+        # "too many dimensions 'str'". Transparently encode non-integer labels
+        # (e.g. category names like "billing"/"technical") to contiguous ints so
+        # string-labeled classification data works out of the box.
+        labels = dataset["label"]
+        non_null = [v for v in labels if v is not None]
+        sample = non_null[0] if non_null else None
+        if sample is None or (isinstance(sample, int) and not isinstance(sample, bool)):
+            # No labels, or already plain ints — nothing to normalize.
+            pass
+        elif isinstance(sample, bool) or (
+            isinstance(sample, float) and all(
+                isinstance(v, float) and v.is_integer() for v in non_null
+            )
+        ):
+            # bool -> 0/1, integer-valued floats (1.0, 2.0) -> 1, 2: keep the value,
+            # just coerce the dtype. None (missing-label rows) passes through.
+            dataset = dataset.map(
+                lambda batch: {
+                    "label": [None if v is None else int(v) for v in batch["label"]]
+                },
+                batched=True,
+            )
+        else:
+            # Strings (category names) or non-integer floats -> contiguous int codes.
+            # Build the mapping from non-null values only (sorting a set containing
+            # None would raise a cross-type TypeError), and pass None through.
+            uniques = sorted(set(non_null))
+            mapping = {value: idx for idx, value in enumerate(uniques)}
+            preview = dict(list(mapping.items())[:10])
+            logger.info(
+                "Encoding %d non-integer '%s' label(s) to integers%s",
+                len(uniques), label_column,
+                f" (first 10: {preview})" if len(mapping) > 10 else f": {mapping}",
+            )
+            dataset = dataset.map(
+                lambda batch: {
+                    "label": [None if v is None else mapping[v] for v in batch["label"]]
+                },
+                batched=True,
+            )
 
     return dataset
 

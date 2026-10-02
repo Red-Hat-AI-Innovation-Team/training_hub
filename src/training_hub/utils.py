@@ -35,7 +35,12 @@ def load_training_dataset(data_path: str, split: str = "train") -> "datasets.Dat
 
     ext = os.path.splitext(data_path)[1].lower()
     builder = _FORMAT_MAP.get(ext)
-    if builder:
+    # Use a file-format builder only for an actual local file. A HuggingFace
+    # dataset ID can legitimately end in a recognized extension (e.g.
+    # "org/labels.csv"), and a local directory of shards has no file extension —
+    # both must go through load_dataset(data_path) to resolve the repo/folder
+    # rather than being read as a single local file.
+    if builder and os.path.isfile(data_path):
         return load_dataset(builder, data_files=data_path, split=split)
     return load_dataset(data_path, split=split)
 
