@@ -55,6 +55,7 @@
   * [Experiment Tracking & Logging](/guides/logging)
   * [Validation Loss](/guides/validation-loss)
   * [Distributed Training](/guides/distributed-training)
+  * [JIT Preemption Checkpointing](/guides/jit-checkpointing)
   * [Data Preparation](/guides/data-preparation)
   * [Continual Pretraining](/guides/continual-pretraining)
   * [Runtime Estimates](/guides/runtime-estimates)
