@@ -125,15 +125,42 @@ def _load_dataset(
         # (e.g. category names like "billing"/"technical") to contiguous ints so
         # string-labeled classification data works out of the box.
         labels = dataset["label"]
-        first = next((v for v in labels if v is not None), None)
-        if first is not None and not isinstance(first, bool) and not isinstance(first, int):
-            uniques = sorted(set(labels))
-            mapping = {value: idx for idx, value in enumerate(uniques)}
-            logger.info(
-                "Encoding %d non-integer '%s' labels to integers: %s",
-                len(uniques), label_column, mapping,
+        non_null = [v for v in labels if v is not None]
+        sample = non_null[0] if non_null else None
+        if sample is None or (isinstance(sample, int) and not isinstance(sample, bool)):
+            # No labels, or already plain ints — nothing to normalize.
+            pass
+        elif isinstance(sample, bool) or (
+            isinstance(sample, float) and all(
+                isinstance(v, float) and v.is_integer() for v in non_null
             )
-            dataset = dataset.map(lambda row: {"label": mapping[row["label"]]})
+        ):
+            # bool -> 0/1, integer-valued floats (1.0, 2.0) -> 1, 2: keep the value,
+            # just coerce the dtype. None (missing-label rows) passes through.
+            dataset = dataset.map(
+                lambda batch: {
+                    "label": [None if v is None else int(v) for v in batch["label"]]
+                },
+                batched=True,
+            )
+        else:
+            # Strings (category names) or non-integer floats -> contiguous int codes.
+            # Build the mapping from non-null values only (sorting a set containing
+            # None would raise a cross-type TypeError), and pass None through.
+            uniques = sorted(set(non_null))
+            mapping = {value: idx for idx, value in enumerate(uniques)}
+            preview = dict(list(mapping.items())[:10])
+            logger.info(
+                "Encoding %d non-integer '%s' label(s) to integers%s",
+                len(uniques), label_column,
+                f" (first 10: {preview})" if len(mapping) > 10 else f": {mapping}",
+            )
+            dataset = dataset.map(
+                lambda batch: {
+                    "label": [None if v is None else mapping[v] for v in batch["label"]]
+                },
+                batched=True,
+            )
 
     return dataset
 

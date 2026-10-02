@@ -122,6 +122,45 @@ class TestLoadDataset:
         ds = _load_dataset(path)
         assert ds["label"] == [2, 0]
 
+    def test_none_labels_pass_through_during_encoding(self, tmp_path):
+        # Missing labels (common in user CSVs) must not crash the string-encoding
+        # path — sorted(set) over {None, str} would otherwise raise TypeError.
+        path = _write_jsonl(tmp_path / "train.jsonl", [
+            {"text": "a", "label": "billing"},
+            {"text": "b", "label": None},
+            {"text": "c", "label": "technical"},
+        ])
+        ds = _load_dataset(path)
+        labels = ds["label"]
+        assert labels[0] == 0 and labels[2] == 1  # billing=0, technical=1
+        assert labels[1] is None                   # missing label preserved
+
+    def test_integer_valued_float_labels_cast_not_remapped(self, tmp_path):
+        from datasets import Dataset
+
+        # Float label column (e.g. parquet/CSV inferred float64) with integer
+        # values must keep its values (1.0->1, 3.0->3), not be remapped to 0,1.
+        path = tmp_path / "train.parquet"
+        Dataset.from_list([
+            {"text": "a", "label": 1.0},
+            {"text": "b", "label": 3.0},
+            {"text": "c", "label": 1.0},
+        ]).to_parquet(str(path))
+        ds = _load_dataset(str(path))
+        assert ds["label"] == [1, 3, 1]
+        assert all(isinstance(x, int) for x in ds["label"])
+
+    def test_bool_labels_cast_to_int(self, tmp_path):
+        from datasets import Dataset
+
+        path = tmp_path / "train.parquet"
+        Dataset.from_list([
+            {"text": "a", "label": True},
+            {"text": "b", "label": False},
+        ]).to_parquet(str(path))
+        ds = _load_dataset(str(path))
+        assert ds["label"] == [1, 0]
+
     def test_missing_text_column_raises(self, tmp_path):
         path = _write_jsonl(tmp_path / "train.jsonl", [{"foo": "a", "label": 0}])
         with pytest.raises(ValueError, match="text"):

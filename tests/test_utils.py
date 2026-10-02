@@ -21,16 +21,20 @@ def test_format_map_covers_supported_extensions():
 
 
 @pytest.mark.parametrize(
-    "path,expected_builder",
+    "filename,expected_builder",
     [
-        ("/data/train.jsonl", "json"),
-        ("/data/train.json", "json"),
-        ("/data/train.parquet", "parquet"),
-        ("/data/train.csv", "csv"),
-        ("/data/TRAIN.Parquet", "parquet"),  # extension match is case-insensitive
+        ("train.jsonl", "json"),
+        ("train.json", "json"),
+        ("train.parquet", "parquet"),
+        ("train.csv", "csv"),
+        ("TRAIN.Parquet", "parquet"),  # extension match is case-insensitive
     ],
 )
-def test_selects_builder_by_extension(monkeypatch, path, expected_builder):
+def test_selects_builder_by_extension(monkeypatch, tmp_path, filename, expected_builder):
+    # Must be a real local file — a recognized extension alone is not enough
+    # (a HF dataset ID can also end in .csv); see the dataset-ID test below.
+    path = tmp_path / filename
+    path.write_text("")
     calls = {}
 
     def fake_load_dataset(*args, **kwargs):
@@ -42,9 +46,28 @@ def test_selects_builder_by_extension(monkeypatch, path, expected_builder):
 
     monkeypatch.setattr(datasets, "load_dataset", fake_load_dataset)
 
-    assert load_training_dataset(path) == "DATASET"
+    assert load_training_dataset(str(path)) == "DATASET"
     assert calls["args"] == (expected_builder,)
-    assert calls["kwargs"] == {"data_files": path, "split": "train"}
+    assert calls["kwargs"] == {"data_files": str(path), "split": "train"}
+
+
+def test_dataset_id_with_extension_is_not_read_as_a_file(monkeypatch):
+    # A HuggingFace dataset ID can end in a recognized extension; it must load as
+    # a repo (load_dataset(id)), not via a file builder.
+    calls = {}
+
+    def fake_load_dataset(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return "HF"
+
+    import datasets
+
+    monkeypatch.setattr(datasets, "load_dataset", fake_load_dataset)
+
+    assert load_training_dataset("org/labels.csv") == "HF"
+    assert calls["args"] == ("org/labels.csv",)  # HF branch, not ("csv",)
+    assert "data_files" not in calls["kwargs"]
 
 
 def test_unknown_extension_falls_back_to_hf_name(monkeypatch):
