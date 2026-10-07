@@ -5,7 +5,8 @@ import warnings
 
 import datasets
 from training_hub.algorithms import Algorithm, Backend, AlgorithmRegistry
-from training_hub.callbacks import TrainingHubCallback
+from training_hub.callbacks import TrainingHubCallback, merge_default_callbacks
+from training_hub.checkpoint_utils import apply_native_jit_params
 from training_hub.utils import format_type_name, get_torchrun_params
 
 
@@ -82,6 +83,8 @@ class OSFTAlgorithm(Algorithm):
         # Callback parameters (keyword-only)
         *,
         callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
+        enable_jit_checkpoint: bool | None = None,
+        checkpoint_storage: str | None = None,
         **kwargs,
     ) -> any:
         """
@@ -205,6 +208,17 @@ class OSFTAlgorithm(Algorithm):
         if isinstance(callbacks, TrainingHubCallback):
             callbacks = [callbacks]
 
+        from training_hub.checkpoint_utils import configure_checkpoint_storage
+
+        configure_checkpoint_storage(checkpoint_storage)
+        callbacks = merge_default_callbacks(
+            callbacks,
+            enable_jit_checkpoint=bool(enable_jit_checkpoint),
+            ckpt_output_dir=ckpt_output_dir,
+            backend="osft",
+            checkpoint_storage=checkpoint_storage,
+        )
+
         optional_params = {
             'target_patterns': target_patterns,
             # for data processing
@@ -249,6 +263,8 @@ class OSFTAlgorithm(Algorithm):
             # model loading
             'trust_remote_code': trust_remote_code,
             'callbacks': callbacks,
+            'enable_jit_checkpoint': enable_jit_checkpoint,
+            'checkpoint_storage': checkpoint_storage,
         }
 
         # now do validation now that we've set everything up
@@ -264,6 +280,12 @@ class OSFTAlgorithm(Algorithm):
         all_params = dict(**required_params)
         all_params.update(optional_params)
         all_params.update(kwargs)
+
+        apply_native_jit_params(
+            all_params,
+            enable_jit_checkpoint=enable_jit_checkpoint,
+            backend="osft",
+        )
 
         return self.backend.execute_training(all_params)
 
@@ -319,6 +341,9 @@ class OSFTAlgorithm(Algorithm):
             'mlflow_experiment_name': str,
             'mlflow_run_name': str,
             'callbacks': list,
+            'enable_jit_checkpoint': bool,
+            'checkpoint_storage': str,
+            'on_demand_checkpointing': bool,
         }
 
     def _validate_param_types(self, params: dict[str, any]):
@@ -461,6 +486,33 @@ class MiniTrainerOSFTBackend(Backend):
                 "Upgrade rhai-innovation-mini-trainer to >=0.8.3."
             )
 
+        # Fail loudly if JIT was requested but mini-trainer would silently drop it
+        if (
+            algorithm_params.get('on_demand_checkpointing')
+            and 'on_demand_checkpointing' not in training_args_fields
+        ):
+            raise RuntimeError(
+                "enable_jit_checkpoint=True but the installed mini-trainer does "
+                "not support TrainingArgs.on_demand_checkpointing. "
+                "Upgrade rhai-innovation-mini-trainer to a version with "
+                "on-demand checkpointing support."
+            )
+
+        from training_hub.checkpoint_manager import (
+            maybe_restore_checkpoint,
+            sync_latest_checkpoint,
+            sync_latest_checkpoint_best_effort,
+        )
+        from training_hub.checkpoint_utils import MINI_TRAINER_LAYOUT
+
+        # mini-trainer writes full_state_checkpoints/step_N; gate and mirror on
+        # that layout only.
+        MT = (MINI_TRAINER_LAYOUT,)
+
+        # Fresh pod after preemption: pull the newest complete checkpoint from
+        # remote storage so mini-trainer's full_state_checkpoints auto-resume finds it.
+        maybe_restore_checkpoint(algorithm_params['output_dir'], layouts=MT)
+
         # process this up here so we can exit early
         torchrun_args_pre = {k: v for k, v in algorithm_params.items() if k in torchrun_args_fields and v is not None}
         torchrun_args_pre = get_torchrun_params(torchrun_args_pre)
@@ -514,11 +566,24 @@ class MiniTrainerOSFTBackend(Backend):
         # but default it to True
         training_args_pre['osft'] = training_args_pre.get('osft', True)
 
-        # now we run training
-        return run_training(
-            torch_args=torch_args,
-            train_args=TrainingArgs(**training_args_pre),
-        )
+        # Mini-Trainer's on-demand save ends in os._exit(0) inside the workers
+        # (no on_save / on_train_end), so the launcher mirrors it afterwards,
+        # on the failure path too — a hard preemption kills the workers and the
+        # local copy may not outlive the node.
+        node_rank = torchrun_args_pre.get('node_rank', 0)
+        output_dir = algorithm_params['output_dir']
+        try:
+            result = run_training(
+                torch_args=torch_args,
+                train_args=TrainingArgs(**training_args_pre),
+            )
+        except BaseException:
+            sync_latest_checkpoint_best_effort(
+                output_dir, node_rank=node_rank, layouts=MT
+            )
+            raise
+        sync_latest_checkpoint(output_dir, node_rank=node_rank, layouts=MT)
+        return result
 
     def _process_data(
         self,
@@ -663,6 +728,8 @@ def osft(
     # Callback parameters (keyword-only)
     *,
     callbacks: list[TrainingHubCallback] | TrainingHubCallback | None = None,
+    enable_jit_checkpoint: bool | None = None,
+    checkpoint_storage: str | None = None,
     **kwargs,
 ) -> any:
     """Convenience function to run Orthogonal Subspace Fine-Tuning (OSFT) training.
@@ -806,5 +873,7 @@ def osft(
         mlflow_run_name=mlflow_run_name,
         trust_remote_code=trust_remote_code,
         callbacks=callbacks,
+        enable_jit_checkpoint=enable_jit_checkpoint,
+        checkpoint_storage=checkpoint_storage,
         **kwargs,
     )
