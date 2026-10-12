@@ -143,6 +143,13 @@ def _load_dataset(
                 },
                 batched=True,
             )
+            # map() preserves the column's existing Arrow schema when the new
+            # values fit it, so int values written into a float64 parquet column
+            # are silently read back as floats. cast_column makes the int dtype
+            # stick (nulls stay null; the map above already made values integral).
+            from datasets import Value
+
+            dataset = dataset.cast_column("label", Value("int64"))
         else:
             # Strings (category names) or non-integer floats -> contiguous int codes.
             # Build the mapping from non-null values only (sorting a set containing

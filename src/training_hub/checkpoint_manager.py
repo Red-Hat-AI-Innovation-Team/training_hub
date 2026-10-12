@@ -206,7 +206,23 @@ def _upload_dir(fs, local_dir: Path, remote_prefix: str) -> None:
 
     if files:
         with ThreadPoolExecutor(max_workers=min(UPLOAD_WORKERS, len(files))) as pool:
-            list(pool.map(put, files))  # re-raises the first failure
+            # Drain every future before raising: pool.map re-raises the first
+            # failure as soon as it is consumed, while uploads later in the
+            # file order are still in flight. The marker (written after this
+            # returns) is what makes a checkpoint restorable, so callers only
+            # need determinism — all in-flight uploads settled — not a pristine
+            # remote dir. Failed files keep whatever bytes landed; the missing
+            # marker makes restore skip the whole checkpoint.
+            futures = [pool.submit(put, path) for path in files]
+            first_error = None
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
+            if first_error is not None:
+                raise first_error
     # written last: restore only considers checkpoints that carry it
     fs.pipe(f"{remote_prefix}/{COMPLETE_MARKER}", _fingerprint(local_dir))
 
