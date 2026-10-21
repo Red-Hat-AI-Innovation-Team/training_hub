@@ -56,6 +56,19 @@ class InstructLabTrainingSFTBackend(Backend):
                 training_params['ckpt_output_dir'], 'data'
             )
 
+        # instructlab-training's data processing reads JSONL only, so convert non-JSONL
+        # sources (parquet/csv/.json/HF datasets) to JSONL first — the same conversion the
+        # osft path uses. Without this, a parquet dataset fails with "Malformed or missing
+        # data" inside instructlab's load_dataset("json", ...). Pretraining data skips
+        # `messages` normalization: its document column may hold plain text (which
+        # normalize_messages_column would reject as malformed chat messages).
+        if training_params.get('data_path'):
+            training_params['data_path'] = utils.ensure_messages_jsonl(
+                training_params['data_path'],
+                training_params['data_output_dir'],
+                normalize=not training_params.get('is_pretraining'),
+            )
+
         if 'max_batch_len' not in training_params:
             # max_seq_len is required by TrainingArgs, so the 60000 fallback is a defensive default
             training_params['max_batch_len'] = training_params.get('max_seq_len', 60000)

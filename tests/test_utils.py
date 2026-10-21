@@ -1,11 +1,13 @@
 """Tests for training_hub.utils dataset loading."""
 
 import json
+import os
 
 import pytest
 
 from training_hub.utils import (
     _FORMAT_MAP,
+    ensure_messages_jsonl,
     load_training_dataset,
     normalize_messages_column,
 )
@@ -212,3 +214,136 @@ def test_normalize_messages_error_names_row_index():
     ds = Dataset.from_list([{"messages": json.dumps(_CONVO)}, {"messages": "not json"}])
     with pytest.raises(ValueError, match="row 1"):
         normalize_messages_column(ds)
+
+
+# ---------------------------------------------------------------------------
+# ensure_messages_jsonl (shared sft/osft conversion)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_messages_jsonl_converts_parquet(tmp_path):
+    from datasets import Dataset
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}, {"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    assert out.endswith(".jsonl")
+    assert out != str(src)
+    ds = load_training_dataset(out)
+    assert len(ds) == 2
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_decodes_serialized_messages_from_csv(tmp_path):
+    from datasets import Dataset
+
+    # CSV stores the conversation as a JSON string; it must come back as a list.
+    src = tmp_path / "train.csv"
+    Dataset.from_list([{"messages": json.dumps(_CONVO)}]).to_csv(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_passthrough_for_jsonl(tmp_path):
+    src = tmp_path / "train.jsonl"
+    src.write_text(json.dumps({"messages": _CONVO}) + "\n")
+
+    # Already JSONL and no unmask requested → returned unchanged (no rewrite).
+    out = ensure_messages_jsonl(str(src), str(tmp_path / "out"))
+
+    assert out == str(src)
+
+
+def test_ensure_messages_jsonl_injects_unmask(tmp_path):
+    src = tmp_path / "train.jsonl"
+    src.write_text(json.dumps({"messages": _CONVO}) + "\n")
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir), unmask_messages=True)
+
+    assert out != str(src)
+    ds = load_training_dataset(out)
+    assert ds[0]["unmask"] is True
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_keeps_plain_text_for_pretraining(tmp_path):
+    from datasets import Dataset
+
+    # Pretraining data: the document column may be plain text, not chat messages.
+    # normalize_messages_column would reject it, so normalize=False must keep it.
+    src = tmp_path / "docs.parquet"
+    Dataset.from_list([{"messages": "plain text document"}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir), normalize=False)
+
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == "plain text document"
+
+
+def test_ensure_messages_jsonl_converts_jsonl_suffixed_hf_name(tmp_path, monkeypatch):
+    # A HuggingFace dataset identifier may legitimately end in ".jsonl" — it is
+    # not a local file, so it must NOT take the JSONL passthrough.
+    import training_hub.utils as utils
+
+    captured = {}
+
+    def fake_load(path, split="train"):
+        captured["path"] = path
+        from datasets import Dataset
+
+        return Dataset.from_list([{"messages": _CONVO}])
+
+    monkeypatch.setattr(utils, "load_training_dataset", fake_load)
+
+    out = ensure_messages_jsonl("org/some-dataset.jsonl", str(tmp_path / "out"))
+
+    assert captured["path"] == "org/some-dataset.jsonl"
+    assert out.endswith("converted_data.jsonl")
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_atomic_publish_leaves_no_temp_files(tmp_path):
+    from datasets import Dataset
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    assert os.path.exists(out)
+    leftovers = [p for p in os.listdir(out_dir) if ".tmp." in p]
+    assert leftovers == []
+
+
+def test_ensure_messages_jsonl_cleans_temp_file_on_failure(tmp_path, monkeypatch):
+    from datasets import Dataset
+
+    def failing_to_json(self, path, **kwargs):
+        # Simulate a partial write: leave bytes behind, then fail.
+        with open(path, "w") as f:
+            f.write('{"partial": true}\n')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Dataset, "to_json", failing_to_json)
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    with pytest.raises(OSError, match="disk full"):
+        ensure_messages_jsonl(str(src), str(out_dir))
+
+    leftovers = [p for p in os.listdir(out_dir) if ".tmp." in p]
+    assert leftovers == []
+    assert not os.path.exists(os.path.join(out_dir, "converted_data.jsonl"))
