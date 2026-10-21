@@ -324,3 +324,26 @@ def test_ensure_messages_jsonl_atomic_publish_leaves_no_temp_files(tmp_path):
     assert os.path.exists(out)
     leftovers = [p for p in os.listdir(out_dir) if ".tmp." in p]
     assert leftovers == []
+
+
+def test_ensure_messages_jsonl_cleans_temp_file_on_failure(tmp_path, monkeypatch):
+    from datasets import Dataset
+
+    def failing_to_json(self, path, **kwargs):
+        # Simulate a partial write: leave bytes behind, then fail.
+        with open(path, "w") as f:
+            f.write('{"partial": true}\n')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Dataset, "to_json", failing_to_json)
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    with pytest.raises(OSError, match="disk full"):
+        ensure_messages_jsonl(str(src), str(out_dir))
+
+    leftovers = [p for p in os.listdir(out_dir) if ".tmp." in p]
+    assert leftovers == []
+    assert not os.path.exists(os.path.join(out_dir, "converted_data.jsonl"))

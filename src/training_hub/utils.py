@@ -154,8 +154,15 @@ def ensure_messages_jsonl(
     # deterministic (same input everywhere), so whichever identical publish lands last
     # is immaterial.
     tmp_path = f"{out_path}.tmp.{os.getpid()}"
-    dataset.to_json(tmp_path)
-    os.replace(tmp_path, out_path)
+    try:
+        dataset.to_json(tmp_path)
+        os.replace(tmp_path, out_path)
+    finally:
+        # A failed to_json can leave a partial temp file behind; it only steals
+        # the disk space a retry needs. After a successful os.replace the temp
+        # path no longer exists, so this is a no-op on the happy path.
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     return out_path
 
 
