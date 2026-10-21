@@ -94,6 +94,53 @@ def normalize_messages_column(
     return dataset.map(_decode, with_indices=True)
 
 
+def ensure_messages_jsonl(
+    data_path: str,
+    output_dir: str,
+    *,
+    unmask_messages: bool = False,
+    filename: str = "converted_data.jsonl",
+) -> str:
+    """Return a path to a JSONL dataset of normalized ``messages``, converting as needed.
+
+    instructlab-training's data processing reads JSONL only (it calls
+    ``load_dataset("json", ...)``), so any non-JSONL input — a ``.json`` array, parquet,
+    csv, or a HuggingFace dataset name — is loaded via :func:`load_training_dataset`, its
+    ``messages`` column normalized (tabular sources serialize the conversation as a JSON
+    string; see :func:`normalize_messages_column`), and exported to JSONL under
+    ``output_dir``. A plain ``.jsonl`` input is returned unchanged unless
+    ``unmask_messages`` is requested, in which case an ``unmask`` flag is injected into each
+    example and the result re-exported. This is the common conversion shared by the sft and
+    osft data paths.
+
+    Args:
+        data_path: Raw training data — ``.jsonl``/``.json``/``.parquet``/``.csv`` or, when
+            the extension is unrecognized, a HuggingFace dataset name.
+        output_dir: Directory to write the converted JSONL into (created if missing).
+        unmask_messages: Inject an ``unmask: True`` flag into every example.
+        filename: Name of the converted JSONL file written under ``output_dir``.
+
+    Returns:
+        Path to a JSONL file suitable for instructlab-training's data processing — the
+        original ``data_path`` when it is already JSONL and no conversion is needed.
+    """
+    is_jsonl = data_path.lower().endswith(".jsonl")
+    if is_jsonl and not unmask_messages:
+        return data_path
+
+    os.makedirs(output_dir, exist_ok=True)
+    dataset = load_training_dataset(data_path)
+    if not is_jsonl:
+        # A .json array / parquet / csv / HF source may carry `messages` as a serialized
+        # JSON string; an already-JSONL source holds proper message lists.
+        dataset = normalize_messages_column(dataset)
+    if unmask_messages:
+        dataset = dataset.map(lambda _: {"unmask": True})
+    out_path = os.path.join(output_dir, filename)
+    dataset.to_json(out_path)
+    return out_path
+
+
 def format_type_name(tp):
     # Handle None
     if tp is type(None):

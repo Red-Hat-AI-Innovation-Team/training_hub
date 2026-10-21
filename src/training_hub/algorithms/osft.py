@@ -631,33 +631,14 @@ class MiniTrainerOSFTBackend(Backend):
                 **additional_kwargs,
             )
         else:
-            # Original instruction tuning flow
-            # if we received unmask then we need to add that
-            processing_data_path = data_path
-            if not data_path.lower().endswith('.jsonl'):
-                # process_messages_into_input_ids reads JSONL only. Everything
-                # else — a .json array, parquet, csv, or a HuggingFace dataset
-                # name — is loaded and exported to JSONL first. (A .json file is a
-                # JSON array, not line-delimited, so it cannot take the direct
-                # path either.) Serialized `messages` strings (e.g. from csv) are
-                # decoded to lists before export, and unmask is applied if asked.
-                from training_hub.utils import (
-                    load_training_dataset,
-                    normalize_messages_column,
-                )
-                ds = load_training_dataset(data_path)
-                ds = normalize_messages_column(ds)
-                if unmask_messages:
-                    ds = ds.map(lambda _: {'unmask': True})
-                processing_data_path = os.path.join(output_dir, 'converted_data.jsonl')
-                ds.to_json(processing_data_path)
-            elif unmask_messages:
-                # Already JSONL (messages are proper lists); just inject unmask.
-                from training_hub.utils import load_training_dataset
-                ds = load_training_dataset(data_path)
-                ds = ds.map(lambda _: {'unmask': True})
-                processing_data_path = os.path.join(output_dir, 'intermediate_data.jsonl')
-                ds.to_json(processing_data_path)
+            # Original instruction tuning flow. process_messages_into_input_ids reads JSONL
+            # only, so convert everything else — a .json array, parquet, csv, or a HuggingFace
+            # dataset name — to JSONL first (decoding serialized `messages` strings and applying
+            # unmask when asked). This is the common conversion shared with the sft data path.
+            from training_hub.utils import ensure_messages_jsonl
+            processing_data_path = ensure_messages_jsonl(
+                data_path, output_dir, unmask_messages=unmask_messages
+            )
 
             # now we process the data
             process_messages_into_input_ids(

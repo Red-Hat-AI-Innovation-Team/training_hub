@@ -6,6 +6,7 @@ import pytest
 
 from training_hub.utils import (
     _FORMAT_MAP,
+    ensure_messages_jsonl,
     load_training_dataset,
     normalize_messages_column,
 )
@@ -212,3 +213,61 @@ def test_normalize_messages_error_names_row_index():
     ds = Dataset.from_list([{"messages": json.dumps(_CONVO)}, {"messages": "not json"}])
     with pytest.raises(ValueError, match="row 1"):
         normalize_messages_column(ds)
+
+
+# ---------------------------------------------------------------------------
+# ensure_messages_jsonl (shared sft/osft conversion)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_messages_jsonl_converts_parquet(tmp_path):
+    from datasets import Dataset
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}, {"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    assert out.endswith(".jsonl")
+    assert out != str(src)
+    ds = load_training_dataset(out)
+    assert len(ds) == 2
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_decodes_serialized_messages_from_csv(tmp_path):
+    from datasets import Dataset
+
+    # CSV stores the conversation as a JSON string; it must come back as a list.
+    src = tmp_path / "train.csv"
+    Dataset.from_list([{"messages": json.dumps(_CONVO)}]).to_csv(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_passthrough_for_jsonl(tmp_path):
+    src = tmp_path / "train.jsonl"
+    src.write_text(json.dumps({"messages": _CONVO}) + "\n")
+
+    # Already JSONL and no unmask requested → returned unchanged (no rewrite).
+    out = ensure_messages_jsonl(str(src), str(tmp_path / "out"))
+
+    assert out == str(src)
+
+
+def test_ensure_messages_jsonl_injects_unmask(tmp_path):
+    src = tmp_path / "train.jsonl"
+    src.write_text(json.dumps({"messages": _CONVO}) + "\n")
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir), unmask_messages=True)
+
+    assert out != str(src)
+    ds = load_training_dataset(out)
+    assert ds[0]["unmask"] is True
+    assert ds[0]["messages"] == _CONVO
