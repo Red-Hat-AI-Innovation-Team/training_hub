@@ -99,6 +99,7 @@ def ensure_messages_jsonl(
     output_dir: str,
     *,
     unmask_messages: bool = False,
+    normalize: bool = True,
     filename: str = "converted_data.jsonl",
 ) -> str:
     """Return a path to a JSONL dataset of normalized ``messages``, converting as needed.
@@ -108,36 +109,53 @@ def ensure_messages_jsonl(
     csv, or a HuggingFace dataset name — is loaded via :func:`load_training_dataset`, its
     ``messages`` column normalized (tabular sources serialize the conversation as a JSON
     string; see :func:`normalize_messages_column`), and exported to JSONL under
-    ``output_dir``. A plain ``.jsonl`` input is returned unchanged unless
+    ``output_dir``. A local ``.jsonl`` file is returned unchanged unless
     ``unmask_messages`` is requested, in which case an ``unmask`` flag is injected into each
     example and the result re-exported. This is the common conversion shared by the sft and
     osft data paths.
 
     Args:
         data_path: Raw training data — ``.jsonl``/``.json``/``.parquet``/``.csv`` or, when
-            the extension is unrecognized, a HuggingFace dataset name.
+            the extension is unrecognized, a HuggingFace dataset name. A HuggingFace
+            dataset identifier that merely *ends* in ``.jsonl`` is not a local file and
+            is converted like any other non-JSONL source.
         output_dir: Directory to write the converted JSONL into (created if missing).
         unmask_messages: Inject an ``unmask: True`` flag into every example.
+        normalize: Normalize the ``messages`` column (decode serialized JSON strings).
+            Pass False for pretraining data, whose document column may legitimately hold
+            plain text (``normalize_messages_column`` would reject it).
         filename: Name of the converted JSONL file written under ``output_dir``.
 
     Returns:
         Path to a JSONL file suitable for instructlab-training's data processing — the
-        original ``data_path`` when it is already JSONL and no conversion is needed.
+        original ``data_path`` when it is already a local JSONL file and no conversion
+        is needed.
     """
-    is_jsonl = data_path.lower().endswith(".jsonl")
+    # Only a *local* .jsonl file can take the passthrough: a HuggingFace dataset
+    # identifier may legitimately end in ".jsonl" (e.g. "org/labels.jsonl") and must
+    # go through load_training_dataset like any other non-file source.
+    is_jsonl = data_path.lower().endswith(".jsonl") and os.path.isfile(data_path)
     if is_jsonl and not unmask_messages:
         return data_path
 
     os.makedirs(output_dir, exist_ok=True)
     dataset = load_training_dataset(data_path)
-    if not is_jsonl:
+    if not is_jsonl and normalize:
         # A .json array / parquet / csv / HF source may carry `messages` as a serialized
         # JSON string; an already-JSONL source holds proper message lists.
         dataset = normalize_messages_column(dataset)
     if unmask_messages:
         dataset = dataset.map(lambda _: {"unmask": True})
     out_path = os.path.join(output_dir, filename)
-    dataset.to_json(out_path)
+    # Multi-node runs invoke the launcher (and this conversion) once per node against
+    # a shared data_output_dir. Writing through a unique temp file and publishing with
+    # os.replace keeps the destination atomic: a reader on another node sees either the
+    # previous complete file or this one, never a partially written one. The content is
+    # deterministic (same input everywhere), so whichever identical publish lands last
+    # is immaterial.
+    tmp_path = f"{out_path}.tmp.{os.getpid()}"
+    dataset.to_json(tmp_path)
+    os.replace(tmp_path, out_path)
     return out_path
 
 

@@ -1,6 +1,7 @@
 """Tests for training_hub.utils dataset loading."""
 
 import json
+import os
 
 import pytest
 
@@ -271,3 +272,55 @@ def test_ensure_messages_jsonl_injects_unmask(tmp_path):
     ds = load_training_dataset(out)
     assert ds[0]["unmask"] is True
     assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_keeps_plain_text_for_pretraining(tmp_path):
+    from datasets import Dataset
+
+    # Pretraining data: the document column may be plain text, not chat messages.
+    # normalize_messages_column would reject it, so normalize=False must keep it.
+    src = tmp_path / "docs.parquet"
+    Dataset.from_list([{"messages": "plain text document"}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir), normalize=False)
+
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == "plain text document"
+
+
+def test_ensure_messages_jsonl_converts_jsonl_suffixed_hf_name(tmp_path, monkeypatch):
+    # A HuggingFace dataset identifier may legitimately end in ".jsonl" — it is
+    # not a local file, so it must NOT take the JSONL passthrough.
+    import training_hub.utils as utils
+
+    captured = {}
+
+    def fake_load(path, split="train"):
+        captured["path"] = path
+        from datasets import Dataset
+
+        return Dataset.from_list([{"messages": _CONVO}])
+
+    monkeypatch.setattr(utils, "load_training_dataset", fake_load)
+
+    out = ensure_messages_jsonl("org/some-dataset.jsonl", str(tmp_path / "out"))
+
+    assert captured["path"] == "org/some-dataset.jsonl"
+    assert out.endswith("converted_data.jsonl")
+    ds = load_training_dataset(out)
+    assert ds[0]["messages"] == _CONVO
+
+
+def test_ensure_messages_jsonl_atomic_publish_leaves_no_temp_files(tmp_path):
+    from datasets import Dataset
+
+    src = tmp_path / "train.parquet"
+    Dataset.from_list([{"messages": _CONVO}]).to_parquet(str(src))
+    out_dir = tmp_path / "out"
+
+    out = ensure_messages_jsonl(str(src), str(out_dir))
+
+    assert os.path.exists(out)
+    leftovers = [p for p in os.listdir(out_dir) if ".tmp." in p]
+    assert leftovers == []
