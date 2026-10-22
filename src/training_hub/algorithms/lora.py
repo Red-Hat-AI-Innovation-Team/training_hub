@@ -606,9 +606,21 @@ class UnslothLoRABackend(Backend):
         gradient_accumulation_steps = params.get('gradient_accumulation_steps', 1)
 
         if effective_batch_size is not None:
+            batch_size_multiple = gradient_accumulation_steps * num_gpus
+            if effective_batch_size % batch_size_multiple != 0:
+                lower = (
+                    effective_batch_size // batch_size_multiple * batch_size_multiple
+                )
+                upper = lower + batch_size_multiple
+                suggested = f"{lower} or {upper}" if lower else str(upper)
+                raise ValueError(
+                    f"effective_batch_size ({effective_batch_size}) must be divisible by "
+                    f"gradient_accumulation_steps ({gradient_accumulation_steps}) * "
+                    f"num_gpus ({num_gpus}) = {batch_size_multiple}. "
+                    f"Try effective_batch_size={suggested}."
+                )
             # Calculate micro_batch_size from effective_batch_size
-            micro_batch_size = effective_batch_size // (gradient_accumulation_steps * num_gpus)
-            micro_batch_size = max(1, micro_batch_size)
+            micro_batch_size = max(1, effective_batch_size // batch_size_multiple)
         else:
             # Use provided micro_batch_size or default
             micro_batch_size = params.get('micro_batch_size', 2)
