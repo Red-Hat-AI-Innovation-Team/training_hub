@@ -75,7 +75,7 @@ lora = [
 
 grpo = [
     "openpipe-art>=0.5.17",
-    "litellm>=1.71.1,!=1.82.7,!=1.82.8",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24)
+    "litellm>=1.71.1,!=1.82.7,!=1.82.8,!=1.107.0",  # 1.82.7-1.82.8 compromised (TeamPCP supply chain attack, 2026-03-24); 1.107.0 compromised (credential stealer + backdoor via cook.pth, 2026-10-21)
 ]
 
 grpo-verl = [
@@ -85,7 +85,7 @@ grpo-verl = [
 
 gepa = [
     "gepa>=0.1.1",
-    "litellm>=1.71.1,!=1.82.7,!=1.82.8",
+    "litellm>=1.71.1,!=1.82.7,!=1.82.8,!=1.107.0",  # 1.107.0 compromised (2026-10-21)
     "mlflow>=3.5.0",
 ]
 
