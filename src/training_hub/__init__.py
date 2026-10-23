@@ -41,6 +41,7 @@ from .algorithms.lora_grpo import lora_grpo, grpo, LoRAGRPOAlgorithm, ARTLoRAGRP
 from .algorithms.lora_grpo_verl import VeRLLoRAGRPOBackend
 from .algorithms.gepa import gepa, GEPAAlgorithm, GEPABackend, MLflowGEPABackend
 from .algorithms.embedding_sft import embedding_sft, EmbeddingSFTAlgorithm, SentenceTransformersBackend
+from .algorithms.classifier_sft import classifier_sft, ClassifierSFTAlgorithm, SequenceClassificationBackend
 from .algorithms.rewards import tool_call_reward, binary_reward
 from .callbacks import TrainingHubCallback, TrainingHubContext, TrainingHubControl, merge_default_callbacks
 from .jit_checkpoint import JITCheckpointCallback, RemoteCheckpointSyncCallback
@@ -75,6 +76,9 @@ __all__ = [
     'embedding_sft',
     'EmbeddingSFTAlgorithm',
     'SentenceTransformersBackend',
+    'classifier_sft',
+    'ClassifierSFTAlgorithm',
+    'SequenceClassificationBackend',
     'tool_call_reward',
     'binary_reward',
     'welcome',

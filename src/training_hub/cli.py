@@ -351,6 +351,33 @@ def _define_params() -> None:
         "--seed": {"type": int, "help": "Random seed (default: 42)"},
     }
 
+    _ALGO_PARAM_DEFS["classifier-sft"] = {
+        "--model-path": {"type": str, "required": True, "help": "Encoder (ModernBERT/DeBERTa/BERT) or decoder (with --use-peft) backbone — HF ID or local path"},
+        "--data-path": {"type": str, "required": True, "help": "Training data (.jsonl/.json/.parquet/.csv or HF dataset ID) with text + label columns (string labels are encoded to ints)"},
+        "--ckpt-output-dir": {"type": str, "required": True, "help": "Directory to save the fine-tuned classifier (+ label_mapping.json)"},
+        "--backend": {"type": str, "default": "sequence-classification", "help": "Backend implementation (default: sequence-classification)"},
+        # Training
+        "--num-epochs": {"type": int, "help": "Number of training epochs (default: 3)"},
+        "--batch-size": {"type": int, "help": "Per-device batch size (default: 16)"},
+        "--learning-rate": {"type": float, "help": "Learning rate (default: 2e-5)"},
+        "--max-seq-len": {"type": int, "help": "Max token length (default: 512)"},
+        "--warmup-ratio": {"type": float, "help": "Warmup fraction of total steps (default: 0.0)"},
+        "--weight-decay": {"type": float, "help": "Weight decay (default: 0.01)"},
+        "--gradient-accumulation-steps": {"type": int, "help": "Gradient accumulation steps (default: 1)"},
+        # PEFT / LoRA (recommended for decoder backbones)
+        "--use-peft": {"type": bool, "help": "LoRA fine-tuning instead of full fine-tune (recommended for decoder backbones)"},
+        "--lora-r": {"type": int, "help": "LoRA rank (default: 16)"},
+        "--lora-alpha": {"type": int, "help": "LoRA alpha (default: 32)"},
+        "--lora-dropout": {"type": float, "help": "LoRA dropout (default: 0.05)"},
+        # Data format
+        "--text-column": {"type": str, "help": "Name of the text column in the dataset (default: text)"},
+        "--label-column": {"type": str, "help": "Name of the label column in the dataset (default: label)"},
+        # Model loading
+        "--trust-remote-code": {"type": bool, "help": "Allow custom architectures from the model repo (opt-in; security-sensitive)"},
+        # Standard
+        "--seed": {"type": int, "help": "Random seed (default: 42)"},
+    }
+
 
 # Maps CLI subcommand name to the Python convenience function name
 _SUBCOMMAND_TO_FUNC = {
@@ -361,6 +388,7 @@ _SUBCOMMAND_TO_FUNC = {
     "grpo": "grpo",
     "gepa": "gepa",
     "embedding-sft": "embedding_sft",
+    "classifier-sft": "classifier_sft",
 }
 
 # Maps the convenience function name to its (module, attribute). Imports are done
@@ -375,6 +403,7 @@ _FUNC_IMPORTS: dict[str, tuple[str, str]] = {
     "grpo": ("training_hub.algorithms.lora_grpo", "grpo"),
     "gepa": ("training_hub.algorithms.gepa", "gepa"),
     "embedding_sft": ("training_hub.algorithms.embedding_sft", "embedding_sft"),
+    "classifier_sft": ("training_hub.algorithms.classifier_sft", "classifier_sft"),
 }
 
 
@@ -501,6 +530,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "grpo": "Full-parameter Group Relative Policy Optimization",
         "gepa": "Genetic-Pareto prompt optimization (gradient-free)",
         "embedding-sft": "Embedding fine-tuning (contrastive; classifiers/routers)",
+        "classifier-sft": "Classification-head fine-tuning (calibrated decisions; encoder or decoder+LoRA)",
     }
 
     for subcmd, param_defs in _ALGO_PARAM_DEFS.items():
