@@ -1,77 +1,77 @@
-"""Tests for the classifier_sft algorithm (sequence-classification head fine-tuning).
+"""Tests for the classifier_sft algorithm (decision/classification-head fine-tuning).
 
-Covers the param spec and the (text, label) loader with label encoding — the training
-loop itself is exercised end-to-end elsewhere (it needs a real model download)."""
+Covers the param spec, label encoding, the dotted-path resolver, and CLI wiring. The
+training loop + per-task data prep are exercised end-to-end elsewhere (they need a real
+model download and a tokenizer)."""
 from __future__ import annotations
 
 import pytest
 
-from training_hub import ClassifierSFTAlgorithm, SequenceClassificationBackend
-from training_hub.algorithms.classifier_sft import _load_classification_dataset
+from training_hub import ClassifierSFTAlgorithm
+from training_hub.algorithms.classifier_sft import (
+    DecisionHeadBackend,
+    _encode_labels,
+    _resolve_dotted,
+)
 
 
 class TestParams:
     def test_required_params(self):
-        params = ClassifierSFTAlgorithm(SequenceClassificationBackend()).get_required_params()
+        params = ClassifierSFTAlgorithm(DecisionHeadBackend()).get_required_params()
         assert set(params) == {"model_path", "data_path", "ckpt_output_dir"}
 
-    def test_optional_params_include_peft_and_trust_remote_code(self):
-        params = ClassifierSFTAlgorithm(SequenceClassificationBackend()).get_optional_params()
-        for key in ("use_peft", "lora_r", "trust_remote_code", "num_epochs", "label_column"):
+    def test_optional_params_cover_tasks_and_extension_hooks(self):
+        params = ClassifierSFTAlgorithm(DecisionHeadBackend()).get_optional_params()
+        for key in (
+            "task",
+            "options_column",
+            "tokens_column",
+            "use_peft",
+            "trust_remote_code",
+            "revision",
+            "model_class",
+            "loss_fn",
+        ):
             assert key in params
 
 
-class TestLoadClassificationDataset:
-    def _write(self, tmp_path, rows):
-        import json
-
-        p = tmp_path / "data.jsonl"
-        p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-        return str(p)
-
-    def test_string_categories_encoded_to_contiguous_ints(self, tmp_path):
-        path = self._write(tmp_path, [
-            {"text": "a", "label": "billing"},
-            {"text": "b", "label": "technical"},
-            {"text": "c", "label": "billing"},
-        ])
-        ds, id2label = _load_classification_dataset(path, "text", "label")
-        assert sorted(set(ds["label"])) == [0, 1]
-        # Sorted-unique mapping: billing -> 0, technical -> 1
+class TestEncodeLabels:
+    def test_string_labels_to_contiguous_sorted_ints(self):
+        id2label, label2id, already_int = _encode_labels(["billing", "technical", "billing"])
+        assert already_int is False
         assert id2label == {0: "billing", 1: "technical"}
-        assert all(isinstance(v, int) for v in ds["label"])
+        assert label2id == {"billing": 0, "technical": 1}
 
-    def test_text_and_label_columns_are_renamed(self, tmp_path):
-        path = self._write(tmp_path, [
-            {"sentence": "hi", "category": "greeting"},
-            {"sentence": "bug", "category": "issue"},
-        ])
-        ds, id2label = _load_classification_dataset(path, "sentence", "category")
-        assert "text" in ds.column_names and "label" in ds.column_names
-        assert set(id2label.values()) == {"greeting", "issue"}
+    def test_integer_labels_span_full_range(self):
+        id2label, _, already_int = _encode_labels([0, 2])
+        assert already_int is True
+        assert id2label == {0: "0", 1: "1", 2: "2"}  # 3-wide head even with a gap
 
-    def test_integer_labels_preserved_with_full_range(self, tmp_path):
-        # Already-int labels: head width spans the observed range even if a class is absent.
-        path = self._write(tmp_path, [
-            {"text": "a", "label": 0},
-            {"text": "b", "label": 2},
-        ])
-        ds, id2label = _load_classification_dataset(path, "text", "label")
-        assert sorted(set(ds["label"])) == [0, 2]
-        assert id2label == {0: "0", 1: "1", 2: "2"}  # 3-wide head (0..2)
+    def test_bool_labels_treated_as_categorical(self):
+        id2label, _, already_int = _encode_labels([True, False, True])
+        assert already_int is False
+        assert set(id2label.values()) == {"True", "False"}
 
-    def test_missing_label_column_raises(self, tmp_path):
-        path = self._write(tmp_path, [{"text": "a"}])
-        with pytest.raises(ValueError, match="label"):
-            _load_classification_dataset(path, "text", "label")
+    def test_empty_labels_raise(self):
+        with pytest.raises(ValueError, match="no non-null labels"):
+            _encode_labels([None, None])
+
+
+class TestResolveDotted:
+    def test_resolves_attribute(self):
+        assert _resolve_dotted("json.dumps").__name__ == "dumps"
+
+    def test_bare_name_raises(self):
+        with pytest.raises(ValueError, match="dotted import path"):
+            _resolve_dotted("dumps")
 
 
 class TestCliRegistration:
-    def test_classifier_sft_subcommand_registered(self):
+    def test_classifier_sft_subcommand_registered_and_builds(self):
         from training_hub import cli
 
         assert cli._SUBCOMMAND_TO_FUNC["classifier-sft"] == "classifier_sft"
         assert cli._FUNC_IMPORTS["classifier_sft"][0] == "training_hub.algorithms.classifier_sft"
-        # Parser builds without error and exposes the subcommand.
-        parser = cli._build_parser()
-        assert parser is not None
+        # _build_parser() triggers _define_params(), which populates _ALGO_PARAM_DEFS.
+        assert cli._build_parser() is not None
+        assert "--task" in cli._ALGO_PARAM_DEFS["classifier-sft"]

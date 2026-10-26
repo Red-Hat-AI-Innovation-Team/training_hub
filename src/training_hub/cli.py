@@ -355,7 +355,9 @@ def _define_params() -> None:
         "--model-path": {"type": str, "required": True, "help": "Encoder (ModernBERT/DeBERTa/BERT) or decoder (with --use-peft) backbone — HF ID or local path"},
         "--data-path": {"type": str, "required": True, "help": "Training data (.jsonl/.json/.parquet/.csv or HF dataset ID) with text + label columns (string labels are encoded to ints)"},
         "--ckpt-output-dir": {"type": str, "required": True, "help": "Directory to save the fine-tuned classifier (+ label_mapping.json)"},
-        "--backend": {"type": str, "default": "sequence-classification", "help": "Backend implementation (default: sequence-classification)"},
+        "--backend": {"type": str, "default": "decision-head", "help": "Backend implementation (default: decision-head)"},
+        # Task / decision primitive
+        "--task": {"type": str, "help": "sequence_classification (default), multiple_choice, or token_classification"},
         # Training
         "--num-epochs": {"type": int, "help": "Number of training epochs (default: 3)"},
         "--batch-size": {"type": int, "help": "Per-device batch size (default: 16)"},
@@ -369,11 +371,16 @@ def _define_params() -> None:
         "--lora-r": {"type": int, "help": "LoRA rank (default: 16)"},
         "--lora-alpha": {"type": int, "help": "LoRA alpha (default: 32)"},
         "--lora-dropout": {"type": float, "help": "LoRA dropout (default: 0.05)"},
-        # Data format
-        "--text-column": {"type": str, "help": "Name of the text column in the dataset (default: text)"},
-        "--label-column": {"type": str, "help": "Name of the label column in the dataset (default: label)"},
-        # Model loading
-        "--trust-remote-code": {"type": bool, "help": "Allow custom architectures from the model repo (opt-in; security-sensitive)"},
+        # Data format (columns vary by task)
+        "--text-column": {"type": str, "help": "Text/context column (default: text) — sequence_classification & multiple_choice"},
+        "--label-column": {"type": str, "help": "Label column (default: label; token_classification default: ner_tags)"},
+        "--options-column": {"type": str, "help": "Options-list column for multiple_choice (default: options)"},
+        "--tokens-column": {"type": str, "help": "Pre-split tokens column for token_classification (default: tokens)"},
+        # Model loading / extension (custom architectures)
+        "--trust-remote-code": {"type": bool, "help": "Allow custom architectures that ship an HF auto_map (opt-in; pin --revision)"},
+        "--revision": {"type": str, "help": "Pin the model repo to a commit/branch/tag (recommended with --trust-remote-code)"},
+        "--model-class": {"type": str, "help": "Dotted import path to a custom *.from_pretrained class (for pip-packaged backbones)"},
+        "--loss-fn": {"type": str, "help": "Dotted import path to a custom loss_fn(logits, labels) callable or Trainer subclass"},
         # Standard
         "--seed": {"type": int, "help": "Random seed (default: 42)"},
     }
