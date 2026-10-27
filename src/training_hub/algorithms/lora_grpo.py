@@ -127,11 +127,12 @@ async def _shutdown_art_backend(backend) -> None:
     # Since results are already saved to disk by the training loop,
     # force exit to avoid blocking indefinitely.
     try:
-        import torch
         import gc
+        from training_hub.utils import get_accelerator_module
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        accelerator = get_accelerator_module()
+        if accelerator is not None:
+            accelerator.empty_cache()
     except Exception:
         pass
 
