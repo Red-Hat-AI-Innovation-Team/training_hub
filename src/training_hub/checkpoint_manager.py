@@ -139,6 +139,10 @@ def any_rank(flag: bool) -> bool:
             backend = dist.get_backend()
             if backend == "gloo":
                 device = torch.device("cpu")
+            elif backend == "nccl":
+                device = torch.device("cuda", torch.cuda.current_device())
+            elif backend == "xccl":
+                device = torch.device("xpu", torch.xpu.current_device())
             elif torch.cuda.is_available():
                 device = torch.device("cuda", torch.cuda.current_device())
             elif hasattr(torch, "xpu") and torch.xpu.is_available():

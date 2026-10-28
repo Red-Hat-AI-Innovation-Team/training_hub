@@ -287,18 +287,19 @@ def get_torchrun_params(args: dict) -> dict[str, str | int]:
             return int(value_lower)
 
         # 'gpu' means CUDA to torchrun, 'xpu' means Intel XPU; 'auto' picks
-        # whichever accelerator is present (CUDA first).
+        # whichever accelerator is present (CUDA first). XPU resolves to the
+        # device count because torchrun only accepts 'xpu' from torch 2.10.
         cuda_ok = torch.cuda.is_available()
         xpu_ok = hasattr(torch, 'xpu') and torch.xpu.is_available()
         if value_lower == 'gpu' and cuda_ok:
             return 'gpu'
         if value_lower == 'xpu' and xpu_ok:
-            return 'xpu'
+            return torch.xpu.device_count()
         if value_lower == 'auto':
             if cuda_ok:
                 return 'gpu'
             if xpu_ok:
-                return 'xpu'
+                return torch.xpu.device_count()
         required = {'gpu': 'CUDA GPUs', 'xpu': 'Intel XPUs'}.get(value_lower, 'CUDA GPUs or Intel XPUs')
         raise ValueError(f"nproc_per_node='{value_lower}' requires {required}, but none are available")
 

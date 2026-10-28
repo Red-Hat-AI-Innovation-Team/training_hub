@@ -26,9 +26,10 @@ def _clear_torchrun_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def _fake_devices(monkeypatch, *, cuda: bool, xpu: bool):
+def _fake_devices(monkeypatch, *, cuda: bool, xpu: bool, xpu_count: int = 2):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
     monkeypatch.setattr(torch.xpu, "is_available", lambda: xpu)
+    monkeypatch.setattr(torch.xpu, "device_count", lambda: xpu_count if xpu else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -37,17 +38,18 @@ def _fake_devices(monkeypatch, *, cuda: bool, xpu: bool):
 
 
 class TestNprocPerNode:
+    # XPU resolves to a count, not 'xpu': torchrun only accepts 'xpu' from torch 2.10.
     def test_auto_picks_xpu_when_only_xpu_present(self, monkeypatch):
-        _fake_devices(monkeypatch, cuda=False, xpu=True)
-        assert get_torchrun_params({"nproc_per_node": "auto"})["nproc_per_node"] == "xpu"
+        _fake_devices(monkeypatch, cuda=False, xpu=True, xpu_count=4)
+        assert get_torchrun_params({"nproc_per_node": "auto"})["nproc_per_node"] == 4
 
     def test_auto_prefers_cuda_when_both_present(self, monkeypatch):
         _fake_devices(monkeypatch, cuda=True, xpu=True)
         assert get_torchrun_params({"nproc_per_node": "auto"})["nproc_per_node"] == "gpu"
 
     def test_explicit_xpu_accepted(self, monkeypatch):
-        _fake_devices(monkeypatch, cuda=False, xpu=True)
-        assert get_torchrun_params({"nproc_per_node": "XPU"})["nproc_per_node"] == "xpu"
+        _fake_devices(monkeypatch, cuda=False, xpu=True, xpu_count=4)
+        assert get_torchrun_params({"nproc_per_node": "XPU"})["nproc_per_node"] == 4
 
     def test_gpu_still_means_cuda(self, monkeypatch):
         # torchrun's 'gpu' counts CUDA devices only, so it must not silently
@@ -91,6 +93,24 @@ class TestAnyRankDevice:
         assert cm.any_rank(True) is True
         assert seen == ["xpu"]
 
+    def test_xccl_reduces_on_xpu_when_cuda_also_present(self, monkeypatch):
+        seen = []
+        _fake_dist(monkeypatch, "xccl", seen)
+        _fake_devices(monkeypatch, cuda=True, xpu=True)
+        monkeypatch.setattr(torch.xpu, "current_device", lambda: 0)
+        monkeypatch.setattr(torch, "tensor", _DeviceProbe)
+        assert cm.any_rank(True) is True
+        assert seen == ["xpu"]
+
+    def test_nccl_reduces_on_cuda_when_xpu_also_present(self, monkeypatch):
+        seen = []
+        _fake_dist(monkeypatch, "nccl", seen)
+        _fake_devices(monkeypatch, cuda=True, xpu=True)
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+        monkeypatch.setattr(torch, "tensor", _DeviceProbe)
+        assert cm.any_rank(True) is True
+        assert seen == ["cuda"]
+
     def test_gloo_reduces_on_cpu_even_with_xpu(self, monkeypatch):
         seen = []
         _fake_dist(monkeypatch, "gloo", seen)
@@ -121,7 +141,7 @@ class TestRealXpu:
     def test_auto_resolves_to_xpu(self):
         if torch.cuda.is_available():
             pytest.skip("CUDA present; 'auto' resolves to CUDA first")
-        assert get_torchrun_params({"nproc_per_node": "auto"})["nproc_per_node"] == "xpu"
+        assert get_torchrun_params({"nproc_per_node": "auto"})["nproc_per_node"] == torch.xpu.device_count()
 
     def test_tensor_roundtrip_and_bf16(self):
         x = torch.arange(8, dtype=torch.float32, device="xpu")
