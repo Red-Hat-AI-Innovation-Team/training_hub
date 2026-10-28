@@ -35,6 +35,7 @@
 | **GRPO (Full Fine-Tuning RLVR)** | verl | Multi-GPU, multi-node | `[grpo]` |
 | **GEPA (Genetic-Pareto Prompt Optimization)** | GEPA, MLflow | CPU (API-based) | `[gepa]` |
 | **Embedding Fine-Tuning** | SentenceTransformers | Single-GPU, multi-GPU, CPU | `[embedding]` |
+| **Classifier Fine-Tuning** | HuggingFace Transformers | Single-GPU, multi-GPU, CPU | base |
 
 ## Implemented Algorithms
 
@@ -197,6 +198,29 @@ result = embedding_sft(
     ckpt_output_dir="./routing_model",
     loss_type="batch_all_triplet",
     num_epochs=20,
+    batch_size=32,
+    learning_rate=2e-5,
+)
+```
+
+### [Classifier Fine-Tuning](/algorithms/classifier_sft)
+
+Fine-tunes a **classification head** on any recognized backbone (HF `Trainer` + cross-entropy) — the best choice for a *fixed* label set (highest accuracy, calibrated per-class logits). A thin, **convention-based** harness over the HF Auto-class family: it covers the common "decision model" primitives through native HF classes with no per-model code and no vendored packages. Features:
+- Three tasks via a `task` selector: `sequence_classification` (default), `multiple_choice`, and `token_classification`
+- Encoders (ModernBERT/DeBERTa/BERT) full fine-tuned; decoder backbones via LoRA (`use_peft`)
+- Custom architectures with no vendoring: `trust_remote_code` + pinned `revision` (any HF `auto_map`), `model_class` (pip-packaged backbones), and `loss_fn` (custom objective)
+- String labels auto-encoded to ints; saves an inference-ready checkpoint + `label_mapping.json`
+
+```python
+from training_hub import classifier_sft
+
+result = classifier_sft(
+    model_path="answerdotai/ModernBERT-base",
+    data_path="intents.parquet",         # {"text": "...", "label": "billing"}
+    ckpt_output_dir="./intent_clf",
+    text_column="text",
+    label_column="category",
+    num_epochs=10,
     batch_size=32,
     learning_rate=2e-5,
 )

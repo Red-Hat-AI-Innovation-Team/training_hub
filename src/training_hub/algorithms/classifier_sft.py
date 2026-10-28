@@ -1,0 +1,627 @@
+"""classifier_sft — supervised fine-tuning of a decision/classification head.
+
+A thin, convention-based trainer over the HuggingFace Auto-class family: it fine-tunes
+a task head on any recognized backbone, covering the "decision model" primitives via
+native HF classes (no per-model code, no vendored packages):
+
+    task="sequence_classification"  -> AutoModelForSequenceClassification
+        fixed-label classification and yes/no judgments (data: text + label).
+    task="multiple_choice"          -> AutoModelForMultipleChoice
+        pick one of K candidate options per example (data: text + options[] + label-index).
+    task="token_classification"     -> AutoModelForTokenClassification
+        span / entity extraction (data: tokens[] + tags[]).
+
+Backbones: encoder models (ModernBERT/DeBERTa/BERT) are full fine-tuned; decoder models
+(Qwen, Llama, ...) via LoRA (``use_peft=True``). Custom architectures that follow HF's
+``auto_map`` convention load with ``trust_remote_code=True`` (pin ``revision`` for safety)
+— the model author's code, nothing vendored here. For a backbone distributed as a pip
+package rather than ``auto_map``, point ``model_class`` at an importable
+``*.from_pretrained`` class (the user installs that package; we take on no dependency).
+
+Decoder note: a fresh classification head on a decoder backbone trains far slower than
+an encoder's — the default ``learning_rate=2e-5`` suits encoders, but decoders with a
+newly initialized head typically need ~1e-4..1e-3 and more epochs to move off a
+single-class collapse (verified empirically: Qwen2.5-1.5B + LoRA collapsed at 2e-5,
+fit its training set at 1e-3).
+
+Calibration (temperature scaling / ECE) is applied at evaluation time, not here.
+"""
+
+import importlib
+import json
+import logging
+import math
+import os
+from typing import Any, Callable, Optional
+
+from . import Algorithm, Backend, AlgorithmRegistry
+
+logger = logging.getLogger(__name__)
+
+_TASKS = ("sequence_classification", "multiple_choice", "token_classification")
+
+_KNOWN_PARAMS: set[str] = {
+    "model_path",
+    "data_path",
+    "ckpt_output_dir",
+    "task",
+    "num_epochs",
+    "batch_size",
+    "learning_rate",
+    "max_seq_len",
+    "text_column",
+    "label_column",
+    "options_column",
+    "tokens_column",
+    "use_peft",
+    "lora_r",
+    "lora_alpha",
+    "lora_dropout",
+    "lora_target_modules",
+    "trust_remote_code",
+    "revision",
+    "model_class",
+    "loss_fn",
+    "warmup_ratio",
+    "weight_decay",
+    "gradient_accumulation_steps",
+    "seed",
+}
+
+
+def _resolve_dotted(path: str) -> Any:
+    """Import a dotted path like ``pkg.mod.Class`` -> the attribute. Used for the
+    ``model_class`` / ``loss_fn`` escape hatches so users bring their own code (that
+    they have installed) without this package depending on it."""
+    module_path, _, attr = path.rpartition(".")
+    if not module_path:
+        raise ValueError(f"Expected a dotted import path like 'package.module.Name', got {path!r}")
+    return getattr(importlib.import_module(module_path), attr)
+
+
+def _encode_labels(values: list[Any]) -> tuple[dict[int, str], dict[Any, int], bool]:
+    """Return (id2label, label2id, already_int) for a flat list of labels.
+
+    Integer labels keep their value (head spans 0..max); strings/bools/floats map to
+    contiguous sorted codes. Float labels are treated as categorical (remapped to
+    contiguous codes) — unlike embedding_sft, which preserves integer-valued floats;
+    the mapping is recorded in label_mapping.json either way."""
+    # Arrow nulls arrive as None, but a parquet/pandas float column carries missing
+    # values as NaN (a float, so `is not None` lets it through) — a NaN would otherwise
+    # become a literal "nan" class. Treat both as null.
+    non_null = [v for v in values if not (v is None or (isinstance(v, float) and math.isnan(v)))]
+    if not non_null:
+        raise ValueError("Dataset has no non-null labels to train on.")
+    if len(non_null) < len(values):
+        # Unlike embedding_sft (whose losses tolerate None), a classification head
+        # has no null consumer: the string path would KeyError on str(None) and the
+        # int path would fail at tensorification. Fail loudly with the count instead.
+        raise ValueError(
+            f"Dataset has {len(values) - len(non_null)} null label(s) of {len(values)} rows. "
+            "Remove or fill them before training — a classification head cannot train on "
+            "unlabeled rows."
+        )
+    sample = non_null[0]
+    if isinstance(sample, int) and not isinstance(sample, bool):
+        max_id = max(int(v) for v in non_null)
+        id2label = {i: str(i) for i in range(max_id + 1)}
+        return id2label, {v: v for v in range(max_id + 1)}, True
+    uniques = sorted({str(v) for v in non_null})
+    label2id = {name: idx for idx, name in enumerate(uniques)}
+    id2label = {idx: name for name, idx in label2id.items()}
+    return id2label, label2id, False
+
+
+def _align_word_labels(
+    word_ids: list[Optional[int]],
+    tags: list[Any],
+    label2id: dict[Any, int],
+    already_int: bool,
+) -> list[int]:
+    """Map per-word token-classification tags onto tokenizer sub-tokens.
+
+    Given the ``word_ids()`` of a tokenized (pre-split) sentence and that sentence's
+    per-word ``tags``, return a per-token label list: ``-100`` for special tokens and
+    for sub-word continuations (only the first sub-token of each word carries the label,
+    the standard HF convention so the loss ignores the rest), and the encoded tag id for
+    each word's first sub-token."""
+    labels: list[int] = []
+    prev = None
+    for wid in word_ids:
+        if wid is None:
+            labels.append(-100)  # special tokens
+        elif wid != prev:
+            t = tags[wid]
+            labels.append(t if already_int else label2id[str(t)])
+        else:
+            labels.append(-100)  # sub-word continuation
+        prev = wid
+    return labels
+
+
+class DecisionHeadBackend(Backend):
+    """Fine-tunes an HF Auto-class task head with the ``Trainer`` + cross-entropy."""
+
+    def execute_training(self, algorithm_params: dict[str, Any]) -> Any:
+        import torch
+        import transformers
+        from transformers import AutoTokenizer, Trainer, TrainingArguments
+
+        unknown = [k for k in algorithm_params if k not in _KNOWN_PARAMS]
+        if unknown:
+            logger.warning(
+                "Ignoring unrecognized classifier_sft parameter(s): %s", ", ".join(sorted(unknown))
+            )
+
+        p = algorithm_params
+        task = p.get("task", "sequence_classification")
+        if task not in _TASKS:
+            raise ValueError(f"Unknown task {task!r}. Choose from: {list(_TASKS)}")
+
+        model_path = p["model_path"]
+        data_path = p["data_path"]
+        ckpt_output_dir = p["ckpt_output_dir"]
+        max_seq_len = p.get("max_seq_len", 512)
+        use_peft = p.get("use_peft", False)
+        trust_remote_code = p.get("trust_remote_code", False)
+        revision = p.get("revision")  # pin custom-code repos to a commit for safety
+        seed = p.get("seed", 42)
+
+        from_pretrained_kw: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        if revision:
+            from_pretrained_kw["revision"] = revision
+
+        logger.info("Loading tokenizer: %s", model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, **from_pretrained_kw)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        logger.info("Preparing data for task=%s", task)
+        prepared = _PREP[task](self, data_path, tokenizer, max_seq_len, p)
+        tokenized, collator, id2label, head_kwargs = prepared
+        label2id = {name: idx for idx, name in id2label.items()}
+
+        # Model: an explicit user-supplied class (escape hatch) or the task's Auto class.
+        if p.get("model_class"):
+            model_cls = _resolve_dotted(p["model_class"])
+            logger.info("Loading model via user-supplied class: %s", p["model_class"])
+        else:
+            model_cls = getattr(transformers, _AUTO_CLASS[task])
+        model = model_cls.from_pretrained(
+            model_path, id2label=id2label, label2id=label2id, **head_kwargs, **from_pretrained_kw
+        )
+        if getattr(model.config, "pad_token_id", None) is None:
+            model.config.pad_token_id = tokenizer.pad_token_id
+
+        if use_peft:
+            from peft import LoraConfig, TaskType, get_peft_model
+
+            peft_task = {
+                "sequence_classification": TaskType.SEQ_CLS,
+                "multiple_choice": TaskType.SEQ_CLS,
+                "token_classification": TaskType.TOKEN_CLS,
+            }[task]
+            model = get_peft_model(
+                model,
+                LoraConfig(
+                    task_type=peft_task,
+                    r=p.get("lora_r", 16),
+                    lora_alpha=p.get("lora_alpha", 32),
+                    lora_dropout=p.get("lora_dropout", 0.05),
+                    target_modules=p.get("lora_target_modules"),
+                ),
+            )
+            logger.info("Applied LoRA (%s)", peft_task)
+
+        # Warmup is version-dependent: transformers 4.x has a `warmup_ratio` field and
+        # rejects a float passed to `warmup_steps`; transformers 5.x removed
+        # `warmup_ratio` and accepts a float `warmup_steps` as the ratio. The dependency
+        # floor (>=4.57.6) spans both, so route the ratio to whichever field exists.
+        from dataclasses import fields as _dataclass_fields
+
+        warmup = p.get("warmup_ratio", 0.0)
+        if any(f.name == "warmup_ratio" for f in _dataclass_fields(TrainingArguments)):
+            warmup_kwargs = {"warmup_ratio": warmup}
+        else:
+            warmup_kwargs = {"warmup_steps": warmup}
+
+        args = TrainingArguments(
+            output_dir=ckpt_output_dir,
+            num_train_epochs=p.get("num_epochs", 3),
+            per_device_train_batch_size=p.get("batch_size", 16),
+            gradient_accumulation_steps=p.get("gradient_accumulation_steps", 1),
+            learning_rate=p.get("learning_rate", 2e-5),
+            weight_decay=p.get("weight_decay", 0.01),
+            logging_steps=50,
+            save_strategy="no",
+            report_to=[],
+            seed=seed,
+            bf16=torch.cuda.is_available(),
+            **warmup_kwargs,
+        )
+
+        trainer_kwargs: dict[str, Any] = dict(
+            model=model, args=args, train_dataset=tokenized, data_collator=collator
+        )
+        # Optional custom objective (dotted path) — a callable loss or a Trainer subclass.
+        if p.get("loss_fn"):
+            loss_obj = _resolve_dotted(p["loss_fn"])
+            if isinstance(loss_obj, type) and issubclass(loss_obj, Trainer):
+                trainer = loss_obj(**trainer_kwargs)
+            else:
+                trainer = _trainer_with_loss(loss_obj, **trainer_kwargs)
+            logger.info("Using custom loss/trainer: %s", p["loss_fn"])
+        elif task == "multiple_choice":
+            # Mixed-K batches are padded with empty choices by _MultipleChoiceCollator;
+            # mask those slots out of the softmax so they never compete with real options
+            # in the default cross-entropy.
+            trainer = _multiple_choice_trainer(**trainer_kwargs)
+        else:
+            trainer = Trainer(**trainer_kwargs)
+
+        logger.info("Training task=%s on %d examples", task, len(tokenized))
+        trainer.train()
+
+        os.makedirs(ckpt_output_dir, exist_ok=True)
+        to_save = model.merge_and_unload() if use_peft else model
+        to_save.save_pretrained(ckpt_output_dir)
+        tokenizer.save_pretrained(ckpt_output_dir)
+        with open(os.path.join(ckpt_output_dir, "label_mapping.json"), "w") as f:
+            json.dump({"task": task, "id2label": id2label, "label2id": label2id}, f, indent=2)
+        logger.info("Saved %s model to %s", task, ckpt_output_dir)
+        return {"ckpt_output_dir": ckpt_output_dir, "task": task, "id2label": id2label}
+
+    # ---- per-task data preparation -------------------------------------------------
+    def _prep_sequence_classification(
+        self, data_path: str, tokenizer: Any, max_seq_len: int, p: dict[str, Any]
+    ) -> tuple[Any, Any, dict[int, str], dict[str, Any]]:
+        from datasets import Value
+        from transformers import DataCollatorWithPadding
+
+        from training_hub.utils import load_training_dataset
+
+        text_col = p.get("text_column") or "text"
+        label_col = p.get("label_column") or "label"
+        ds = load_training_dataset(data_path)
+        if text_col != "text" and text_col in ds.column_names:
+            ds = ds.rename_column(text_col, "text")
+        if label_col != "label" and label_col in ds.column_names:
+            ds = ds.rename_column(label_col, "label")
+        for col in ("text", "label"):
+            if col not in ds.column_names:
+                raise ValueError(f"sequence_classification needs a '{col}' column. Found: {ds.column_names}")
+        id2label, label2id, already_int = _encode_labels(ds["label"])
+        if not already_int:
+            ds = ds.map(lambda b: {"label": [label2id[str(v)] for v in b["label"]]}, batched=True)
+        ds = ds.cast_column("label", Value("int64"))
+        drop = [c for c in ds.column_names if c != "label"]
+        tokenized = ds.map(
+            lambda b: tokenizer(b["text"], truncation=True, max_length=max_seq_len),
+            batched=True,
+            remove_columns=drop,
+        )
+        return tokenized, DataCollatorWithPadding(tokenizer), id2label, {"num_labels": len(id2label)}
+
+    def _prep_token_classification(
+        self, data_path: str, tokenizer: Any, max_seq_len: int, p: dict[str, Any]
+    ) -> tuple[Any, Any, dict[int, str], dict[str, Any]]:
+        from transformers import DataCollatorForTokenClassification
+
+        from training_hub.utils import load_training_dataset
+
+        tokens_col = p.get("tokens_column") or "tokens"
+        label_col = p.get("label_column") or "ner_tags"
+        ds = load_training_dataset(data_path)
+        for col in (tokens_col, label_col):
+            if col not in ds.column_names:
+                raise ValueError(f"token_classification needs a '{col}' column. Found: {ds.column_names}")
+        flat = [t for row in ds[label_col] for t in (row or [])]
+        id2label, label2id, already_int = _encode_labels(flat)
+
+        def _align(example):
+            enc = tokenizer(
+                example[tokens_col], truncation=True, max_length=max_seq_len, is_split_into_words=True
+            )
+            enc["labels"] = _align_word_labels(
+                enc.word_ids(), example[label_col], label2id, already_int
+            )
+            return enc
+
+        tokenized = ds.map(_align, remove_columns=ds.column_names)
+        collator = DataCollatorForTokenClassification(tokenizer, max_length=max_seq_len)
+        return tokenized, collator, id2label, {"num_labels": len(id2label)}
+
+    def _prep_multiple_choice(self, data_path, tokenizer, max_seq_len, p):
+        from datasets import Value
+
+        from training_hub.utils import load_training_dataset
+
+        text_col = p.get("text_column") or "text"
+        options_col = p.get("options_column") or "options"
+        label_col = p.get("label_column") or "label"
+        ds = load_training_dataset(data_path)
+        for col in (text_col, options_col, label_col):
+            if col not in ds.column_names:
+                raise ValueError(f"multiple_choice needs a '{col}' column. Found: {ds.column_names}")
+
+        def _tok(example):
+            context = example[text_col]
+            options = list(example[options_col])
+            enc = tokenizer(
+                [context] * len(options), options, truncation=True, max_length=max_seq_len
+            )
+            return {
+                "input_ids": enc["input_ids"],
+                "attention_mask": enc["attention_mask"],
+                "label": int(example[label_col]),
+            }
+
+        tokenized = ds.map(_tok, remove_columns=ds.column_names)
+        tokenized = tokenized.cast_column("label", Value("int64"))
+        # Multiple-choice has a dynamic per-question option set; id2label indexes positions.
+        # Compute the max option count from the raw options column, not from the
+        # tokenized input_ids — materializing every tokenized option list at once
+        # is a memory blowup on large datasets; the raw strings are far lighter.
+        max_k = max(len(x) for x in ds[options_col])
+        id2label = {i: f"option_{i}" for i in range(max_k)}
+        return tokenized, _MultipleChoiceCollator(tokenizer), id2label, {}
+
+
+class _MultipleChoiceCollator:
+    """Pads a batch of per-example choice lists into [batch, num_choices, seq] tensors.
+
+    Variable option counts are padded up to the batch max with empty (all-pad) choices;
+    the correct-option index (``label``) is unaffected. A boolean ``choice_mask``
+    (True = real choice) marks the padded slots so the loss can exclude them."""
+
+    def __init__(self, tokenizer: Any) -> None:
+        self.tokenizer = tokenizer
+
+    def __call__(self, features: list[dict]) -> dict:
+        import torch
+
+        labels = [f["label"] for f in features]
+        real_counts = [len(f["input_ids"]) for f in features]
+        num_choices = max(real_counts)
+        flat: list[dict] = []
+        for f in features:
+            ids = list(f["input_ids"])
+            masks = list(f["attention_mask"])
+            while len(ids) < num_choices:  # pad missing choices with an empty sequence
+                ids.append([self.tokenizer.pad_token_id])
+                masks.append([0])
+            for c in range(num_choices):
+                flat.append({"input_ids": ids[c], "attention_mask": masks[c]})
+        padded = self.tokenizer.pad(flat, return_tensors="pt")
+        bsz, seq = len(features), padded["input_ids"].shape[-1]
+        batch = {k: v.view(bsz, num_choices, seq) for k, v in padded.items()}
+        batch["labels"] = torch.tensor(labels, dtype=torch.long)
+        # True for real choices, False for padded slots; _multiple_choice_trainer masks the
+        # padded slots to -inf before cross-entropy so variable-K batches stay unbiased.
+        choice_mask = torch.zeros(bsz, num_choices, dtype=torch.bool)
+        for i, n in enumerate(real_counts):
+            choice_mask[i, :n] = True
+        batch["choice_mask"] = choice_mask
+        return batch
+
+
+def _trainer_with_loss(loss_fn: Callable, **trainer_kwargs):
+    """Wrap a callable ``loss_fn(logits, labels) -> loss`` in a Trainer subclass."""
+    from transformers import Trainer
+
+    class _CustomLossTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, **kw):
+            # The MC collator adds a choice_mask the backbone doesn't accept; drop it so
+            # model(**inputs) is clean. A 2-arg loss_fn owns any masking it needs itself.
+            inputs.pop("choice_mask", None)
+            labels = inputs.pop("labels")
+            outputs = model(**inputs)
+            loss = loss_fn(outputs.logits, labels)
+            return (loss, outputs) if return_outputs else loss
+
+    return _CustomLossTrainer(**trainer_kwargs)
+
+
+def _multiple_choice_trainer(**trainer_kwargs):
+    """Trainer for the default multiple-choice path: masks padded choice slots out of the
+    softmax so variable-K batches are unbiased (padded options contribute no gradient).
+
+    The backbone (``AutoModelForMultipleChoice``) is called without ``labels`` so it
+    returns raw per-choice logits; we mask the padded slots to ``-inf`` and compute
+    cross-entropy ourselves. ``choice_mask`` is popped so it is never passed to the model.
+    """
+    import torch.nn.functional as F
+    from transformers import Trainer
+
+    class _MultipleChoiceTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, **kw):
+            choice_mask = inputs.pop("choice_mask", None)
+            labels = inputs.pop("labels")
+            outputs = model(**inputs)
+            logits = outputs.logits
+            if choice_mask is not None:
+                logits = logits.masked_fill(~choice_mask, float("-inf"))
+            loss = F.cross_entropy(logits, labels)
+            outputs.loss = loss
+            return (loss, outputs) if return_outputs else loss
+
+    return _MultipleChoiceTrainer(**trainer_kwargs)
+
+
+# task -> (data-prep method name, Auto class name)
+_PREP = {
+    "sequence_classification": DecisionHeadBackend._prep_sequence_classification,
+    "multiple_choice": DecisionHeadBackend._prep_multiple_choice,
+    "token_classification": DecisionHeadBackend._prep_token_classification,
+}
+_AUTO_CLASS = {
+    "sequence_classification": "AutoModelForSequenceClassification",
+    "multiple_choice": "AutoModelForMultipleChoice",
+    "token_classification": "AutoModelForTokenClassification",
+}
+
+
+class ClassifierSFTAlgorithm(Algorithm):
+    """Algorithm for decision/classification-head fine-tuning."""
+
+    def __init__(self, backend: Backend, **kwargs):
+        self.backend = backend
+
+    def train(self, **kwargs) -> Any:
+        return self.backend.execute_training(kwargs)
+
+    def get_required_params(self) -> dict[str, type]:
+        return {"model_path": str, "data_path": str, "ckpt_output_dir": str}
+
+    def get_optional_params(self) -> dict[str, type]:
+        return {
+            "task": str,
+            "num_epochs": int,
+            "batch_size": int,
+            "learning_rate": float,
+            "max_seq_len": int,
+            "text_column": str,
+            "label_column": str,
+            "options_column": str,
+            "tokens_column": str,
+            "use_peft": bool,
+            "lora_r": int,
+            "lora_alpha": int,
+            "lora_dropout": float,
+            "lora_target_modules": list,
+            "trust_remote_code": bool,
+            "revision": str,
+            "model_class": str,
+            "loss_fn": str,
+            "warmup_ratio": float,
+            "weight_decay": float,
+            "gradient_accumulation_steps": int,
+            "seed": int,
+        }
+
+
+def classifier_sft(
+    model_path: str,
+    data_path: str,
+    ckpt_output_dir: str,
+    *,
+    backend: str = "decision-head",
+    task: str = "sequence_classification",
+    num_epochs: int = 3,
+    batch_size: int = 16,
+    learning_rate: float = 2e-5,
+    max_seq_len: int = 512,
+    text_column: str = "text",
+    # None lets each task apply its own default (label for seq/MC, ner_tags for token-cls).
+    label_column: Optional[str] = None,
+    options_column: str = "options",
+    tokens_column: str = "tokens",
+    use_peft: bool = False,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    lora_target_modules: Optional[list] = None,
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
+    model_class: Optional[str] = None,
+    loss_fn: Optional[str] = None,
+    warmup_ratio: float = 0.0,
+    weight_decay: float = 0.01,
+    gradient_accumulation_steps: int = 1,
+    seed: int = 42,
+    **kwargs: Any,
+) -> Any:
+    """Fine-tune a decision/classification head. See the module docstring for the tasks.
+
+    Args:
+        model_path: Backbone — an encoder (ModernBERT/DeBERTa/BERT, full fine-tune) or a
+            decoder (Qwen/Llama, use ``use_peft=True``). HF hub id or local path.
+        data_path: Training data (.jsonl/.json/.parquet/.csv or an HF dataset id). Columns
+            expected depend on ``task`` (see the column args below).
+        ckpt_output_dir: Directory to write the fine-tuned model, tokenizer, and
+            ``label_mapping.json`` (task + id2label/label2id).
+        backend: Backend implementation name (default ``decision-head``).
+        task: ``sequence_classification`` (default), ``multiple_choice``, or
+            ``token_classification``.
+        num_epochs: Training epochs (default 3). Decoder backbones usually need more.
+        batch_size: Per-device batch size (default 16).
+        learning_rate: Learning rate (default ``2e-5``, tuned for encoders). A freshly
+            initialized head on a decoder backbone typically needs ``~1e-4..1e-3`` and
+            more epochs to avoid single-class collapse (see the module docstring).
+        max_seq_len: Max token length (default 512).
+        text_column: Text/context column for ``sequence_classification`` and
+            ``multiple_choice`` (default ``text``).
+        label_column: Label column. Default ``label`` for ``sequence_classification`` /
+            ``multiple_choice``, ``ner_tags`` for ``token_classification``. String labels
+            are encoded to contiguous ints (recorded in ``label_mapping.json``).
+        options_column: Options-list column for ``multiple_choice`` (default ``options``).
+        tokens_column: Pre-split tokens column for ``token_classification``
+            (default ``tokens``).
+        use_peft: Fine-tune with LoRA instead of a full fine-tune (recommended for
+            decoder backbones). Adapters are merged into the base weights before saving.
+        lora_r: LoRA rank (default 16).
+        lora_alpha: LoRA alpha (default 32).
+        lora_dropout: LoRA dropout (default 0.05).
+        lora_target_modules: Explicit list of module names to adapt; ``None`` (default)
+            lets PEFT pick sensible targets for the architecture.
+        trust_remote_code: Allow loading a custom architecture that ships an HF
+            ``auto_map`` (opt-in; the model author's code runs). Pin ``revision`` with it.
+        revision: Model repo commit/branch/tag to pin — strongly recommended with
+            ``trust_remote_code`` so the executed code can't change under you.
+        model_class: Dotted path to an importable ``*.from_pretrained`` class, for a
+            backbone distributed as a pip package rather than via ``auto_map``.
+        loss_fn: Dotted path to a custom ``loss_fn(logits, labels)`` callable or a
+            ``Trainer`` subclass, for a bespoke objective.
+        warmup_ratio: Fraction of total steps used for LR warmup (default 0.0).
+        weight_decay: Weight decay (default 0.01).
+        gradient_accumulation_steps: Steps to accumulate before an optimizer update
+            (default 1).
+        seed: Random seed (default 42).
+
+    Returns:
+        dict: ``{"ckpt_output_dir": str, "task": str, "id2label": dict[int, str]}`` —
+        the saved checkpoint directory, the trained task, and the label mapping.
+
+    Example:
+        classifier_sft(
+            model_path="answerdotai/ModernBERT-base",
+            data_path="intents.parquet",
+            ckpt_output_dir="./intent_clf",
+            text_column="text", label_column="category",
+        )
+    """
+    from . import create_algorithm
+
+    algorithm = create_algorithm("classifier_sft", backend)
+    return algorithm.train(
+        model_path=model_path,
+        data_path=data_path,
+        ckpt_output_dir=ckpt_output_dir,
+        task=task,
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        max_seq_len=max_seq_len,
+        text_column=text_column,
+        label_column=label_column,
+        options_column=options_column,
+        tokens_column=tokens_column,
+        use_peft=use_peft,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        lora_target_modules=lora_target_modules,
+        trust_remote_code=trust_remote_code,
+        revision=revision,
+        model_class=model_class,
+        loss_fn=loss_fn,
+        warmup_ratio=warmup_ratio,
+        weight_decay=weight_decay,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        seed=seed,
+        **kwargs,
+    )
+
+
+AlgorithmRegistry.register_algorithm("classifier_sft", ClassifierSFTAlgorithm)
+AlgorithmRegistry.register_backend("classifier_sft", "decision-head", DecisionHeadBackend)
