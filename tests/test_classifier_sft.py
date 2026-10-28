@@ -60,7 +60,7 @@ class TestEncodeLabels:
         # A null label in otherwise-labeled data previously crashed the string path
         # with an opaque KeyError('None'); the int path failed later at
         # tensorification. Both must fail loudly at label-encoding time instead.
-        with pytest.raises(ValueError, match=r"2 null label\(s\) of 3"):
+        with pytest.raises(ValueError, match=r"1 null label\(s\) of 3"):
             _encode_labels(["billing", None, "support"])
 
         with pytest.raises(ValueError, match="null label"):
