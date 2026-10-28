@@ -56,6 +56,16 @@ class TestEncodeLabels:
         with pytest.raises(ValueError, match="no non-null labels"):
             _encode_labels([None, None])
 
+    def test_null_labels_raise_clear_error(self):
+        # A null label in otherwise-labeled data previously crashed the string path
+        # with an opaque KeyError('None'); the int path failed later at
+        # tensorification. Both must fail loudly at label-encoding time instead.
+        with pytest.raises(ValueError, match=r"2 null label\(s\) of 3"):
+            _encode_labels(["billing", None, "support"])
+
+        with pytest.raises(ValueError, match="null label"):
+            _encode_labels([0, 1, None])
+
 
 class TestResolveDotted:
     def test_resolves_attribute(self):

@@ -18,6 +18,12 @@ Backbones: encoder models (ModernBERT/DeBERTa/BERT) are full fine-tuned; decoder
 package rather than ``auto_map``, point ``model_class`` at an importable
 ``*.from_pretrained`` class (the user installs that package; we take on no dependency).
 
+Decoder note: a fresh classification head on a decoder backbone trains far slower than
+an encoder's — the default ``learning_rate=2e-5`` suits encoders, but decoders with a
+newly initialized head typically need ~1e-4..1e-3 and more epochs to move off a
+single-class collapse (verified empirically: Qwen2.5-1.5B + LoRA collapsed at 2e-5,
+fit its training set at 1e-3).
+
 Calibration (temperature scaling / ECE) is applied at evaluation time, not here.
 """
 
@@ -76,10 +82,21 @@ def _encode_labels(values: list[Any]) -> tuple[dict[int, str], dict[Any, int], b
     """Return (id2label, label2id, already_int) for a flat list of labels.
 
     Integer labels keep their value (head spans 0..max); strings/bools/floats map to
-    contiguous sorted codes."""
+    contiguous sorted codes. Float labels are treated as categorical (remapped to
+    contiguous codes) — unlike embedding_sft, which preserves integer-valued floats;
+    the mapping is recorded in label_mapping.json either way."""
     non_null = [v for v in values if v is not None]
     if not non_null:
         raise ValueError("Dataset has no non-null labels to train on.")
+    if len(non_null) < len(values):
+        # Unlike embedding_sft (whose losses tolerate None), a classification head
+        # has no null consumer: the string path would KeyError on str(None) and the
+        # int path would fail at tensorification. Fail loudly with the count instead.
+        raise ValueError(
+            f"Dataset has {len(values) - len(non_null)} null label(s) of {len(values)} rows. "
+            "Remove or fill them before training — a classification head cannot train on "
+            "unlabeled rows."
+        )
     sample = non_null[0]
     if isinstance(sample, int) and not isinstance(sample, bool):
         max_id = max(int(v) for v in non_null)
@@ -301,7 +318,10 @@ class DecisionHeadBackend(Backend):
         tokenized = ds.map(_tok, remove_columns=ds.column_names)
         tokenized = tokenized.cast_column("label", Value("int64"))
         # Multiple-choice has a dynamic per-question option set; id2label indexes positions.
-        max_k = max(len(x) for x in tokenized["input_ids"])
+        # Compute the max option count from the raw options column, not from the
+        # tokenized input_ids — materializing every tokenized option list at once
+        # is a memory blowup on large datasets; the raw strings are far lighter.
+        max_k = max(len(x) for x in ds[options_col])
         id2label = {i: f"option_{i}" for i in range(max_k)}
         return tokenized, _MultipleChoiceCollator(tokenizer), id2label, {}
 
