@@ -16,6 +16,18 @@ _FORMAT_MAP = {
 }
 
 
+def get_accelerator_module():
+    """Return ``torch.cuda`` or ``torch.xpu`` for the available accelerator, else None.
+
+    CUDA is preferred when both are present.
+    """
+    if torch.cuda.is_available():
+        return torch.cuda
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.xpu
+    return None
+
+
 def load_training_dataset(data_path: str, split: str = "train") -> "datasets.Dataset":
     """Load a dataset from a local file, auto-detecting format from extension.
 
@@ -264,21 +276,32 @@ def get_torchrun_params(args: dict) -> dict[str, str | int]:
     def validate_nproc_per_node(value: int | str) -> int | str:
         """Validate and normalize nproc_per_node."""
         if not isinstance(value, (int, str)):
-            raise ValueError(f"nproc_per_node must be 'auto', 'gpu', or an integer, got type {type(value).__name__}")
+            raise ValueError(f"nproc_per_node must be 'auto', 'gpu', 'xpu', or an integer, got type {type(value).__name__}")
         if isinstance(value, int):
             return value
 
         value_lower = value.lower().strip()
-        if value_lower not in ['auto', 'gpu'] and not value_lower.isdigit():
-            raise ValueError(f"nproc_per_node must be 'auto', 'gpu', or an integer, got: {value!r}")
+        if value_lower not in ['auto', 'gpu', 'xpu'] and not value_lower.isdigit():
+            raise ValueError(f"nproc_per_node must be 'auto', 'gpu', 'xpu', or an integer, got: {value!r}")
         if value_lower.isdigit():
             return int(value_lower)
 
-        # handle 'auto' and 'gpu' - both require CUDA
-        if value_lower in ['auto', 'gpu'] and torch.cuda.is_available():
+        # 'gpu' means CUDA to torchrun, 'xpu' means Intel XPU; 'auto' picks
+        # whichever accelerator is present (CUDA first). XPU resolves to the
+        # device count because torchrun only accepts 'xpu' from torch 2.10.
+        cuda_ok = torch.cuda.is_available()
+        xpu_ok = hasattr(torch, 'xpu') and torch.xpu.is_available()
+        if value_lower == 'gpu' and cuda_ok:
             return 'gpu'
-        else:
-            raise ValueError(f"nproc_per_node='{value_lower}' requires CUDA GPUs, but none are available")
+        if value_lower == 'xpu' and xpu_ok:
+            return torch.xpu.device_count()
+        if value_lower == 'auto':
+            if cuda_ok:
+                return 'gpu'
+            if xpu_ok:
+                return torch.xpu.device_count()
+        required = {'gpu': 'CUDA GPUs', 'xpu': 'Intel XPUs'}.get(value_lower, 'CUDA GPUs or Intel XPUs')
+        raise ValueError(f"nproc_per_node='{value_lower}' requires {required}, but none are available")
 
     def get_param_reference(param_name: str, source: str) -> str:
         """Format parameter reference based on source (args vs env)."""

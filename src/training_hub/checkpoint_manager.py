@@ -135,11 +135,20 @@ def any_rank(flag: bool) -> bool:
         import torch.distributed as dist
 
         if dist.is_available() and dist.is_initialized():
-            device = (
-                torch.device("cuda", torch.cuda.current_device())
-                if torch.cuda.is_available()
-                else torch.device("cpu")
-            )
+            # Gloo reduces CPU tensors; NCCL needs CUDA and XCCL needs XPU.
+            backend = dist.get_backend()
+            if backend == "gloo":
+                device = torch.device("cpu")
+            elif backend == "nccl":
+                device = torch.device("cuda", torch.cuda.current_device())
+            elif backend == "xccl":
+                device = torch.device("xpu", torch.xpu.current_device())
+            elif torch.cuda.is_available():
+                device = torch.device("cuda", torch.cuda.current_device())
+            elif hasattr(torch, "xpu") and torch.xpu.is_available():
+                device = torch.device("xpu", torch.xpu.current_device())
+            else:
+                device = torch.device("cpu")
             t = torch.tensor([1 if flag else 0], device=device)
             dist.all_reduce(t, op=dist.ReduceOp.MAX)
             return bool(t.item())
