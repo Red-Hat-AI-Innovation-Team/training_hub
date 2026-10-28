@@ -10,6 +10,8 @@ import pytest
 from training_hub import ClassifierSFTAlgorithm
 from training_hub.algorithms.classifier_sft import (
     DecisionHeadBackend,
+    _MultipleChoiceCollator,
+    _align_word_labels,
     _encode_labels,
     _resolve_dotted,
 )
@@ -27,6 +29,7 @@ class TestParams:
             "options_column",
             "tokens_column",
             "use_peft",
+            "lora_target_modules",  # accepted by classifier_sft() + read by the backend
             "trust_remote_code",
             "revision",
             "model_class",
@@ -65,6 +68,60 @@ class TestEncodeLabels:
 
         with pytest.raises(ValueError, match="null label"):
             _encode_labels([0, 1, None])
+
+    def test_nan_float_labels_rejected(self):
+        # A parquet/pandas float column carries missing values as NaN — a float, so the
+        # `is not None` filter lets it through — which would otherwise become a "nan" class.
+        import math
+
+        with pytest.raises(ValueError, match="null label"):
+            _encode_labels([1.0, math.nan, 2.0])
+        with pytest.raises(ValueError, match="no non-null"):
+            _encode_labels([float("nan"), float("nan")])
+
+
+class TestAlignWordLabels:
+    """Token-classification sub-word alignment (only the first sub-token of each word
+    carries the label; special tokens and continuations are -100)."""
+
+    def test_int_tags_with_subword_split(self):
+        # word_ids: [CLS]=None, word0, word0 (sub-word), word1, [SEP]=None
+        out = _align_word_labels([None, 0, 0, 1, None], tags=[3, 5], label2id={}, already_int=True)
+        assert out == [-100, 3, -100, 5, -100]
+
+    def test_string_tags_mapped_through_label2id(self):
+        out = _align_word_labels(
+            [None, 0, 0, 1, None], tags=["B", "I"], label2id={"B": 0, "I": 1}, already_int=False
+        )
+        assert out == [-100, 0, -100, 1, -100]
+
+
+class TestMultipleChoiceCollator:
+    """Variable option counts pad to the batch max with empty choices; a boolean
+    choice_mask marks the padded slots so the loss can exclude them."""
+
+    class _StubTokenizer:
+        pad_token_id = 0
+
+        def pad(self, features, return_tensors=None):
+            import torch
+
+            maxlen = max(len(f["input_ids"]) for f in features)
+            ids = [f["input_ids"] + [self.pad_token_id] * (maxlen - len(f["input_ids"])) for f in features]
+            masks = [f["attention_mask"] + [0] * (maxlen - len(f["attention_mask"])) for f in features]
+            return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(masks)}
+
+    def test_variable_k_padding_shapes_and_mask(self):
+        collator = _MultipleChoiceCollator(self._StubTokenizer())
+        features = [
+            {"input_ids": [[1, 2], [3, 4], [5, 6]], "attention_mask": [[1, 1], [1, 1], [1, 1]], "label": 2},
+            {"input_ids": [[7, 8]], "attention_mask": [[1, 1]], "label": 0},
+        ]
+        batch = collator(features)
+        assert batch["input_ids"].shape == (2, 3, 2)  # bsz, max K, seq
+        assert batch["labels"].tolist() == [2, 0]
+        # the second example had 1 real choice of 3 → only its first slot is real
+        assert batch["choice_mask"].tolist() == [[True, True, True], [True, False, False]]
 
 
 class TestResolveDotted:
