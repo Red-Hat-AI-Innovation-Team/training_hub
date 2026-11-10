@@ -2,7 +2,7 @@ try: from typing import override
 except ImportError: from typing_extensions import override
 import warnings
 import torch
-from transformers import AutoModel
+from transformers import AutoConfig, AutoModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
 
 from torch.distributed.fsdp import ShardingStrategy 
@@ -68,6 +68,8 @@ class BasicEstimator:
         verbose (int): The level of verbosity to print out. Set to 0 for no printing,
                         set to 1 to print out only hardware recommendations,
                         set to 2 for a detailed memory breakdown.
+        count_fsdp_gather (bool): If true and num_gpus > 1, add the memory each GPU needs
+                        to gather the largest FSDP unit (default: False).
     """
 
     def __init__(
@@ -81,12 +83,15 @@ class BasicEstimator:
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
+        count_fsdp_gather: bool = False,
     ):
         self.num_gpus = num_gpus
         self.gpu_memory = gpu_memory
         self.model_path = model_path
         self.use_liger = use_liger
         self.verbose = verbose
+        self.trust_remote_code = trust_remote_code
+        self.count_fsdp_gather = count_fsdp_gather
 
         self.storage_path = os.path.join(os.path.split(os.path.realpath(__file__))[0], "model_storage.csv")
 
@@ -307,9 +312,20 @@ class BasicEstimator:
 
     def _calc_additional(self, **kwargs):
         """
-        Calculate any additional VRAM that this training method might need
+        Calculate any additional VRAM that this training method might need.
+        With count_fsdp_gather on more than one GPU, each GPU also gathers one whole FSDP
+        unit at a time: 4 bytes (16-bit weight + gradient) x the largest unit's parameters,
+        as in DeepSpeed's estimate_zero3_model_states_mem_needs. The units are each decoder
+        block and the root (the embeddings, plus the lm_head when it isn't tied).
         """
-        return 0
+        if not self.count_fsdp_gather or self.num_gpus <= 1:
+            return 0
+        config = getattr(self.model, 'config', None) or \
+            AutoConfig.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+        embed = self._get_vocab_size() * self.hidden_size
+        root = embed if config.get_text_config().tie_word_embeddings else 2 * embed
+        block = (self.num_params - embed) / self.num_layers
+        return 4 * max(root, block)
 
 
     def _apply_overhead(self, subtotal):
@@ -480,6 +496,9 @@ class LoRAEstimator(BasicEstimator):
 
     Args (in addition to the BasicEstimator args):
         lora_r (int): The rank size of LoRA's approximation matrices
+        enable_model_splitting (bool): If true, estimate for model splitting
+                        (device_map="balanced") instead of dividing every term by
+                        num_gpus (default: False).
     """
     @override
     def __init__(
@@ -493,7 +512,9 @@ class LoRAEstimator(BasicEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
+        enable_model_splitting: bool = False,
     ):
+        self.enable_model_splitting = enable_model_splitting  # used by _resolve_tokens_per_gpu
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
                         model_path=model_path,
@@ -539,7 +560,21 @@ class LoRAEstimator(BasicEstimator):
         """
         if batch_size is None or max_seq_len is None:
             raise ValueError("batch_size and max_seq_len must be provided")
-        self.tokens_per_gpu = batch_size * max_seq_len / self.num_gpus
+        # Model splitting runs one process, so every GPU sees the whole micro-batch
+        if self.enable_model_splitting:
+            self.tokens_per_gpu = batch_size * max_seq_len
+        else:
+            self.tokens_per_gpu = batch_size * max_seq_len / self.num_gpus
+
+
+    @override
+    def _calc_intermediate_activations(self):
+        """
+        With model splitting, each GPU only holds the activations of its own layers.
+        The output logits aren't divided: the last GPU holds all of them.
+        """
+        activations = super()._calc_intermediate_activations()
+        return activations / self.num_gpus if self.enable_model_splitting else activations
 
 
     @override
@@ -630,6 +665,7 @@ class QLoRAEstimator(LoRAEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
+        enable_model_splitting: bool = False,
     ):
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
@@ -639,7 +675,8 @@ class QLoRAEstimator(LoRAEstimator):
                         use_liger=use_liger,
                         verbose=verbose,
                         trust_remote_code=trust_remote_code,
-                        lora_r=lora_r)
+                        lora_r=lora_r,
+                        enable_model_splitting=enable_model_splitting)
         self.HIGH_MULTIPLIER = 1.3 # Use a looser upper bound
         self.model_bytes = FLOAT4_BYTES_N # The model will be stored in Float4
 
@@ -655,13 +692,13 @@ class QLoRAEstimator(LoRAEstimator):
 
         # If the memory needed to place the pre-quantized model onto a GPU is more than
         # the memory needed to perform QLoRA, that's the memory bottleneck.  
-        # TODO: Check that the model is actually stored in Float8 or if it gets sharded across GPUs...
-        offload_memory = self.num_params * FLOAT8_BYTES_N
+        # subtotal is per GPU, so compare it with the per-GPU share of the 8-bit model.
+        offload_memory = self.num_params * FLOAT8_BYTES_N / self.num_gpus
         if subtotal < offload_memory:
             if self.verbose > 0:
                 print("NOTE: The memory needed for this QLoRA training setup is bounded by the pre-quantized size of the model.")
                 print("You can only reduce the memory further by using a smaller model.\n")
-            return offload_memory / self.num_gpus, offload_memory / self.num_gpus, 0, 0, 0, 0, 0
+            return offload_memory, offload_memory, 0, 0, 0, 0, 0
         else:
             return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
                 gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
@@ -690,6 +727,7 @@ class OSFTEstimator(BasicEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
+        count_fsdp_gather: bool = False,
     ):
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
@@ -699,7 +737,8 @@ class OSFTEstimator(BasicEstimator):
                         max_tokens_per_gpu=max_tokens_per_gpu,
                         use_liger=use_liger,
                         verbose=verbose,
-                        trust_remote_code=trust_remote_code)
+                        trust_remote_code=trust_remote_code,
+                        count_fsdp_gather=count_fsdp_gather)
 
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
@@ -763,6 +802,7 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                 verbose: int = 1,
                 trust_remote_code: bool = False,
                 unfreeze_rank_ratio: float = 0.25,
+                count_fsdp_gather: bool = False,
                 ):
         reason = "All experimental functionality has been moved into the main OSFTEstimator class, " + \
             "please use that instead.\nIf you are seeing this by using the 'osft-e' option in the " + \
@@ -778,7 +818,8 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                         use_liger=use_liger,
                         verbose=verbose,
                         trust_remote_code=trust_remote_code,
-                        unfreeze_rank_ratio=unfreeze_rank_ratio)
+                        unfreeze_rank_ratio=unfreeze_rank_ratio,
+                        count_fsdp_gather=count_fsdp_gather)
 
 def estimate(
         training_method: str = "sft",
@@ -793,6 +834,8 @@ def estimate(
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
         lora_r: int = 32,
+        count_fsdp_gather: bool = False,
+        enable_model_splitting: bool = False,
     ):
     """
     Convenience function for performing estimation
@@ -816,6 +859,9 @@ def estimate(
                         set to 2 for a detailed memory breakdown.
         unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
                                     during OSFT.
+        count_fsdp_gather (bool): sft/osft only. Add the per-GPU FSDP unit gather when num_gpus > 1.
+        enable_model_splitting (bool): lora/qlora only. Estimate for model splitting
+                                    (device_map="balanced"); batch_size is then the samples per step.
 
     Return:
         A tuple containing three values:
@@ -836,7 +882,8 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    unfreeze_rank_ratio=unfreeze_rank_ratio)
+                                    unfreeze_rank_ratio=unfreeze_rank_ratio,
+                                    count_fsdp_gather=count_fsdp_gather)
     elif training_method.lower() == "osft-e":
         if use_liger is None:
             use_liger = True
@@ -849,7 +896,8 @@ def estimate(
                                                 use_liger=use_liger,
                                                 verbose=verbose,
                                                 trust_remote_code=trust_remote_code,
-                                                unfreeze_rank_ratio=unfreeze_rank_ratio)
+                                                unfreeze_rank_ratio=unfreeze_rank_ratio,
+                                                count_fsdp_gather=count_fsdp_gather)
     elif training_method.lower() == "lora":
         if use_liger is None:
             use_liger = False
@@ -861,7 +909,8 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    lora_r=lora_r)
+                                    lora_r=lora_r,
+                                    enable_model_splitting=enable_model_splitting)
     elif training_method.lower() == "qlora":
         if use_liger is None:
             use_liger = False
@@ -873,7 +922,8 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    lora_r=lora_r)
+                                    lora_r=lora_r,
+                                    enable_model_splitting=enable_model_splitting)
     else:
         if use_liger is None:
             use_liger = False
@@ -885,7 +935,8 @@ def estimate(
                                     max_tokens_per_gpu=max_tokens_per_gpu,
                                     use_liger=use_liger,
                                     verbose=verbose,
-                                    trust_remote_code=trust_remote_code)
+                                    trust_remote_code=trust_remote_code,
+                                    count_fsdp_gather=count_fsdp_gather)
 
     
     return estimator.estimate()
