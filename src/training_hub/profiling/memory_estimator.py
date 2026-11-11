@@ -40,6 +40,9 @@ MATERIALIZES_LOGITS: tuple[str, ...] = ("gemma4",)
 
 # Where the estimator caches each model's sizes (tests point this somewhere temporary)
 MODEL_STORAGE_PATH: str = os.path.join(os.path.dirname(os.path.realpath(__file__)), "model_storage.csv")
+# Bump when the cached values change meaning, so rows from older versions are rebuilt.
+# 2: counts the lm_head of untied models and adds lora_weight_size / max_block_params.
+MODEL_STORAGE_VERSION: int = 2
 
 # Helper function to do the rounding when printing 
 def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
@@ -177,7 +180,8 @@ class BasicEstimator:
         if os.path.exists(self.storage_path):
                 read_csv = pd.read_csv(self.storage_path, index_col='name') 
                 self.model_storage = read_csv.to_dict(orient='index')
-                if model_path in self.model_storage:
+                cached_version = self.model_storage.get(model_path, {}).get('cache_version')
+                if model_path in self.model_storage and cached_version == MODEL_STORAGE_VERSION:
                     try:
                         self.found_model = True
                         self.model = _ModelStorage(self.model_storage[model_path])
@@ -188,7 +192,10 @@ class BasicEstimator:
                     except:
                         self.found_model = False
                         self._load_model("Model missing necessary parameters.", trust_remote_code=trust_remote_code)
-                else: self._load_model("Model not found in the CSV.", trust_remote_code=trust_remote_code)                
+                elif model_path in self.model_storage:
+                    self._load_model("The CSV entry was written by an older version of the estimator.",
+                                     trust_remote_code=trust_remote_code)
+                else: self._load_model("Model not found in the CSV.", trust_remote_code=trust_remote_code)
         else:
             self.model_storage = {}
             self._load_model("No CSV file found.", trust_remote_code=trust_remote_code)
@@ -273,6 +280,7 @@ class BasicEstimator:
                 'lora_weight_size': self._calc_lora_weight_size(),
                 'osft_params': self._calc_osft_params(),
                 'max_block_params': self._calc_max_block_params(),
+                'cache_version': MODEL_STORAGE_VERSION,
             }
         data_out = pd.DataFrame.from_dict(self.model_storage, orient='index')
         data_out.to_csv(self.storage_path, index=True, index_label='name')
@@ -300,8 +308,11 @@ class BasicEstimator:
 
     def _find_decoder_blocks(self) -> str:
         """
-        Find the module list holding the text decoder blocks: the longest nn.ModuleList
-        outside the vision/audio towers (e.g. "model.layers" or "model.language_model.layers").
+        Find the module list holding the text decoder blocks (e.g. "model.layers" or
+        "model.language_model.layers"): the shallowest nn.ModuleList outside the vision/audio
+        towers with one entry per decoder layer. MoE layers can hold a longer per-layer list of
+        experts (e.g. 128 experts vs. 48 layers), so length alone isn't enough. Falls back to
+        the longest list if none has num_hidden_layers entries.
 
         Returns:
             str: The module name of the decoder block list
@@ -311,6 +322,10 @@ class BasicEstimator:
                       and not any(term in name for term in NON_TEXT_MODULE_TERMS)]
         if not candidates:
             raise ValueError(f"Could not find the decoder blocks of {self.model_path}")
+        num_layers = getattr(self.model.config.get_text_config(), "num_hidden_layers", None)
+        matching = [candidate for candidate in candidates if len(candidate[1]) == num_layers]
+        if matching:
+            return min(matching, key=lambda candidate: candidate[0].count("."))[0]
         return max(candidates, key=lambda candidate: len(candidate[1]))[0]
 
 
@@ -983,9 +998,15 @@ class LoRAEstimator(BasicEstimator):
             for layer, size in lora_per_layer.items():
                 lora_on[self._device_of(f"{blocks}.{layer}", device_map)] += size
             head_gpu = self._device_of(head_name, device_map) if head_name else gpus[-1]
-            if any(not isinstance(device, int) for device in weights):
+            # If the model doesn't fit, the placement offloads the rest to the CPU or disk. Count it
+            # on the GPUs anyway, so the estimate shows how much memory a fitting setup needs.
+            offloaded = sum(size for device, size in weights.items() if not isinstance(device, int))
+            if offloaded:
                 warnings.warn("The model doesn't fit on " + str(self.num_gpus) + " GPUs: "
-                              "device_map=\"balanced\" would offload part of it to the CPU or disk.")
+                              "device_map=\"balanced\" would offload part of it to the CPU or disk.",
+                              stacklevel=2)
+                for gpu in gpus:
+                    weights[gpu] += offloaded / len(gpus)
         else:
             warnings.warn("Could not work out the device_map=\"balanced\" placement with this "
                           "transformers version. Assuming the model is split evenly across GPUs.")

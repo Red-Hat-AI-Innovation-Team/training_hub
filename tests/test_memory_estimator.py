@@ -63,6 +63,14 @@ def configs(monkeypatch, tmp_path):
     return registry
 
 
+def placement_or_skip(est):
+    """The device_map placement, or skip the test if this transformers version can't compute it."""
+    placement = est._calc_split_placement()
+    if placement is None:
+        pytest.skip("transformers device_map helpers unavailable")
+    return placement
+
+
 def lora(path: str, cls=me.LoRAEstimator, **kwargs):
     kwargs = {"num_gpus": 1, "batch_size": 2, "max_seq_len": 16, "lora_r": 4, "verbose": 0, **kwargs}
     return cls(model_path=path, **kwargs)
@@ -88,7 +96,9 @@ def test_lora_count_vlm_skips_vision_tower(configs):
 
 
 def test_lora_count_moe_counts_experts_but_not_router(configs):
-    per_layer = lora("moe")._calc_lora_weight_size_per_layer()
+    est = lora("moe")
+    assert est._find_decoder_blocks() == "model.layers"
+    per_layer = est._calc_lora_weight_size_per_layer()
     assert per_layer[0] == DENSE_LAYER
     # Fused [experts, out, in] tensors (gate_up 2*32x64, down 64x32) or, in older transformers,
     # one gate/up/down nn.Linear per expert. The router (64 -> 8) is never counted.
@@ -103,6 +113,15 @@ def test_lora_count_skips_linear_router(configs):
     before = est._calc_lora_weight_size_per_layer()
     est.model.model.layers[1].mlp.gate = torch.nn.Linear(HIDDEN, NUM_EXPERTS, bias=False, device="meta")
     assert est._calc_lora_weight_size_per_layer() == before
+
+
+def test_decoder_blocks_not_a_longer_per_layer_expert_list(configs):
+    # transformers 4.x stores MoE experts as one nn.ModuleList per layer, longer than the layer list
+    est = lora("moe")
+    experts = torch.nn.ModuleList(torch.nn.Linear(HIDDEN, EXPERT_WIDTH, device="meta") for _ in range(NUM_EXPERTS))
+    est.model.model.layers[1].mlp.expert_list = experts
+    assert est._find_decoder_blocks() == "model.layers"
+    assert set(est._calc_lora_weight_size_per_layer()) == {0, 1}
 
 
 def test_lora_count_target_modules(configs):
@@ -126,6 +145,29 @@ def test_ddp_every_gpu_holds_a_full_replica(configs):
     assert ddp._calc_model_params() == one._calc_model_params() == ddp.num_params * 2 + ddp.AB_params * 4
     assert ddp._calc_optimizer() == one._calc_optimizer()
     assert ddp.estimate() == one.estimate()
+
+
+def test_split_counts_offloaded_weights(configs):
+    # GPUs far too small for the model: the placement offloads, and the estimate must not fit
+    tiny = 64 * 1024
+    est = lora("dense-8", num_gpus=2, enable_model_splitting=True, gpu_memory=tiny)
+    with pytest.warns(UserWarning, match="doesn't fit"):
+        est.estimate()
+    total = me._PlacementSizer(est.model, quantize_4bit=False).total_size(est.model)
+    assert sum(split_weights(est).values()) == pytest.approx(total, rel=0.01)
+    assert max(sum(c) for c in est.split_components.values()) > tiny
+
+
+def test_cache_rows_from_older_versions_are_rebuilt(configs):
+    lora("dense")
+    rows = me.pd.read_csv(me.MODEL_STORAGE_PATH, index_col="name")
+    assert rows.loc["dense", "cache_version"] == me.MODEL_STORAGE_VERSION
+    rows.loc["dense", "cache_version"] = me.MODEL_STORAGE_VERSION - 1
+    rows.loc["dense", "num_params"] = 1  # a stale value that must not be reused
+    rows.to_csv(me.MODEL_STORAGE_PATH, index=True, index_label="name")
+    est = lora("dense")
+    assert not est.found_model
+    assert est.num_params > 1
 
 
 def test_split_spreads_weights_across_gpus(configs):
@@ -152,7 +194,7 @@ def test_fused_loss_has_no_logits(configs):
 def test_logits_only_on_the_lm_head_gpu(configs, path):
     est = lora(path, num_gpus=2, enable_model_splitting=True, fused_loss=False)
     est.estimate()
-    device_map, _ = est._calc_split_placement()
+    device_map, _ = placement_or_skip(est)
     head_gpu = est._device_of("lm_head", device_map)
     if est.model.config.tie_word_embeddings:
         assert head_gpu == est._device_of("model.embed_tokens", device_map)
@@ -185,7 +227,7 @@ def test_qlora_quantizes_only_linear_weights(configs):
 def test_qlora_lm_head_workspace_for_untied_models(configs, path, untied):
     est = lora(path, cls=me.QLoRAEstimator, num_gpus=2, enable_model_splitting=True)
     est.estimate()
-    device_map, _ = est._calc_split_placement()
+    device_map, _ = placement_or_skip(est)
     head_gpu = est._device_of("lm_head", device_map)
     workspace = VOCAB * HIDDEN * 2 if untied else 0
     assert est.split_components[head_gpu][4] == workspace
