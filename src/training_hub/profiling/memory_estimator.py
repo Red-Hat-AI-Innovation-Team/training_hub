@@ -38,8 +38,19 @@ WS_BYTES_PER_MLP_UNIT: int = 30
 # never materializes them. Extend from measurements.
 MATERIALIZES_LOGITS: tuple[str, ...] = ("gemma4",)
 
-# Where the estimator caches each model's sizes (tests point this somewhere temporary)
-MODEL_STORAGE_PATH: str = os.path.join(os.path.dirname(os.path.realpath(__file__)), "model_storage.csv")
+# Per-GPU memory that multi-GPU FSDP training (sft, osft) uses outside PyTorch's caching allocator:
+# the CUDA context, NCCL communicator buffers and cuBLAS workspaces. nvidia-smi counts it, but
+# PyTorch's memory stats and the estimate's tensor terms don't. Measured as the nvidia-smi peak
+# minus torch.cuda.max_memory_reserved on Qwen3.5-4B, 2x H100, max_tokens_per_gpu=4000: 2.6 GiB
+# for both sft (instructlab-training) and osft (mini_trainer).
+FSDP_RUNTIME_OVERHEAD_BYTES: int = int(2.6 * 1024**3)
+
+# Where the estimator caches each model's sizes: a user cache directory, not the package
+# directory, which is often read-only (e.g. site-packages in containers). Tests point this
+# somewhere temporary. The cache is optional: if it can't be written, the estimate still works.
+MODEL_STORAGE_PATH: str = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    "training_hub", "model_storage.csv")
 # Bump when the cached values change meaning, so rows from older versions are rebuilt.
 # 2: counts the lm_head of untied models and adds lora_weight_size / max_block_params.
 MODEL_STORAGE_VERSION: int = 2
@@ -234,6 +245,22 @@ class BasicEstimator:
         self.hidden_size: int = text_config.hidden_size
 
 
+    def _get_config(self) -> PretrainedConfig:
+        """
+        The model's config: the meta model's, or, when the sizes came from the CSV cache
+        (which doesn't store the config), the (small) config file, fetched once.
+
+        Returns:
+            PretrainedConfig: The model's config
+        """
+        config = getattr(self.model, 'config', None)
+        if config is not None:
+            return config
+        if getattr(self, '_config', None) is None:
+            self._config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+        return self._config
+
+
     @staticmethod
     def _build_meta_model(config: PretrainedConfig, trust_remote_code: bool = False) -> PreTrainedModel:
         """
@@ -268,7 +295,9 @@ class BasicEstimator:
 
     def _update_model_storage(self):
         """
-        Utility function to store the models' information into a CSV. 
+        Utility function to store the models' information into a CSV.
+        The CSV is only a cache, so if it can't be written (e.g. a read-only filesystem),
+        this warns and the estimate carries on without it.
         """
         self.model_storage[self.model_path] = \
             {
@@ -283,7 +312,14 @@ class BasicEstimator:
                 'cache_version': MODEL_STORAGE_VERSION,
             }
         data_out = pd.DataFrame.from_dict(self.model_storage, orient='index')
-        data_out.to_csv(self.storage_path, index=True, index_label='name')
+        try:
+            os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
+            data_out.to_csv(self.storage_path, index=True, index_label='name')
+        except OSError as e:
+            warnings.warn(f"Could not write the model size cache to {self.storage_path} ({e}). "
+                          "The estimate is unaffected, but the model's sizes will be recomputed next time. "
+                          "Set training_hub.profiling.memory_estimator.MODEL_STORAGE_PATH to a writable path to cache them.",
+                          stacklevel=2)
 
 
     def _resolve_tokens_per_gpu(self, batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
@@ -500,10 +536,16 @@ class BasicEstimator:
     def _calc_additional(self, **kwargs):
         """
         Calculate any additional VRAM that this training method might need.
-        With count_fsdp_gather on more than one GPU, each GPU also gathers one whole FSDP
-        unit at a time: 4 bytes (16-bit weight + gradient) x the largest unit's parameters,
-        as in DeepSpeed's estimate_zero3_model_states_mem_needs. The units are each decoder
-        block and the root (the embeddings, plus the lm_head when it isn't tied).
+        With count_fsdp_gather on more than one GPU, each GPU also needs:
+            the gathered FSDP unit: 4 bytes (16-bit weight + gradient) x the largest unit's
+              parameters, as in DeepSpeed's estimate_zero3_model_states_mem_needs. The units are
+              each decoder block and the root (the embeddings, plus the lm_head when it isn't tied).
+            + the prefetched unit: 2 bytes (bf16 weight) x the largest decoder block. Both backends
+              gather the next block during backward while the current one is still held:
+              instructlab-training (sft, FSDP1) uses BackwardPrefetch.BACKWARD_PRE for full
+              fine-tuning, and mini_trainer (osft, FSDP2) prefetches one block by default.
+              Measured +0.188 GiB on Qwen3-4B, which matches 2 bytes x one block.
+            + FSDP_RUNTIME_OVERHEAD_BYTES: memory outside PyTorch's allocator (see the constant).
         """
         if not self.count_fsdp_gather or self.num_gpus <= 1:
             return 0
@@ -515,11 +557,11 @@ class BasicEstimator:
             self._update_model_storage()
             cached = None
         block = int(cached) if cached is not None else self._calc_max_block_params()
-        config = getattr(self.model, 'config', None) or \
-            AutoConfig.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
         embed = self._get_vocab_size() * self.hidden_size
-        root = embed if config.get_text_config().tie_word_embeddings else 2 * embed
-        return 4 * max(root, block)
+        root = embed if self._get_config().get_text_config().tie_word_embeddings else 2 * embed
+        gathered = FLOAT32_BYTES_N * max(root, block)  # 16-bit weight + 16-bit gradient
+        prefetched = FLOAT16_BYTES_N * block
+        return gathered + prefetched + FSDP_RUNTIME_OVERHEAD_BYTES
 
 
     def _apply_overhead(self, subtotal):
@@ -780,42 +822,76 @@ class LoRAEstimator(BasicEstimator):
         self.tokens_per_gpu = batch_size * max_seq_len
 
 
-    def _replica_divisor(self) -> int:
+    def _calc_weight_bytes(self) -> float:
         """
-        How many GPUs share one copy of the model. With model splitting the GPUs share one
-        copy; without it (DDP) every GPU holds a full replica with its own LoRA and optimizer state.
+        The size of the whole model's frozen weights as loaded: bf16 for LoRA (see QLoRAEstimator).
 
         Returns:
-            int: num_gpus with model splitting, otherwise 1
+            float: The weights' bytes
         """
-        return self.num_gpus if self.enable_model_splitting else 1
+        return self.num_params * self.model_bytes
+
+
+    def _gpu_components(self, weights: float, lora_weight_size: float, outputs: float) -> tuple[float, ...]:
+        """
+        One GPU's memory, the same per-GPU formula for every mode:
+            weights on the GPU (bf16, or 4-bit for QLoRA)
+            + LoRA params on the GPU x 16 bytes: fp32 weight (4), fp32 gradient (4), 2 fp32 AdamW moments (8)
+            + one decoder layer's working set (_calc_intermediate_activations)
+            + the outputs (logits and lm_head workspace), on the lm_head GPU only
+
+        Args:
+            weights (float): Bytes of frozen weights on the GPU
+            lora_weight_size (float): LoRA weight dims (in + out) on the GPU, before multiplying by lora_r
+            outputs (float): Bytes of logits and lm_head workspace on the GPU
+
+        Returns:
+            tuple: (params, optimizer, gradients, activations, outputs), in bytes
+        """
+        lora_params = lora_weight_size * self.lora_r
+        return (
+            weights + lora_params * FLOAT32_BYTES_N,
+            lora_params * FLOAT32_BYTES_N * ADAMW_PARAMS_N,
+            lora_params * FLOAT32_BYTES_N,
+            self._calc_intermediate_activations(),
+            outputs,
+        )
 
 
     @override
     def _calc_model_params(self):
         """
-        Calcuate the VRAM for storing the model parameters.
-        For LORA, we include the memory used by the low rank matrices
+        Calcuate the VRAM for storing one full replica's parameters: the frozen weights plus
+        the fp32 LoRA matrices. Without model splitting (DDP) every GPU holds this.
         """
-        return ((self.num_params * self.model_bytes) + (self.AB_params * FLOAT32_BYTES_N)) / self._replica_divisor()
+        return self._gpu_components(self._calc_weight_bytes(), self.lora_weight_size, 0)[0]
 
 
     @override
     def _calc_gradients(self):
         """
-        Calcuate the VRAM for storing the gradients.
-        In LoRA, this value is based on number of parameters in the low rank matrices
+        Calcuate the VRAM for storing one full replica's gradients: fp32, LoRA matrices only.
         """
-        return (self.main_dtype_bytes * self.AB_params / self._replica_divisor())
+        return self._gpu_components(0, self.lora_weight_size, 0)[2]
 
 
     @override
     def _calc_optimizer(self):
         """
-        Calculate the VRAM for storing the optimizer states
-        In LoRA, this value is based on number of parameters in the low rank matrices
+        Calculate the VRAM for storing one full replica's optimizer states: 2 fp32 AdamW
+        moments, LoRA matrices only.
         """
-        return (self.main_dtype_bytes * self.AB_params * self.opt_params / self._replica_divisor())
+        return self._gpu_components(0, self.lora_weight_size, 0)[1]
+
+
+    @override
+    def _calc_intermediate_activations(self):
+        """
+        One decoder layer's live working set: WS_BYTES_PER_MLP_UNIT x MLP width x tokens.
+        With Unsloth's offloaded gradient checkpointing each GPU holds about one layer's working
+        set, so it isn't multiplied by the number of layers or divided by the number of GPUs.
+        """
+        return WS_BYTES_PER_MLP_UNIT * self._calc_mlp_width() * self.tokens_per_gpu
 
 
     def _calc_split_placement(self) -> tuple[dict[str, int | str], dict[int | str, float]] | None:
@@ -897,7 +973,7 @@ class LoRAEstimator(BasicEstimator):
         Returns:
             int: The MLP width
         """
-        text_config = self.model.config.get_text_config()
+        text_config = self._get_config().get_text_config()
 
         def first(*names: str) -> int | None:
             """The first of these text config attributes that is set (the largest, if per-layer)."""
@@ -929,9 +1005,7 @@ class LoRAEstimator(BasicEstimator):
             return not self.fused_loss
         if self.use_liger:  # Liger's loss is a fused linear + cross-entropy too
             return False
-        # The CSV cache doesn't store the model type, so fall back to the (small) config file
-        config = getattr(self.model, 'config', None) or \
-            AutoConfig.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+        config = self._get_config()  # the CSV cache doesn't store the model type
         model_types = (config.model_type, config.get_text_config().model_type)
         return any(model_type.startswith(MATERIALIZES_LOGITS) for model_type in model_types)
 
@@ -980,6 +1054,7 @@ class LoRAEstimator(BasicEstimator):
               number of GPUs, and not multiplied by the number of layers.
             + logits, on the lm_head GPU only, and only if they're materialized (_calc_logits),
               plus QLoRA's lm_head workspace there (_calc_lm_head_workspace).
+        This is _gpu_components, the formula the DDP / one-GPU path applies to the whole model.
         Falls back to an even split if transformers can't work out the placement.
 
         Returns:
@@ -1016,21 +1091,11 @@ class LoRAEstimator(BasicEstimator):
             lora_on = {gpu: sum(lora_per_layer.values()) / self.num_gpus for gpu in gpus}
             head_gpu = gpus[-1]
 
-        working_set = WS_BYTES_PER_MLP_UNIT * self._calc_mlp_width() * self.tokens_per_gpu
-        logits = self._calc_logits() + self._calc_lm_head_workspace()
-
-        # Components per GPU: (params, optimizer, gradients, activations, outputs).
-        # Each LoRA parameter takes 16 bytes: fp32 weight (4) + 2 fp32 AdamW moments (8) + fp32 gradient (4)
-        self.split_components: dict[int, tuple[float, ...]] = {}
-        for gpu in gpus:
-            lora_params = lora_on.get(gpu, 0) * self.lora_r
-            self.split_components[gpu] = (
-                weights[gpu] + lora_params * FLOAT32_BYTES_N,
-                lora_params * FLOAT32_BYTES_N * ADAMW_PARAMS_N,
-                lora_params * FLOAT32_BYTES_N,
-                working_set,
-                logits if gpu == head_gpu else 0,
-            )
+        outputs = self._calc_outputs()
+        self.split_components: dict[int, tuple[float, ...]] = {
+            gpu: self._gpu_components(weights[gpu], lora_on.get(gpu, 0), outputs if gpu == head_gpu else 0)
+            for gpu in gpus
+        }
         busiest = max(gpus, key=lambda gpu: sum(self.split_components[gpu]))
         par, opt, grad, act, outputs = self.split_components[busiest]
         subtotal = par + opt + grad + act + outputs
@@ -1042,39 +1107,17 @@ class LoRAEstimator(BasicEstimator):
         """
         Calculate the amount of memory expected before applying overhead.
         With model splitting, this is the busiest GPU's memory (see _calc_split_subtotal).
+        Without it (one GPU or DDP), every GPU holds a full replica, its own LoRA and optimizer
+        state and its own micro-batch, so the same per-GPU formula (_gpu_components) is applied
+        to the whole model on one GPU.
         """
         if self.enable_model_splitting:
             return self._calc_split_subtotal()
 
-        # Calculate each piece of memory to be factored into the estimation
-        gpu_vram_par = self._calc_model_params()
-        gpu_vram_opt: int = self._calc_optimizer()
-        gpu_vram_grad: int = self._calc_gradients()
-        gpu_vram_act: int = self._calc_intermediate_activations()
-        gpu_vram_outputs: int = self._calc_outputs()
-        gpu_vram_additional: int = self._calc_additional()
-
-        # The memory is bounded by either the size of the outputs or the size of
-        # the gradients, whichever is higher (these tensors are NOT allocated simultaneously)
-        if gpu_vram_grad > gpu_vram_outputs:
-            if self.verbose > 0 and gpu_vram_outputs > 0:  # 0 when the loss fuses away the logits
-                print("NOTE: The peak memory allocation of the output tensors is " + ROUNDER(gpu_vram_outputs) + " GB.")
-                print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
-                print("To reduce memory usage, focus on reducing the gradient allocation first.\n")
-            gpu_vram_outputs = 0
-        else:
-            if self.verbose > 0:
-                print("NOTE: The peak memory allocation of the gradient tensors is " + ROUNDER(gpu_vram_grad) + " GB.")
-                print("However, in practice, this allocation does not impact the peak memory usage since the output allocation is higher.")
-                print("To reduce memory usage, focus on reducing the output allocation first.\n")
-            gpu_vram_grad = 0
-
-        # Sum up each proposed amount of memory
-        subtotal: int = gpu_vram_par + gpu_vram_opt + gpu_vram_grad + \
-                        gpu_vram_act + gpu_vram_outputs + gpu_vram_additional
-
-        return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
-            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
+        par, opt, grad, act, outputs = self._gpu_components(
+            self._calc_weight_bytes(), self.lora_weight_size, self._calc_outputs())
+        subtotal = par + opt + grad + act + outputs
+        return subtotal, par, opt, grad, act, outputs, 0
 
     def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
@@ -1133,12 +1176,15 @@ class QLoRAEstimator(LoRAEstimator):
 
 
     @override
-    def _calc_model_params(self):
+    def _calc_weight_bytes(self) -> float:
         """
-        Calculate the VRAM for storing the model parameters: the weights as bitsandbytes loads
-        them (4-bit nn.Linear weights, everything else bf16) plus the fp32 LoRA matrices.
+        The size of the whole model's frozen weights as bitsandbytes loads them: 4-bit
+        nn.Linear weights, everything else bf16.
+
+        Returns:
+            float: The weights' bytes
         """
-        return (self.loaded_weight_bytes + self.AB_params * FLOAT32_BYTES_N) / self._replica_divisor()
+        return self.loaded_weight_bytes
 
 
     @override
@@ -1294,6 +1340,15 @@ def estimate(
     """
     Convenience function for performing estimation
 
+    The lora/qlora estimates are calibrated against the Unsloth backend (lora_sft), which uses
+    a fused linear + cross-entropy loss and offloaded gradient checkpointing. WS_BYTES_PER_MLP_UNIT
+    (one decoder layer's working set) and MATERIALIZES_LOGITS (model types whose logits are
+    materialized anyway) come from Unsloth measurements, so other backends may differ.
+
+    The sft/osft estimates are for nvidia-smi peaks with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    With the default allocator, fragmentation can make nvidia-smi read much higher than the memory
+    training actually uses (76 vs. 44 GiB allocated on Qwen3.5-4B sft), and the job may OOM sooner.
+
     Args:
         training_method (str): The training method to estimate the memory for. 
                                 Set to "osft" to estimate for OSFT,
@@ -1313,7 +1368,9 @@ def estimate(
                         set to 2 for a detailed memory breakdown.
         unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
                                     during OSFT.
-        count_fsdp_gather (bool): sft/osft only. Add the per-GPU FSDP unit gather when num_gpus > 1.
+        count_fsdp_gather (bool): sft/osft only. When num_gpus > 1, add the per-GPU FSDP unit gather,
+                                    the backward-prefetched unit and the memory outside PyTorch's
+                                    allocator (see BasicEstimator._calc_additional).
         enable_model_splitting (bool): lora/qlora only. Estimate for model splitting
                                     (device_map="balanced"). If false and num_gpus > 1, estimate
                                     for DDP (one full replica per GPU). For lora/qlora, batch_size

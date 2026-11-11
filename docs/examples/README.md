@@ -173,6 +173,10 @@ training_hub includes a library for estimating the expected amount of GPU memory
 
 **Note:** This feature is still in-development. Estimates for OSFT may vary from actual results; the estimate mainly serves to give theoretical bounds. Estimates for SFT should be reasonably close to actual results when using training_hub.
 
+**LoRA/QLoRA:** these estimates are calibrated against the Unsloth backend (`lora_sft`), which uses a fused linear + cross-entropy loss and offloaded gradient checkpointing. The per-layer working set (`WS_BYTES_PER_MLP_UNIT`) and the model types whose logits are materialized (`MATERIALIZES_LOGITS`) come from Unsloth measurements, so other backends may use noticeably different amounts of memory. `batch_size` is the per-process micro-batch. Pass `enable_model_splitting=True` for `device_map="balanced"` model splitting; otherwise multi-GPU means DDP, with a full replica on every GPU.
+
+The estimator caches each model's sizes in `$XDG_CACHE_HOME/training_hub/model_storage.csv` (by default `~/.cache/training_hub/`). If that location isn't writable, the estimator warns and runs without the cache.
+
 **Tutorials:**
 - [Memory Estimation Example](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/examples/notebooks/memory_estimator_example.ipynb) - Interactive notebook showcasing how to utilize the memory estimator methods
 

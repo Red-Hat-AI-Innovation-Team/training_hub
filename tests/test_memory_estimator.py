@@ -5,6 +5,8 @@ no GPU and no weights. LoRA counts are checked against hand-computed values.
 """
 
 import copy
+import importlib
+import os
 
 import pytest
 import torch
@@ -147,6 +149,21 @@ def test_ddp_every_gpu_holds_a_full_replica(configs):
     assert ddp.estimate() == one.estimate()
 
 
+def test_ddp_uses_the_same_per_gpu_formula_as_splitting(configs):
+    # 16 B per LoRA param (fp32 weight + gradient + 2 AdamW moments) and one layer's working set
+    ddp = lora("dense-8", num_gpus=2)
+    _, par, opt, grad, act, _, _ = ddp._calc_subtotal()
+    assert (par - ddp.num_params * 2, opt, grad) == (ddp.AB_params * 4, ddp.AB_params * 8, ddp.AB_params * 4)
+    assert act == me.WS_BYTES_PER_MLP_UNIT * INTERMEDIATE * 2 * 16
+
+    # "Splitting" onto one GPU puts everything on that GPU, so it must give the DDP answer
+    for path, cls in (("dense-8-untied", me.LoRAEstimator), ("dense-8-untied", me.QLoRAEstimator)):
+        ddp = lora(path, cls=cls, num_gpus=2)
+        split = lora(path, cls=cls, num_gpus=1, enable_model_splitting=True)
+        placement_or_skip(split)
+        assert split._calc_subtotal()[0] == pytest.approx(ddp._calc_subtotal()[0], rel=1e-3)
+
+
 def test_split_counts_offloaded_weights(configs):
     # GPUs far too small for the model: the placement offloads, and the estimate must not fit
     tiny = 64 * 1024
@@ -156,6 +173,25 @@ def test_split_counts_offloaded_weights(configs):
     total = me._PlacementSizer(est.model, quantize_4bit=False).total_size(est.model)
     assert sum(split_weights(est).values()) == pytest.approx(total, rel=0.01)
     assert max(sum(c) for c in est.split_components.values()) > tiny
+
+
+def test_unwritable_cache_warns_instead_of_failing(configs, monkeypatch, tmp_path):
+    # A path under a regular file can't be created, as on a read-only site-packages
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    monkeypatch.setattr(me, "MODEL_STORAGE_PATH", str(blocker / "model_storage.csv"))
+    with pytest.warns(UserWarning, match="Could not write the model size cache"):
+        est = lora("dense")
+    assert est.estimate()[1] > 0
+
+
+def test_cache_defaults_to_the_user_cache_dir():
+    assert not me.MODEL_STORAGE_PATH.startswith(os.path.dirname(os.path.realpath(me.__file__)))
+    assert os.path.join("training_hub", "model_storage.csv") in me.MODEL_STORAGE_PATH
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("XDG_CACHE_HOME", "/some/cache")
+        assert importlib.reload(me).MODEL_STORAGE_PATH == "/some/cache/training_hub/model_storage.csv"
+    importlib.reload(me)
 
 
 def test_cache_rows_from_older_versions_are_rebuilt(configs):
@@ -242,8 +278,10 @@ def test_fsdp_gather_uses_the_largest_block(configs):
     blocks = [sum(p.numel() for p in layer.parameters()) for layer in est.model.model.layers]
     assert blocks[1] > blocks[0]
     root = 2 * VOCAB * HIDDEN  # untied: embeddings + lm_head
-    assert est._calc_additional() == 4 * max(root, max(blocks))
-    assert est._calc_additional() > 4 * max(root, sum(blocks) / len(blocks))
+    # gathered unit (16-bit weight + gradient) + prefetched block (bf16 weight) + memory outside PyTorch
+    expected = 4 * max(root, max(blocks)) + 2 * max(blocks) + me.FSDP_RUNTIME_OVERHEAD_BYTES
+    assert est._calc_additional() == expected
+    assert est._calc_additional() > 4 * max(root, sum(blocks) / len(blocks)) + me.FSDP_RUNTIME_OVERHEAD_BYTES
 
     # The second run reads the largest block from the CSV cache
     cached = me.BasicEstimator(model_path="moe", num_gpus=2, max_tokens_per_gpu=1000,

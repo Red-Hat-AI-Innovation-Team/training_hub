@@ -45,4 +45,6 @@ Parse the JSON output and present clearly:
 | `lora` | LoRA-SFT, LoRA-GRPO | LoRAEstimator |
 | `qlora` | Quantized LoRA | QLoRAEstimator |
 
+The `lora`/`qlora` estimates are calibrated against the Unsloth backend (`lora_sft`: fused loss, offloaded gradient checkpointing), so treat them as rougher for other backends such as LoRA-GRPO.
+
 If no method is specified, the script infers it from the configured algorithm.
