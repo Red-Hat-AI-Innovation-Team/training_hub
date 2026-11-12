@@ -363,7 +363,11 @@ class SentenceTransformersBackend(Backend):
 
         os.makedirs(ckpt_output_dir, exist_ok=True)
 
-        use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        # Check the device the trainer will use: CUDA when present, else XPU.
+        if torch.cuda.is_available():
+            use_bf16 = torch.cuda.is_bf16_supported()
+        else:
+            use_bf16 = hasattr(torch, "xpu") and torch.xpu.is_available() and torch.xpu.is_bf16_supported()
 
         training_args = SentenceTransformerTrainingArguments(
             output_dir=ckpt_output_dir,

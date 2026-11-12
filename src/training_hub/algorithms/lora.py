@@ -387,9 +387,11 @@ class UnslothLoRABackend(Backend):
             device_map_config['device_map'] = "balanced"
         elif 'LOCAL_RANK' in os.environ:
             # For DDP training, explicitly set device based on LOCAL_RANK
-            import torch
+            from training_hub.utils import get_accelerator_module
             local_rank = int(os.environ['LOCAL_RANK'])
-            torch.cuda.set_device(local_rank)
+            accelerator = get_accelerator_module()
+            if accelerator is not None:
+                accelerator.set_device(local_rank)
             device_map_config['device_map'] = {"": local_rank}
 
         # Configure quantization options - only add BitsAndBytes parameters if explicitly provided
@@ -584,16 +586,17 @@ class UnslothLoRABackend(Backend):
         num_epochs = params.get('num_epochs', 3)
 
         # Determine actual number of GPUs being used
-        import torch
+        from training_hub.utils import get_accelerator_module
+        accelerator = get_accelerator_module()
 
         # If we're in a distributed environment, use world size
         if 'WORLD_SIZE' in os.environ:
             num_gpus = int(os.environ['WORLD_SIZE'])
-        elif torch.cuda.is_available():
+        elif accelerator is not None:
             # Otherwise use the specified nproc_per_node or 1
             num_gpus = params.get('nproc_per_node', 1)
             if isinstance(num_gpus, str):
-                num_gpus = torch.cuda.device_count() if num_gpus == 'auto' else 1
+                num_gpus = accelerator.device_count() if num_gpus == 'auto' else 1
             # But don't use more GPUs than we're actually planning to use
             if num_gpus > 1 and ('RANK' not in os.environ and 'LOCAL_RANK' not in os.environ):
                 # Single process mode - only using 1 GPU
