@@ -59,6 +59,7 @@ For `multiple_choice`, the collator pads variable option counts to the batch max
 
 - **Encoders** (ModernBERT/DeBERTa/BERT) are full fine-tuned — fine at the `2e-5` default on CPU or a single GPU.
 - **Decoders** (Qwen/Llama) use LoRA (`use_peft=True`); a fresh decoder head needs `~1e-4..1e-3` and more epochs to avoid single-class collapse. LoRA adapters are merged into the base weights before saving.
+- `lora_target_modules=None` uses PEFT's per-architecture LoRA targets; for backbones PEFT has no defaults for (e.g. ModernBERT, Qwen3.5) it falls back to `"all-linear"`. The task head stays fully trainable (PEFT `modules_to_save`).
 
 ## Label Encoding
 
@@ -74,11 +75,12 @@ String/bool/float labels are mapped to contiguous integer codes; integer labels 
 
 ## Precision
 
-The backend auto-enables `bf16` when a CUDA GPU is available, otherwise trains in fp32. Encoder classifiers also run on CPU.
+The backend enables `bf16` only on a CUDA GPU that supports it (Ampere or newer); otherwise — older GPUs or CPU — it trains in fp32. Encoder classifiers also run on CPU.
 
 ## Output
 
 - An inference-ready checkpoint in `ckpt_output_dir`: model, tokenizer, and `label_mapping.json` (`{"task", "id2label", "label2id"}`).
+- `training_metrics.jsonl` appended with `{"max_steps", "global_step", "train_loss", "epoch", "task"}` (Kubeflow progress).
 - Reload with the task's Auto class, e.g. `AutoModelForSequenceClassification.from_pretrained("<ckpt_output_dir>")`.
 
 > Calibration (temperature scaling / ECE) is an evaluation-time step — the head emits raw logits.

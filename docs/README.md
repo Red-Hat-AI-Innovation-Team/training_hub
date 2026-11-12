@@ -205,7 +205,7 @@ result = embedding_sft(
 
 ### [Classifier Fine-Tuning](/algorithms/classifier_sft)
 
-Fine-tunes a **classification head** on any recognized backbone (HF `Trainer` + cross-entropy) — the best choice for a *fixed* label set (highest accuracy, calibrated per-class logits). A thin, **convention-based** harness over the HF Auto-class family: it covers the common "decision model" primitives through native HF classes with no per-model code and no vendored packages. Features:
+Fine-tunes a **classification head** on any recognized backbone (HF `Trainer` + cross-entropy) — the best choice for a *fixed* label set (highest accuracy; raw per-class logits, calibratable at evaluation time). A thin, **convention-based** harness over the HF Auto-class family: it covers the common "decision model" primitives through native HF classes with no per-model code and no vendored packages. Features:
 - Three tasks via a `task` selector: `sequence_classification` (default), `multiple_choice`, and `token_classification`
 - Encoders (ModernBERT/DeBERTa/BERT) full fine-tuned; decoder backbones via LoRA (`use_peft`)
 - Custom architectures with no vendoring: `trust_remote_code` + pinned `revision` (any HF `auto_map`), `model_class` (pip-packaged backbones), and `loss_fn` (custom objective)
@@ -216,7 +216,7 @@ from training_hub import classifier_sft
 
 result = classifier_sft(
     model_path="answerdotai/ModernBERT-base",
-    data_path="intents.parquet",         # {"text": "...", "label": "billing"}
+    data_path="intents.parquet",         # {"text": "...", "category": "billing"}
     ckpt_output_dir="./intent_clf",
     text_column="text",
     label_column="category",

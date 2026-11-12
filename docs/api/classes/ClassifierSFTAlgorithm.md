@@ -36,16 +36,16 @@ class ClassifierSFTAlgorithm(Algorithm):
 
 ## Overview
 
-`ClassifierSFTAlgorithm` is the class-based implementation of classification-head fine-tuning in Training Hub. It inherits from the [`Algorithm`](Algorithm.md) abstract base class.
+`ClassifierSFTAlgorithm` is the class-based implementation of classification-head fine-tuning in Training Hub. It inherits from the [`Algorithm`](/api/classes/Algorithm) abstract base class.
 
-Unlike [`EmbeddingSFTAlgorithm`](EmbeddingSFTAlgorithm.md) — which reshapes an embedding space and classifies by nearest-anchor similarity — it trains a dedicated **task head** and produces **per-class logits**, the best choice for a fixed, known label set. It is a convention-based harness: the `task` selector maps to a native HF Auto class, and the `trust_remote_code`/`revision`, `model_class`, and `loss_fn` hooks extend coverage with no vendored packages.
+Unlike [`EmbeddingSFTAlgorithm`](/api/classes/EmbeddingSFTAlgorithm) — which reshapes an embedding space and classifies by nearest-anchor similarity — it trains a dedicated **task head** and produces **per-class logits**, the best choice for a fixed, known label set. It is a convention-based harness: the `task` selector maps to a native HF Auto class, and the `trust_remote_code`/`revision`, `model_class`, and `loss_fn` hooks extend coverage with no vendored packages.
 
 This class is useful when you need:
 - To reuse an algorithm instance across multiple fine-tuning runs
 - Direct access to the algorithm interface
 - Custom classification-training pipelines
 
-For most use cases, the convenience function [`classifier_sft()`](../functions/classifier_sft.md) is simpler.
+For most use cases, the convenience function [`classifier_sft()`](/api/functions/classifier_sft) is simpler.
 
 ## Constructor
 
@@ -56,7 +56,7 @@ Creates a new `ClassifierSFTAlgorithm` instance.
 **Parameters:**
 - `backend` (`Backend`): The backend implementation to use (`DecisionHeadBackend`)
 - `**kwargs`: Accepted for API symmetry but not stored — all training configuration
-  is passed to `train()`. (Use the [`classifier_sft()`](../functions/classifier_sft.md)
+  is passed to `train()`. (Use the [`classifier_sft()`](/api/functions/classifier_sft)
   convenience function to select the backend by name via the `backend` argument.)
 
 **Example:**
@@ -136,7 +136,7 @@ Returns the required parameters.
 
 ### `get_optional_params() -> Dict[str, Type]`
 
-Returns the optional parameters. See the [`classifier_sft()` function reference](../functions/classifier_sft.md) for the full list.
+Returns the optional parameters. See the [`classifier_sft()` function reference](/api/functions/classifier_sft) for the full list.
 
 ## Examples
 
@@ -159,7 +159,7 @@ result = algorithm.train(
 
 ## Relationship to classifier_sft() Function
 
-The [`classifier_sft()`](../functions/classifier_sft.md) function is a convenience wrapper around `ClassifierSFTAlgorithm`. Both use identical parameters. Prefer the function for most use cases; use the class directly when reusing an instance across multiple runs.
+The [`classifier_sft()`](/api/functions/classifier_sft) function is a convenience wrapper around `ClassifierSFTAlgorithm`. Both use identical parameters. Prefer the function for most use cases; use the class directly when reusing an instance across multiple runs.
 
 ## See Also
 

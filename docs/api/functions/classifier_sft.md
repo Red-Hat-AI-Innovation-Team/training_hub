@@ -98,7 +98,7 @@ print(result["ckpt_output_dir"], result["task"])
 | `lora_r` | `16` | LoRA rank. |
 | `lora_alpha` | `32` | LoRA alpha. |
 | `lora_dropout` | `0.05` | LoRA dropout. |
-| `lora_target_modules` | `None` | Explicit list of module names to adapt; `None` lets PEFT choose sensible targets. |
+| `lora_target_modules` | `None` | Explicit list of module names to adapt. `None` uses PEFT's built-in targets for the architecture, falling back to `"all-linear"` when PEFT has none (e.g. ModernBERT, Qwen3.5). CLI: `--lora-target-modules`. |
 
 ### Data Format
 
@@ -136,7 +136,7 @@ print(result["ckpt_output_dir"], result["task"])
 }
 ```
 
-The checkpoint is inference-ready: the model, tokenizer, and `label_mapping.json` (`task` + `id2label`/`label2id`) are written to `ckpt_output_dir`. Reload with the task's Auto class, e.g. `AutoModelForSequenceClassification.from_pretrained("<ckpt_output_dir>")`.
+The checkpoint is inference-ready: the model, tokenizer, and `label_mapping.json` (`task` + `id2label`/`label2id`) are written to `ckpt_output_dir`, and `training_metrics.jsonl` there is appended with `{"max_steps", "global_step", "train_loss", "epoch", "task"}`. Reload with the task's Auto class, e.g. `AutoModelForSequenceClassification.from_pretrained("<ckpt_output_dir>")`.
 
 ## Decoder Backbone Example (LoRA)
 

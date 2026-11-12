@@ -1,12 +1,12 @@
 # Classifier SFT — Decision / Classification-Head Fine-Tuning
 
-Classifier SFT fine-tunes a **task head** on top of any recognized backbone using the HuggingFace `Trainer` with cross-entropy. Unlike [Embedding SFT](/algorithms/embedding_sft) — which reshapes an embedding space and classifies by nearest-anchor similarity — this trains a dedicated head and produces **per-class logits**, the best choice for a *fixed, known* label set (calibrated confidence, highest accuracy).
+Classifier SFT fine-tunes a **task head** on top of any recognized backbone using the HuggingFace `Trainer` with cross-entropy. Unlike [Embedding SFT](/algorithms/embedding_sft) — which reshapes an embedding space and classifies by nearest-anchor similarity — this trains a dedicated head and produces **per-class logits**, the best choice for a *fixed, known* label set (highest accuracy; the raw logits can be calibrated at evaluation time).
 
 > It is a thin, **convention-based** harness over the HF Auto-class family: it covers the common "decision model" primitives through native HF classes with **no per-model code and no vendored packages**, and its escape hatches (`trust_remote_code` + `revision`, `model_class`, `loss_fn`) let coverage grow with the ecosystem at flat maintenance cost.
 
 ## When to Use
 
-- You want to **classify text into a fixed set of N categories** (intent, triage, topic, sentiment, yes/no judgments) with the best accuracy and calibrated probabilities.
+- You want to **classify text into a fixed set of N categories** (intent, triage, topic, sentiment, yes/no judgments) with the best accuracy and per-class scores you can calibrate (e.g. temperature scaling) at evaluation time.
 - You need **span / entity extraction** (token classification) or **pick-one-of-K** (multiple choice).
 - You want to fine-tune a modern encoder (ModernBERT/DeBERTa/BERT) or a decoder backbone (via LoRA) as a classifier without writing model-specific code.
 
@@ -19,7 +19,7 @@ from training_hub import classifier_sft
 
 result = classifier_sft(
     model_path="answerdotai/ModernBERT-base",
-    data_path="intents.parquet",         # columns: text, label (strings are auto-encoded)
+    data_path="intents.parquet",         # columns: text, category (string labels are auto-encoded)
     ckpt_output_dir="./intent_clf",
     text_column="text",
     label_column="category",
@@ -54,7 +54,7 @@ The call returns `{"ckpt_output_dir", "task", "id2label"}`.
 ## Backbones: encoders vs. decoders
 
 - **Encoders** (ModernBERT, DeBERTa, BERT) are **full fine-tuned** and work well at the `2e-5` default on CPU or a single GPU.
-- **Decoders** (Qwen, Llama, …) should use **LoRA** (`use_peft=True`). A freshly initialized head on a decoder trains far slower: the `2e-5` default typically **collapses to a single class** — use `~1e-4..1e-3` and more epochs. (Verified empirically: Qwen2.5-1.5B + LoRA collapsed at `2e-5`, fit its training set at `1e-3`.) LoRA adapters are merged into the base weights before saving, so the checkpoint loads like any standard model.
+- **Decoders** (Qwen, Llama, …) should use **LoRA** (`use_peft=True`). A freshly initialized head on a decoder trains far slower: the `2e-5` default typically **collapses to a single class** — use `~1e-4..1e-3` and more epochs. (Verified empirically: Qwen2.5-1.5B + LoRA collapsed at `2e-5`, fit its training set at `1e-3`.) LoRA adapters are merged into the base weights before saving, so the checkpoint loads like any standard model. With `lora_target_modules=None`, PEFT's per-architecture targets are used, falling back to `"all-linear"` for backbones PEFT has no defaults for (e.g. ModernBERT, Qwen3.5); the task head itself always trains fully.
 
 ```python
 result = classifier_sft(
@@ -103,6 +103,7 @@ Accepts JSONL/JSON, Parquet, CSV, or a HuggingFace dataset id. Columns default p
 ## Output
 
 - An inference-ready checkpoint in `ckpt_output_dir`: the model, tokenizer, and `label_mapping.json` (`{"task", "id2label", "label2id"}`).
+- `training_metrics.jsonl` in the same directory, appended with `{"max_steps", "global_step", "train_loss", "epoch", "task"}` (used by Kubeflow to report progress).
 - Load with the task's Auto class, e.g. `AutoModelForSequenceClassification.from_pretrained(ckpt_output_dir)`, then map argmax ids back through `id2label`.
 
 > **Calibration** (temperature scaling / ECE) is an **evaluation-time** step, not part of training — the head emits raw logits.
