@@ -97,7 +97,7 @@ Executes classification-head fine-tuning.
 | `gradient_accumulation_steps` | `int` | `1` | Gradient accumulation steps. |
 | `use_peft` | `bool` | `False` | LoRA fine-tuning (recommended for decoders). |
 | `lora_r` / `lora_alpha` / `lora_dropout` | `int`/`int`/`float` | `16`/`32`/`0.05` | LoRA hyperparameters. |
-| `lora_target_modules` | `list` | `None` | Explicit LoRA target modules (`None` = PEFT default). |
+| `lora_target_modules` | `list` | `None` | Explicit LoRA target modules. `None` uses PEFT's per-architecture targets, falling back to `"all-linear"` (task head excluded) when PEFT has none (e.g. ModernBERT, Qwen3.5). |
 | `text_column` | `str` | `"text"` | Text/context column. |
 | `label_column` | `str` | `None` | Label column (task default: `label` seq/MC, `ner_tags` token). |
 | `options_column` | `str` | `"options"` | Options column (multiple choice). |

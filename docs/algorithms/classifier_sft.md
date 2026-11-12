@@ -45,7 +45,7 @@ The `task` parameter selects a native HF Auto class — each with its own expect
 
 1. **Load** the tokenizer and the task's Auto class from `model_path` (a HF id or local path).
 2. **Prepare** the dataset for the task (tokenize, encode labels, align token tags, or collate choices).
-3. **Encode labels**: string/bool/float labels are mapped to contiguous integer codes; integer labels keep their value (the head spans `0..max`). Null/NaN labels are rejected with a clear error — a classification head has no null consumer.
+3. **Encode labels**: string/bool/float labels are mapped to contiguous integer codes; integer labels keep their value (the head spans `0..max`) and must be non-negative class ids (token classification may use `-100` to ignore a token). Null/NaN labels are rejected with a clear error — a classification head has no null consumer.
 4. **Train** with the HF `Trainer` and cross-entropy (optionally LoRA, a custom loss, or a custom model class — see below).
 5. **Save** the model, tokenizer, and `label_mapping.json` (`task` + `id2label`/`label2id`) to `ckpt_output_dir` — an inference-ready checkpoint.
 
@@ -74,7 +74,7 @@ Coverage of the OSS "decision model" space grows by **convention and configurati
 
 - **`trust_remote_code=True` + `revision`** — load any architecture that ships an HF `auto_map` (GLiClass, Jina, Nomic, GTE, …). The model author's code runs, so **pin `revision`** to a commit/branch/tag for safety.
 - **`model_class`** (dotted path) — point at an importable `*.from_pretrained` class for a backbone distributed as a pip package rather than via `auto_map`. The user installs that package; this library takes on no dependency.
-- **`loss_fn`** (dotted path) — a custom `loss_fn(logits, labels)` callable or a `Trainer` subclass, for a bespoke objective. (For `multiple_choice`, the default path masks padded choices out of the softmax; a custom 2-arg `loss_fn` owns any masking it needs.)
+- **`loss_fn`** (dotted path) — a custom `loss_fn(logits, labels)` callable or a `Trainer` subclass, for a bespoke objective. (For `multiple_choice`, padded placeholder choices reach the loss with `-inf` logits, so a plain cross-entropy ignores them; a `loss_fn` that accepts a `choice_mask` keyword also receives the boolean mask. A `Trainer` subclass gets `choice_mask` in its batch and must pop it before calling the model.)
 
 ```python
 result = classifier_sft(

@@ -105,7 +105,7 @@ print(result["ckpt_output_dir"], result["task"])
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `text_column` | `"text"` | Text/context column (`sequence_classification` & `multiple_choice`). |
-| `label_column` | `None` | Label column. Defaults per task: `label` (seq/MC), `ner_tags` (token). String labels are encoded to ints. |
+| `label_column` | `None` | Label column. Defaults per task: `label` (seq/MC), `ner_tags` (token). String labels are encoded to ints; integer labels must be non-negative class ids (token classification may use `-100` to ignore a token); a multiple-choice label must index one of its options. |
 | `options_column` | `"options"` | Options-list column (`multiple_choice`). |
 | `tokens_column` | `"tokens"` | Pre-split tokens column (`token_classification`). |
 
@@ -116,7 +116,7 @@ print(result["ckpt_output_dir"], result["task"])
 | `trust_remote_code` | `False` | Allow a custom architecture that ships an HF `auto_map` (opt-in; the model author's code runs). Pin `revision` with it. |
 | `revision` | `None` | Model repo commit/branch/tag to pin — strongly recommended with `trust_remote_code`. |
 | `model_class` | `None` | Dotted path to an importable `*.from_pretrained` class, for a pip-packaged backbone. |
-| `loss_fn` | `None` | Dotted path to a custom `loss_fn(logits, labels)` callable or a `Trainer` subclass. |
+| `loss_fn` | `None` | Dotted path to a custom `loss_fn(logits, labels)` callable or a `Trainer` subclass. For `multiple_choice`, padded choices reach the loss with `-inf` logits; a loss accepting a `choice_mask` keyword also gets the mask; a `Trainer` subclass must pop `choice_mask` from its batch. |
 
 ### Standard
 
