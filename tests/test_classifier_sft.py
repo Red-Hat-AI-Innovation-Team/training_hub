@@ -16,6 +16,7 @@ from training_hub.algorithms.classifier_sft import (
     _encode_labels,
     _normalize_loss_over_accumulation,
     _resolve_dotted,
+    _training_metrics_entry,
 )
 
 
@@ -260,3 +261,26 @@ class TestLossNormalization:
         t = OptOut()
         _normalize_loss_over_accumulation(t, OptOut)
         assert t.model_accepts_loss_kwargs is True
+
+
+class TestTrainingMetricsEntry:
+    class _State:
+        def __init__(self, log_history, epoch=3.0):
+            self.log_history = log_history
+            self.max_steps = 30
+            self.global_step = 30
+            self.epoch = epoch
+
+    def test_walks_back_to_latest_train_loss(self):
+        state = self._State([{"loss": 0.9}, {"train_loss": 0.42}, {"eval_loss": 0.5}])
+        entry = _training_metrics_entry(state, "sequence_classification")
+        assert entry == {"max_steps": 30, "global_step": 30, "train_loss": 0.42, "epoch": 3.0,
+                         "task": "sequence_classification"}
+
+    def test_non_finite_values_serialize_as_valid_json(self):
+        import json
+        import math
+
+        entry = _training_metrics_entry(self._State([{"train_loss": math.nan}], epoch=math.inf), "x")
+        assert entry["train_loss"] is None and entry["epoch"] is None
+        json.loads(json.dumps(entry, allow_nan=False))  # strict JSON round-trips

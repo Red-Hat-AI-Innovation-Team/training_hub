@@ -268,25 +268,9 @@ class DecisionHeadBackend(Backend):
 
         os.makedirs(ckpt_output_dir, exist_ok=True)
         # Kubeflow derives progress from max_steps in training_metrics.jsonl (see AGENTS.md);
-        # mirror embedding_sft's entry. The last log_history record may lack train_loss, so
-        # walk back to the most recent one that has it.
-        train_loss = next(
-            (e["train_loss"] for e in reversed(trainer.state.log_history) if e.get("train_loss") is not None),
-            None,
-        )
+        # mirror embedding_sft's entry.
         with open(os.path.join(ckpt_output_dir, "training_metrics.jsonl"), "a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "max_steps": getattr(trainer.state, "max_steps", None),
-                        "global_step": trainer.state.global_step,
-                        "train_loss": train_loss,
-                        "epoch": trainer.state.epoch,
-                        "task": task,
-                    }
-                )
-                + "\n"
-            )
+            f.write(json.dumps(_training_metrics_entry(trainer.state, task)) + "\n")
 
         to_save = model.merge_and_unload() if use_peft else model
         to_save.save_pretrained(ckpt_output_dir)
@@ -434,6 +418,30 @@ class _MultipleChoiceCollator:
             choice_mask[i, :n] = True
         batch["choice_mask"] = choice_mask
         return batch
+
+
+def _training_metrics_entry(state: Any, task: str) -> dict[str, Any]:
+    """The ``training_metrics.jsonl`` record for a finished run (``state`` = ``trainer.state``).
+
+    The last ``log_history`` record may lack ``train_loss`` (e.g. an eval/save entry), so walk
+    back to the most recent one that has it. Non-finite measurements (a diverged run's NaN
+    loss) become ``None``: ``json.dumps`` would otherwise write bare ``NaN``/``Infinity``,
+    which strict JSON readers reject."""
+
+    def _finite(v: Any) -> Any:
+        return v if not isinstance(v, float) or math.isfinite(v) else None
+
+    train_loss = next(
+        (e["train_loss"] for e in reversed(state.log_history) if e.get("train_loss") is not None),
+        None,
+    )
+    return {
+        "max_steps": getattr(state, "max_steps", None),
+        "global_step": state.global_step,
+        "train_loss": _finite(train_loss),
+        "epoch": _finite(state.epoch),
+        "task": task,
+    }
 
 
 def _apply_lora(model: Any, task: str, p: dict[str, Any]) -> Any:
