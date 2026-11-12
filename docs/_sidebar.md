@@ -16,6 +16,7 @@
   * [GRPO - Full Fine-Tuning RLVR](/algorithms/grpo)
   * [GEPA - Prompt Optimization](/algorithms/gepa)
   * [Embedding SFT - Semantic Routing](/algorithms/embedding_sft)
+  * [Classifier SFT - Classification Head](/algorithms/classifier_sft)
 
 * API Reference
   * [API Overview](/api/)
@@ -27,6 +28,7 @@
     * [grpo()](/api/functions/grpo)
     * [gepa()](/api/functions/gepa)
     * [embedding_sft()](/api/functions/embedding_sft)
+    * [classifier_sft()](/api/functions/classifier_sft)
     * [create_algorithm()](/api/functions/create-algorithm)
   * Classes
     * [Algorithm](/api/classes/Algorithm)
@@ -37,6 +39,7 @@
     * [LoRAGRPOAlgorithm](/api/classes/LoRAGRPOAlgorithm)
     * [GEPAAlgorithm](/api/classes/GEPAAlgorithm)
     * [EmbeddingSFTAlgorithm](/api/classes/EmbeddingSFTAlgorithm)
+    * [ClassifierSFTAlgorithm](/api/classes/ClassifierSFTAlgorithm)
     * [PEFTExtender](/api/classes/PEFTExtender)
     * [LoRAPEFTExtender](/api/classes/LoRAPEFTExtender)
     * [AlgorithmRegistry](/api/classes/AlgorithmRegistry)
@@ -49,6 +52,7 @@
     * [verl (GRPO)](/api/backends/verl)
     * [GEPA (Prompt Optimization)](/api/backends/gepa)
     * [SentenceTransformers (Embedding)](/api/backends/embedding_sft)
+    * [HuggingFace Transformers (Classifier)](/api/backends/classifier_sft)
   * [Data Formats](/api/data-formats)
 
 * Guides

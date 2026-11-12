@@ -17,6 +17,7 @@ Training Hub provides convenient top-level functions for common training tasks:
 | [`grpo()`](/api/functions/grpo) | Full-parameter GRPO training (verl backend) | [Details](/api/functions/grpo) |
 | [`gepa()`](/api/functions/gepa) | Gradient-free prompt optimization (no weight training) | [Details](/api/functions/gepa) |
 | [`embedding_sft()`](/api/functions/embedding_sft) | Contrastive embedding fine-tuning for semantic routing/classification | [Details](/api/functions/embedding_sft) |
+| [`classifier_sft()`](/api/functions/classifier_sft) | Classification-head fine-tuning (sequence/multiple-choice/token) | [Details](/api/functions/classifier_sft) |
 | [`create_algorithm()`](/api/functions/create-algorithm) | Factory function to create algorithm instances | [Details](/api/functions/create-algorithm) |
 
 ### Classes
@@ -33,6 +34,7 @@ Training Hub uses an object-oriented architecture with algorithms and pluggable 
 | [`LoRAGRPOAlgorithm`](/api/classes/LoRAGRPOAlgorithm) | LoRA + GRPO for tool-calling agents | [Details](/api/classes/LoRAGRPOAlgorithm) |
 | [`GEPAAlgorithm`](/api/classes/GEPAAlgorithm) | Genetic-Pareto prompt optimization (gradient-free) | [Details](/api/classes/GEPAAlgorithm) |
 | [`EmbeddingSFTAlgorithm`](/api/classes/EmbeddingSFTAlgorithm) | Contrastive embedding fine-tuning for semantic routing | [Details](/api/classes/EmbeddingSFTAlgorithm) |
+| [`ClassifierSFTAlgorithm`](/api/classes/ClassifierSFTAlgorithm) | Classification-head fine-tuning (decision/classifier models) | [Details](/api/classes/ClassifierSFTAlgorithm) |
 | [`PEFTExtender`](/api/classes/PEFTExtender) | Base class for parameter-efficient fine-tuning extensions | [Details](/api/classes/PEFTExtender) |
 | [`LoRAPEFTExtender`](/api/classes/LoRAPEFTExtender) | LoRA-specific PEFT extension implementation | [Details](/api/classes/LoRAPEFTExtender) |
 | [`AlgorithmRegistry`](/api/classes/AlgorithmRegistry) | Central registry for algorithms and backends | [Details](/api/classes/AlgorithmRegistry) |
@@ -50,6 +52,7 @@ Backend implementations that power the algorithms:
 | [`VeRLLoRAGRPOBackend`](/api/backends/verl) | LoRA + GRPO (multi-GPU) | [Details](/api/backends/verl) |
 | [`GEPABackend` / `MLflowGEPABackend`](/api/backends/gepa) | GEPA prompt optimization | [Details](/api/backends/gepa) |
 | [`SentenceTransformersBackend`](/api/backends/embedding_sft) | Embedding fine-tuning | [Details](/api/backends/embedding_sft) |
+| [`DecisionHeadBackend`](/api/backends/classifier_sft) | Classifier fine-tuning | [Details](/api/backends/classifier_sft) |
 
 For an overview of the backend system, see [Backends Overview](/api/backends/).
 
