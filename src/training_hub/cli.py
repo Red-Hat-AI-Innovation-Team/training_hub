@@ -371,6 +371,7 @@ def _define_params() -> None:
         "--lora-r": {"type": int, "help": "LoRA rank (default: 16)"},
         "--lora-alpha": {"type": int, "help": "LoRA alpha (default: 32)"},
         "--lora-dropout": {"type": float, "help": "LoRA dropout (default: 0.05)"},
+        "--lora-target-modules": {"type": str, "nargs": "+", "help": "Module names to apply LoRA to (default: PEFT's per-architecture targets, else all-linear)"},
         # Data format (columns vary by task)
         "--text-column": {"type": str, "help": "Text/context column (default: text) — sequence_classification & multiple_choice"},
         "--label-column": {"type": str, "help": "Label column (default: label; token_classification default: ner_tags)"},

@@ -12,7 +12,9 @@ from training_hub.algorithms.classifier_sft import (
     DecisionHeadBackend,
     _MultipleChoiceCollator,
     _align_word_labels,
+    _apply_lora,
     _encode_labels,
+    _normalize_loss_over_accumulation,
     _resolve_dotted,
 )
 
@@ -123,6 +125,18 @@ class TestMultipleChoiceCollator:
         # the second example had 1 real choice of 3 → only its first slot is real
         assert batch["choice_mask"].tolist() == [[True, True, True], [True, False, False]]
 
+    def test_padded_choices_have_an_attended_token(self):
+        # An all-zero attention mask on a padded choice makes mean-pooling heads (ModernBERT's
+        # default) divide by zero -> NaN that backprop writes into every weight. Every choice,
+        # padded or not, must attend to at least one token; choice_mask handles exclusion.
+        collator = _MultipleChoiceCollator(self._StubTokenizer())
+        features = [
+            {"input_ids": [[1, 2], [3, 4], [5, 6], [7, 8]], "attention_mask": [[1, 1]] * 4, "label": 0},
+            {"input_ids": [[9, 9]], "attention_mask": [[1, 1]], "label": 0},
+        ]
+        batch = collator(features)
+        assert (batch["attention_mask"].sum(dim=-1) > 0).all()
+
 
 class TestResolveDotted:
     def test_resolves_attribute(self):
@@ -142,3 +156,107 @@ class TestCliRegistration:
         # _build_parser() triggers _define_params(), which populates _ALGO_PARAM_DEFS.
         assert cli._build_parser() is not None
         assert "--task" in cli._ALGO_PARAM_DEFS["classifier-sft"]
+        assert cli._ALGO_PARAM_DEFS["classifier-sft"]["--lora-target-modules"]["nargs"] == "+"
+
+
+class _RecordingTokenizer:
+    """Offline stand-in for a HF tokenizer: records which strings it was asked to encode."""
+
+    pad_token_id = 0
+
+    def __init__(self):
+        self.seen: list[str] = []
+
+    def __call__(self, texts, truncation=True, max_length=None):
+        self.seen.extend(texts)
+        return {"input_ids": [[1] * len(t) for t in texts], "attention_mask": [[1] * len(t) for t in texts]}
+
+
+class TestSequenceClassificationColumns:
+    def _prep(self, tmp_path, rows, **params):
+        import json
+
+        path = tmp_path / "data.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in rows))
+        tok = _RecordingTokenizer()
+        out = DecisionHeadBackend()._prep_sequence_classification(str(path), tok, 32, params)
+        return out, tok
+
+    def test_missing_label_column_names_it_instead_of_falling_back(self, tmp_path):
+        rows = [{"text": "a", "label": "x"}, {"text": "b", "label": "y"}]
+        with pytest.raises(ValueError, match=r"label_column='nope'"):
+            self._prep(tmp_path, rows, label_column="nope")
+
+    def test_custom_text_column_alongside_existing_text_column(self, tmp_path):
+        rows = [{"text": "raw", "clean_text": "CLEAN-A", "category": "x"},
+                {"text": "raw", "clean_text": "CLEAN-B", "category": "y"}]
+        (tokenized, _c, id2label, _kw), tok = self._prep(
+            tmp_path, rows, text_column="clean_text", label_column="category"
+        )
+        assert tok.seen == ["CLEAN-A", "CLEAN-B"]  # encoded the requested column, not `text`
+        assert set(tokenized.column_names) == {"input_ids", "attention_mask", "label"}
+        assert id2label == {0: "x", 1: "y"}
+
+    def test_swapped_column_names(self, tmp_path):
+        # text lives in a column called "label" and labels in one called "text" — no renames,
+        # so no collision.
+        rows = [{"label": "hello there", "text": "pos"}, {"label": "go away", "text": "neg"}]
+        (tokenized, _c, id2label, _kw), tok = self._prep(
+            tmp_path, rows, text_column="label", label_column="text"
+        )
+        assert tok.seen == ["hello there", "go away"]
+        assert sorted(id2label.values()) == ["neg", "pos"]
+
+    def test_same_text_and_label_column_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must differ"):
+            self._prep(tmp_path, [{"text": "a"}], text_column="text", label_column="text")
+
+
+class _FakeModel:
+    class config:  # noqa: N801
+        model_type = "modernbert"
+
+
+class TestApplyLora:
+    def test_falls_back_to_all_linear_when_peft_has_no_default_targets(self, monkeypatch):
+        import peft
+
+        calls = []
+
+        def fake_get_peft_model(model, cfg):
+            calls.append(cfg.target_modules)
+            if cfg.target_modules is None:
+                raise ValueError("Please specify `target_modules` or `target_parameters`in `peft_config`")
+            return "wrapped"
+
+        monkeypatch.setattr(peft, "get_peft_model", fake_get_peft_model)
+        assert _apply_lora(_FakeModel(), "sequence_classification", {}) == "wrapped"
+        assert calls[0] is None and calls[1] == "all-linear"
+
+    def test_explicit_targets_are_not_overridden(self, monkeypatch):
+        import peft
+
+        def boom(model, cfg):
+            raise ValueError("Target modules {'nope'} not found — target_modules mismatch")
+
+        monkeypatch.setattr(peft, "get_peft_model", boom)
+        with pytest.raises(ValueError, match="nope"):
+            _apply_lora(_FakeModel(), "sequence_classification", {"lora_target_modules": ["nope"]})
+
+
+class TestLossNormalization:
+    def test_trainer_divides_by_accumulation_steps(self):
+        class T:
+            model_accepts_loss_kwargs = True
+
+        t = T()
+        _normalize_loss_over_accumulation(t)
+        assert t.model_accepts_loss_kwargs is False
+
+    def test_trainer_subclass_can_opt_out(self):
+        class OptOut:
+            model_accepts_loss_kwargs = True  # consumes num_items_in_batch itself
+
+        t = OptOut()
+        _normalize_loss_over_accumulation(t, OptOut)
+        assert t.model_accepts_loss_kwargs is True
