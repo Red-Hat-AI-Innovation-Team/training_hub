@@ -72,20 +72,22 @@ result = classifier_sft(
 
 Coverage of the OSS "decision model" space grows by **convention and configuration**, not by vendoring packages or adding per-model branches:
 
-- **`trust_remote_code=True` + `revision`** — load any architecture that ships an HF `auto_map` (GLiClass, Jina, Nomic, GTE, …). The model author's code runs, so **pin `revision`** to a commit/branch/tag for safety.
+- **`trust_remote_code=True` + `revision`** — load a custom architecture whose hub repo ships its own modeling code via an HF `auto_map` with a `*ForSequenceClassification` / `*ForTokenClassification` / `*ForMultipleChoice` entry. The repo author's code runs, so **pin `revision`** to a commit/branch/tag for safety — and it only works if that code supports your installed transformers version (see the note below).
 - **`model_class`** (dotted path) — point at an importable `*.from_pretrained` class for a backbone distributed as a pip package rather than via `auto_map`. The user installs that package; this library takes on no dependency.
 - **`loss_fn`** (dotted path) — a custom `loss_fn(logits, labels)` callable or a `Trainer` subclass, for a bespoke objective. (For `multiple_choice`, padded placeholder choices reach the loss with `-inf` logits, so a plain cross-entropy ignores them; a `loss_fn` that accepts a `choice_mask` keyword also receives the boolean mask. A `Trainer` subclass gets `choice_mask` in its batch and must pop it before calling the model.)
 
 ```python
 result = classifier_sft(
-    model_path="knowledgator/gliclass-base-v1.0",
+    model_path="<org>/<custom-model>",  # a repo whose auto_map includes a classification head
     data_path="intents.parquet",
-    ckpt_output_dir="./gliclass_clf",
+    ckpt_output_dir="./custom_clf",
     trust_remote_code=True,
     revision="<commit-sha>",            # pin custom code to a known commit
     label_column="category",
 )
 ```
+
+> **Remote code and transformers 5.** Prefer a native architecture when one exists — most popular backbones (BERT, RoBERTa, DeBERTa-v3, ModernBERT, XLM-R, Qwen, Llama, Gemma, …) load with no flags. Several well-known remote-code repos don't yet support transformers 5.x: GTE-v1.5 and Jina v2 call APIs that transformers 5 removed, Jina v3's remote code registers no classification head, and nomic-embed-text-v1.5 fails during training. Vendor-packaged models (e.g. GLiClass, Laya) need their own package and the `model_class` hook instead.
 
 ## Data Format
 

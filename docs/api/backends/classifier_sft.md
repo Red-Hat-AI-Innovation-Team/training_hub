@@ -75,7 +75,7 @@ String/bool/float labels are mapped to contiguous integer codes; integer labels 
 
 ## Precision
 
-The backend enables `bf16` only on a CUDA GPU that supports it (Ampere or newer); otherwise — older GPUs or CPU — it trains in fp32. Encoder classifiers also run on CPU.
+Weights the optimizer updates are always kept in fp32, with `bf16` autocast for compute on a CUDA GPU that supports it (Ampere or newer); otherwise — older GPUs or CPU — everything runs in fp32. A full fine-tune loads the checkpoint in fp32 regardless of its stored dtype (transformers 5 otherwise loads the stored dtype, and an fp16 checkpoint such as DeBERTa-v3 would diverge to NaN under AdamW). With `use_peft`, the frozen base stays in bf16 (when supported) to save memory while the LoRA adapters and the task head are kept in fp32. Encoder classifiers also run on CPU.
 
 ## Output
 
