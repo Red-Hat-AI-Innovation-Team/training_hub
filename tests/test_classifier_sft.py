@@ -16,10 +16,12 @@ from training_hub.algorithms.classifier_sft import (
     _apply_lora,
     _call_loss_fn,
     _encode_labels,
+    _model_load_dtype,
     _normalize_loss_over_accumulation,
     _resolve_dotted,
     _set_pad_token_id,
     _training_metrics_entry,
+    _upcast_trainable_params,
 )
 
 
@@ -426,3 +428,29 @@ class TestApplyLoraRealPeft:
         trainable = {n for n, p in model.named_parameters() if p.requires_grad}
         assert any("lora_" in n for n in trainable)  # LoRA applied to the backbone
         assert any("classifier" in n and "lora_" not in n for n in trainable)  # head fully trainable
+
+
+
+class TestTrainableDtype:
+    """transformers 5 loads checkpoints in their stored dtype; AdamW on fp16 weights NaNs
+    (DeBERTa-v3 ships fp16). Optimized weights must be fp32."""
+
+    def test_load_dtype_policy(self):
+        import torch
+
+        assert _model_load_dtype(use_peft=False, use_bf16=True) is torch.float32  # full FT
+        assert _model_load_dtype(use_peft=False, use_bf16=False) is torch.float32
+        assert _model_load_dtype(use_peft=True, use_bf16=True) is torch.bfloat16  # frozen base
+        assert _model_load_dtype(use_peft=True, use_bf16=False) is torch.float32
+
+    def test_lora_trainables_upcast_while_frozen_base_stays_bf16(self):
+        import torch
+
+        pytest.importorskip("peft")
+        model = TestApplyLoraRealPeft._tiny("ModernBertForSequenceClassification").to(torch.bfloat16)
+        model = _apply_lora(model, "sequence_classification", {})
+        _upcast_trainable_params(model)
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        frozen = [p for p in model.parameters() if not p.requires_grad]
+        assert trainable and all(p.dtype is torch.float32 for p in trainable)
+        assert frozen and all(p.dtype is torch.bfloat16 for p in frozen)

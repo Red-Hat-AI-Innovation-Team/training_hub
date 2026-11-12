@@ -128,6 +128,31 @@ def _encode_labels(values: list[Any]) -> tuple[dict[int, str], dict[Any, int], b
     return id2label, label2id, False
 
 
+def _model_load_dtype(use_peft: bool, use_bf16: bool) -> Any:
+    """dtype to load the backbone in.
+
+    transformers 5 loads a checkpoint in its *stored* dtype by default (4.x used fp32). An
+    fp16 checkpoint (e.g. DeBERTa-v3) would then be optimized in fp16, where AdamW's ``eps``
+    underflows and the first update turns every weight NaN; a bf16 one would train without
+    fp32 master weights. So the weights the optimizer updates are always fp32 (bf16 autocast
+    still handles compute): a full fine-tune loads fp32; LoRA keeps the frozen base in bf16
+    when the GPU supports it (memory) and :func:`_upcast_trainable_params` lifts the adapters
+    and head to fp32."""
+    import torch
+
+    return torch.bfloat16 if (use_peft and use_bf16) else torch.float32
+
+
+def _upcast_trainable_params(model: Any) -> None:
+    """Keep every trainable parameter (LoRA adapters, the task head in ``modules_to_save``)
+    in fp32, whatever dtype the frozen base was loaded in."""
+    import torch
+
+    for param in model.parameters():
+        if param.requires_grad and param.dtype != torch.float32:
+            param.data = param.data.float()
+
+
 def _set_pad_token_id(config: Any, pad_token_id: Any) -> None:
     """Set ``pad_token_id`` where the classification head will read it. Decoder heads need it
     to find each row's last real token; models with a nested text config (e.g. Qwen3.5, whose
@@ -235,13 +260,21 @@ class DecisionHeadBackend(Backend):
             logger.info("Loading model via user-supplied class: %s", p["model_class"])
         else:
             model_cls = getattr(transformers, _AUTO_CLASS[task])
+        # bf16 needs GPU support (Ampere+), not just CUDA; elsewhere train in fp32.
+        use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         model = model_cls.from_pretrained(
-            model_path, id2label=id2label, label2id=label2id, **head_kwargs, **from_pretrained_kw
+            model_path,
+            id2label=id2label,
+            label2id=label2id,
+            dtype=_model_load_dtype(use_peft, use_bf16),
+            **head_kwargs,
+            **from_pretrained_kw,
         )
         _set_pad_token_id(model.config, tokenizer.pad_token_id)
 
         if use_peft:
             model = _apply_lora(model, task, p)
+            _upcast_trainable_params(model)
 
         # Warmup is version-dependent: transformers 4.x has a `warmup_ratio` field and
         # rejects a float passed to `warmup_steps`; transformers 5.x removed
@@ -266,9 +299,9 @@ class DecisionHeadBackend(Backend):
             save_strategy="no",
             report_to=[],
             seed=seed,
-            # bf16 needs GPU support (Ampere+), not just CUDA: TrainingArguments raises on a
-            # pre-Ampere GPU when bf16=True, so fall back to fp32 there.
-            bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+            # bf16 autocast for compute; TrainingArguments raises on a pre-Ampere GPU with
+            # bf16=True, hence the capability check above.
+            bf16=use_bf16,
             **warmup_kwargs,
         )
 
