@@ -43,6 +43,7 @@ Example (custom multi-turn rollout):
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -143,6 +144,63 @@ async def _shutdown_art_backend(backend) -> None:
 # ---------------------------------------------------------------------------
 # vLLM V1 LoRA compatibility
 # ---------------------------------------------------------------------------
+
+
+def _build_art_model_kwargs(
+    art,
+    *,
+    name: str,
+    project: str,
+    base_model: str,
+    lora_r: int,
+    lora_alpha: int,
+    target_modules: Optional[List[str]],
+    internal_config_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build keyword arguments for ``art.TrainableModel`` across openpipe-art releases.
+
+    openpipe-art 0.5.20 moved LoRA settings from ``_internal_config.peft_args`` to a
+    top-level ``TrainableModel(lora_config=...)`` (``art.dev.PeftArgs`` now raises) and
+    made ``run_name`` a required, keyword-only storage name. The API is detected from
+    the constructor signature so both sides of the change keep working.
+
+    Args:
+        art: The imported ``art`` module.
+        name: ART model name (the inference-serving alias).
+        project: ART project name.
+        base_model: HuggingFace model ID or local path.
+        lora_r: LoRA rank. Always passed explicitly: ART defaults to rank 8, so leaving
+            it out silently trains a rank-8 adapter whatever lora_r says.
+        lora_alpha: LoRA alpha.
+        target_modules: LoRA target modules, or None for ART's default.
+        internal_config_kwargs: Remaining ``art.dev.InternalModelConfig`` fields
+            (``init_args``, ``trainer_args``, ``engine_args``).
+
+    Returns:
+        Keyword arguments for ``art.TrainableModel``, including ``_internal_config``.
+    """
+    params = inspect.signature(art.TrainableModel.__init__).parameters
+    model_kwargs: Dict[str, Any] = {"name": name, "project": project, "base_model": base_model}
+    internal_kwargs = dict(internal_config_kwargs)
+
+    if "lora_config" in params:
+        lora_config: Dict[str, Any] = {"rank": lora_r, "alpha": lora_alpha}
+        if target_modules is not None:
+            lora_config["target_modules"] = target_modules
+        model_kwargs["lora_config"] = art.dev.LoRAConfig(**lora_config)
+    else:
+        peft_kwargs: Dict[str, Any] = {"r": lora_r, "lora_alpha": lora_alpha}
+        if target_modules is not None:
+            peft_kwargs["target_modules"] = target_modules
+        internal_kwargs["peft_args"] = art.dev.PeftArgs(**peft_kwargs)
+
+    if "run_name" in params:
+        # run_name is ART's checkpoint storage name; reusing the model name keeps the
+        # on-disk layout of releases that stored checkpoints under `name`.
+        model_kwargs["run_name"] = name
+
+    model_kwargs["_internal_config"] = art.dev.InternalModelConfig(**internal_kwargs)
+    return model_kwargs
 
 
 def _create_seed_lora_checkpoint(
@@ -1071,12 +1129,6 @@ class ARTLoRAGRPOBackend(Backend):
             )
 
         # Build ART model config
-        peft_kwargs = {"lora_alpha": lora_alpha}
-        if lora_r != 16:
-            peft_kwargs["r"] = lora_r
-        if target_modules is not None:
-            peft_kwargs["target_modules"] = target_modules
-
         init_kwargs = {"gpu_memory_utilization": gpu_memory_utilization}
 
         # engine_args controls the vLLM engine; gpu_memory_utilization must
@@ -1089,18 +1141,21 @@ class ARTLoRAGRPOBackend(Backend):
         if effective_max_lora_rank > 16:
             engine_kwargs["max_lora_rank"] = effective_max_lora_rank
 
-        internal_config = art.dev.InternalModelConfig(
-            init_args=art.dev.InitArgs(**init_kwargs),
-            peft_args=art.dev.PeftArgs(**peft_kwargs),
-            trainer_args=art.dev.TrainerArgs(max_grad_norm=max_grad_norm),
-            engine_args=art.dev.EngineArgs(**engine_kwargs),
-        )
-
         model = art.TrainableModel(
-            name=art_model_name,
-            project=art_project,
-            base_model=model_path,
-            _internal_config=internal_config,
+            **_build_art_model_kwargs(
+                art,
+                name=art_model_name,
+                project=art_project,
+                base_model=model_path,
+                lora_r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=target_modules,
+                internal_config_kwargs={
+                    "init_args": art.dev.InitArgs(**init_kwargs),
+                    "trainer_args": art.dev.TrainerArgs(max_grad_norm=max_grad_norm),
+                    "engine_args": art.dev.EngineArgs(**engine_kwargs),
+                },
+            )
         )
 
         # Patch ART's convert_checkpoint_if_needed to create a seed LoRA
