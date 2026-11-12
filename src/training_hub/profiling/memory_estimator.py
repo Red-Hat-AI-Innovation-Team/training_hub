@@ -1,13 +1,15 @@
 try: from typing import override
 except ImportError: from typing_extensions import override
+import logging
 import warnings
 import torch
-from transformers import AutoModel
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
 from mini_trainer.osft_utils import MODEL_CONFIGS
 
 from torch.distributed.fsdp import ShardingStrategy 
 
 import os
+from collections import defaultdict
 import pandas as pd
 
 """
@@ -22,6 +24,36 @@ FLOAT16_BYTES_N: int = 2
 FLOAT8_BYTES_N: int = 1
 FLOAT4_BYTES_N: float = 0.5
 ADAMW_PARAMS_N: int = 2
+
+# Module-name terms marking non-text parts of multimodal models, which LoRA leaves frozen by default
+NON_TEXT_MODULE_TERMS: tuple[str, ...] = ("vision", "visual", "audio", "multi_modal_projector")
+
+# Peak bytes per token per unit of MLP width for the decoder layer being computed. With Unsloth's
+# offloaded gradient checkpointing, each GPU holds about one layer's live working set, no matter
+# how many layers it holds. Fitted on Muse Glimmer 30B; holds for Gemma 4 31B and Nemotron 30B-A3B.
+WS_BYTES_PER_MLP_UNIT: int = 30
+
+# Model types whose lm_head runs every step under Unsloth, so the logits are materialized
+# (fp32 + a bf16 copy). Other models use Unsloth's fused linear + cross-entropy loss, which
+# never materializes them. Extend from measurements.
+MATERIALIZES_LOGITS: tuple[str, ...] = ("gemma4",)
+
+# Per-GPU memory that multi-GPU FSDP training (sft, osft) uses outside PyTorch's caching allocator:
+# the CUDA context, NCCL communicator buffers and cuBLAS workspaces. nvidia-smi counts it, but
+# PyTorch's memory stats and the estimate's tensor terms don't. Measured as the nvidia-smi peak
+# minus torch.cuda.max_memory_reserved on Qwen3.5-4B, 2x H100, max_tokens_per_gpu=4000: 2.6 GiB
+# for both sft (instructlab-training) and osft (mini_trainer).
+FSDP_RUNTIME_OVERHEAD_BYTES: int = int(2.6 * 1024**3)
+
+# Where the estimator caches each model's sizes: a user cache directory, not the package
+# directory, which is often read-only (e.g. site-packages in containers). Tests point this
+# somewhere temporary. The cache is optional: if it can't be written, the estimate still works.
+MODEL_STORAGE_PATH: str = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    "training_hub", "model_storage.csv")
+# Bump when the cached values change meaning, so rows from older versions are rebuilt.
+# 2: counts the lm_head of untied models and adds lora_weight_size / max_block_params.
+MODEL_STORAGE_VERSION: int = 2
 
 # Helper function to do the rounding when printing 
 def ROUNDER(value: int) -> str: return str(round(value / 1073741824, 1))
@@ -45,8 +77,65 @@ class _ModelStorage:
         self.num_layers = load_param('num_layers') 
         self.hidden_size = load_param('hidden_size')
         self.vocab_size = load_param('vocab_size')
-        self.weight_size_total = load_param('weight_size_total')
+        self.lora_weight_size = load_param('lora_weight_size')
         self.osft_params = load_param('osft_params') 
+        self.max_block_params = load_param('max_block_params')
+
+
+class _PlacementSizer:
+    """
+    Stands in for a transformers HfQuantizer so its device_map helpers size each parameter
+    as Unsloth loads it: bf16, or 4-bit for the nn.Linear weights that bitsandbytes quantizes
+    under QLoRA (everything except the lm_head and the model's fp32 modules).
+    The real bitsandbytes quantizer needs the bitsandbytes package, even just for sizing.
+    Only the methods those helpers call are implemented.
+
+    Args:
+        model (PreTrainedModel): The meta model to size
+        quantize_4bit (bool): If true, size the quantized weights at 4 bits
+    """
+    def __init__(self, model: PreTrainedModel, quantize_4bit: bool):
+        self.quantize_4bit = quantize_4bit
+        self.quantized_params: set[str] = set()
+        if quantize_4bit:
+            skip = set(getattr(model, '_keep_in_fp32_modules', None) or [])
+            output_embeddings = model.get_output_embeddings()
+            for name, module in model.named_modules():
+                if module is output_embeddings or not isinstance(module, torch.nn.Linear):
+                    continue
+                if any(name == key or name.endswith("." + key) or name.startswith(key + ".") for key in skip):
+                    continue
+                self.quantized_params.add(name + ".weight")
+
+    def param_element_size(self, model: torch.nn.Module, param_name: str, param: torch.Tensor) -> float:
+        """
+        Bytes per element of the given parameter once loaded.
+
+        Returns:
+            float: 0.5 for 4-bit quantized weights, 2 for other float tensors (bf16)
+        """
+        if param_name in self.quantized_params:
+            return FLOAT4_BYTES_N
+        return FLOAT16_BYTES_N if param.is_floating_point() else param.element_size()
+
+    def adjust_max_memory(self, max_memory: dict[int | str, float]) -> dict[int | str, float]:
+        """
+        Leave 10% for quantization buffers, as transformers' bitsandbytes quantizer does.
+
+        Returns:
+            dict[int | str, float]: The adjusted per-device memory caps
+        """
+        if not self.quantize_4bit:
+            return max_memory
+        return {device: memory * 0.9 for device, memory in max_memory.items()}
+
+    def total_size(self, model: PreTrainedModel) -> float:
+        """
+        Returns:
+            float: The model's total loaded size in bytes
+        """
+        return sum(param.numel() * self.param_element_size(model, name, param)
+                   for name, param in model.named_parameters())
 
 
 class BasicEstimator:
@@ -68,6 +157,8 @@ class BasicEstimator:
         verbose (int): The level of verbosity to print out. Set to 0 for no printing,
                         set to 1 to print out only hardware recommendations,
                         set to 2 for a detailed memory breakdown.
+        count_fsdp_gather (bool): If true and num_gpus > 1, add the memory each GPU needs
+                        to gather the largest FSDP unit (default: False).
     """
 
     def __init__(
@@ -81,14 +172,17 @@ class BasicEstimator:
         use_liger: bool = False,
         verbose: int = 1,
         trust_remote_code: bool = False,
+        count_fsdp_gather: bool = False,
     ):
         self.num_gpus = num_gpus
         self.gpu_memory = gpu_memory
         self.model_path = model_path
         self.use_liger = use_liger
         self.verbose = verbose
+        self.trust_remote_code = trust_remote_code
+        self.count_fsdp_gather = count_fsdp_gather
 
-        self.storage_path = os.path.join(os.path.split(os.path.realpath(__file__))[0], "model_storage.csv")
+        self.storage_path = MODEL_STORAGE_PATH
 
         # Load model information from the CSV, or load it directly if it's not in the CSV.
         # TODO: Adjust this code so that we download and preprocess the information from safetensors instead
@@ -97,7 +191,8 @@ class BasicEstimator:
         if os.path.exists(self.storage_path):
                 read_csv = pd.read_csv(self.storage_path, index_col='name') 
                 self.model_storage = read_csv.to_dict(orient='index')
-                if model_path in self.model_storage:
+                cached_version = self.model_storage.get(model_path, {}).get('cache_version')
+                if model_path in self.model_storage and cached_version == MODEL_STORAGE_VERSION:
                     try:
                         self.found_model = True
                         self.model = _ModelStorage(self.model_storage[model_path])
@@ -108,7 +203,10 @@ class BasicEstimator:
                     except:
                         self.found_model = False
                         self._load_model("Model missing necessary parameters.", trust_remote_code=trust_remote_code)
-                else: self._load_model("Model not found in the CSV.", trust_remote_code=trust_remote_code)                
+                elif model_path in self.model_storage:
+                    self._load_model("The CSV entry was written by an older version of the estimator.",
+                                     trust_remote_code=trust_remote_code)
+                else: self._load_model("Model not found in the CSV.", trust_remote_code=trust_remote_code)
         else:
             self.model_storage = {}
             self._load_model("No CSV file found.", trust_remote_code=trust_remote_code)
@@ -134,22 +232,72 @@ class BasicEstimator:
         """
         Load the model if we can't find the information locally.
         """
-        warnings.warn(warn + "\nThe model will be loaded directly. This may require downloading the model from HuggingFace.")
-        with torch.device('meta'):
-            self.model = AutoModel.from_pretrained(self.model_path,
-                                                    trust_remote_code=trust_remote_code,
-                                                    device_map="meta")
-        
-        # Determine parameters needed for calculations
+        warnings.warn(warn + "\nThe model's config will be downloaded from HuggingFace and the model built on the meta device.")
+        config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=trust_remote_code)
+        self.model = self._build_meta_model(config, trust_remote_code)
+
+        # Determine parameters needed for calculations. Multimodal models (e.g. Gemma 4) keep
+        # the language model's settings in a nested text config, not at the top level.
+        text_config = config.get_text_config()
         self.num_params: int = self.model.num_parameters(only_trainable=False)
         self.num_trainable_params: int = self.model.num_parameters(only_trainable=True)
-        self.num_layers: int = self.model.config.num_hidden_layers
-        self.hidden_size: int = self.model.config.hidden_size
+        self.num_layers: int = text_config.num_hidden_layers
+        self.hidden_size: int = text_config.hidden_size
+
+
+    def _get_config(self) -> PretrainedConfig:
+        """
+        The model's config: the meta model's, or, when the sizes came from the CSV cache
+        (which doesn't store the config), the (small) config file, fetched once.
+
+        Returns:
+            PretrainedConfig: The model's config
+        """
+        config = getattr(self.model, 'config', None)
+        if config is not None:
+            return config
+        if getattr(self, '_config', None) is None:
+            self._config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=self.trust_remote_code)
+        return self._config
+
+
+    @staticmethod
+    def _build_meta_model(config: PretrainedConfig, trust_remote_code: bool = False) -> PreTrainedModel:
+        """
+        Build the model on the meta device from its config, so no weights are downloaded.
+
+        Uses a class with an lm_head (AutoModelForCausalLM, then AutoModelForImageTextToText for
+        multimodal models) so untied output heads are counted. Falls back to AutoModel.
+
+        Args:
+            config (PretrainedConfig): The model's config
+            trust_remote_code (bool): Whether to allow custom model code from the Hub
+
+        Returns:
+            PreTrainedModel: The model with all parameters on the meta device
+        """
+        auto_classes = [AutoModelForCausalLM]
+        try:
+            from transformers import AutoModelForImageTextToText
+            auto_classes.append(AutoModelForImageTextToText)
+        except ImportError:
+            pass
+        auto_classes.append(AutoModel)
+
+        with torch.device('meta'):
+            for auto_class in auto_classes:
+                try:
+                    return auto_class.from_config(config, trust_remote_code=trust_remote_code)
+                except ValueError:  # this config isn't registered for this auto class
+                    continue
+        raise ValueError(f"Could not build a model for config type '{config.model_type}'")
 
 
     def _update_model_storage(self):
         """
-        Utility function to store the models' information into a CSV. 
+        Utility function to store the models' information into a CSV.
+        The CSV is only a cache, so if it can't be written (e.g. a read-only filesystem),
+        this warns and the estimate carries on without it.
         """
         self.model_storage[self.model_path] = \
             {
@@ -158,11 +306,20 @@ class BasicEstimator:
                 'num_layers': self.num_layers,
                 'hidden_size': self.hidden_size,
                 'vocab_size': self._get_vocab_size(),
-                'weight_size_total': self._calc_weight_size(self._find_valid_layers()),
-                'osft_params': self._calc_osft_params()
+                'lora_weight_size': self._calc_lora_weight_size(),
+                'osft_params': self._calc_osft_params(),
+                'max_block_params': self._calc_max_block_params(),
+                'cache_version': MODEL_STORAGE_VERSION,
             }
         data_out = pd.DataFrame.from_dict(self.model_storage, orient='index')
-        data_out.to_csv(self.storage_path, index=True, index_label='name')
+        try:
+            os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
+            data_out.to_csv(self.storage_path, index=True, index_label='name')
+        except OSError as e:
+            warnings.warn(f"Could not write the model size cache to {self.storage_path} ({e}). "
+                          "The estimate is unaffected, but the model's sizes will be recomputed next time. "
+                          "Set training_hub.profiling.memory_estimator.MODEL_STORAGE_PATH to a writable path to cache them.",
+                          stacklevel=2)
 
 
     def _resolve_tokens_per_gpu(self, batch_size: int | None, max_seq_len: int | None, max_tokens_per_gpu: int | None):
@@ -185,27 +342,97 @@ class BasicEstimator:
                                 "max_tokens_per_gpu must be provided")
 
 
-    def _calc_weight_size(self, target_terms: list[str]):
+    def _find_decoder_blocks(self) -> str:
         """
-        Determine how many parameters will be considered by in LoRA's low rank matrices
-        """
-        # Get the total dimensionality of weight matrices in this model
-        weight_size_total = 0
+        Find the module list holding the text decoder blocks (e.g. "model.layers" or
+        "model.language_model.layers"): the shallowest nn.ModuleList outside the vision/audio
+        towers with one entry per decoder layer. MoE layers can hold a longer per-layer list of
+        experts (e.g. 128 experts vs. 48 layers), so length alone isn't enough. Falls back to
+        the longest list if none has num_hidden_layers entries.
 
-        # Iterate through all layers...
-        for layer_name in self.model.state_dict().keys():
-            # Check to see if this current layer is a weight matrix
-            layer_data = self.model.state_dict()[layer_name]
-            if layer_data.dim() < 2 or layer_name.find('weight') <= -1: continue
-            else:
-                # If so, check to see if this weight is one of the weights
-                # we are looking for.
-                for term in target_terms:
-                    if layer_name.find(term) > -1:
-                        # If so, add the input and output of the matrix to our accumulator
-                        weight_size_total += (layer_data.shape[0] + layer_data.shape[1])
-        
-        return weight_size_total
+        Returns:
+            str: The module name of the decoder block list
+        """
+        candidates = [(name, module) for name, module in self.model.named_modules()
+                      if isinstance(module, torch.nn.ModuleList) and len(module) > 1
+                      and not any(term in name for term in NON_TEXT_MODULE_TERMS)]
+        if not candidates:
+            raise ValueError(f"Could not find the decoder blocks of {self.model_path}")
+        num_layers = getattr(self.model.config.get_text_config(), "num_hidden_layers", None)
+        matching = [candidate for candidate in candidates if len(candidate[1]) == num_layers]
+        if matching:
+            return min(matching, key=lambda candidate: candidate[0].count("."))[0]
+        return max(candidates, key=lambda candidate: len(candidate[1]))[0]
+
+
+    def _calc_lora_weight_size_per_layer(self, target_modules: list[str] | None = None) -> dict[int, int]:
+        """
+        Sum of (in_features + out_features) over the weights LoRA adapts, per decoder block.
+        Multiplying by lora_r gives the number of LoRA A+B parameters.
+
+        Matches Unsloth's default (target_modules=None): every nn.Linear in the text decoder
+        blocks except MoE routers, plus fused [num_experts, out, in] expert weights, which get
+        one adapter per expert. Embeddings, lm_head and vision/audio towers are left out.
+
+        Args:
+            target_modules (list[str] | None): Only count modules (or fused expert parameters)
+                                whose name ends with one of these names. None counts all of them.
+
+        Returns:
+            dict[int, int]: Block index -> summed weight dimensions in that block
+        """
+        text_config = self.model.config.get_text_config()
+        num_experts = (getattr(text_config, "n_routed_experts", None)
+                       or getattr(text_config, "num_experts", None)
+                       or getattr(text_config, "num_local_experts", None))
+        blocks = self._find_decoder_blocks()
+
+        def is_target(name: str) -> bool:
+            """Whether a module or parameter name is one of target_modules (all are, if None)."""
+            return target_modules is None or name.split(".")[-1] in target_modules
+
+        per_layer: dict[int, int] = {}
+        for name, module in self.model.named_modules():
+            if not name.startswith(blocks + ".") or any(term in name for term in NON_TEXT_MODULE_TERMS):
+                continue
+            layer = int(name[len(blocks) + 1:].split(".")[0])
+            size = 0
+            # A router has one output per expert; LoRA doesn't adapt it
+            if isinstance(module, torch.nn.Linear) and module.out_features != num_experts and is_target(name):
+                size += module.in_features + module.out_features
+            # Fused expert weights are stored as one [num_experts, out, in] parameter
+            for param_name, param in module.named_parameters(recurse=False):
+                if (num_experts and param.dim() == 3 and param.shape[0] == num_experts
+                        and (is_target(name) or is_target(param_name))):
+                    size += param.shape[0] * (param.shape[1] + param.shape[2])
+            per_layer[layer] = per_layer.get(layer, 0) + size
+        return per_layer
+
+
+    def _calc_lora_weight_size(self, target_modules: list[str] | None = None) -> int:
+        """
+        Sum of (in_features + out_features) over all the weights LoRA adapts.
+        See _calc_lora_weight_size_per_layer.
+
+        Args:
+            target_modules (list[str] | None): Only count modules with these names. None counts all.
+
+        Returns:
+            int: The summed weight dimensions. Multiply by lora_r for the LoRA A+B parameters.
+        """
+        return sum(self._calc_lora_weight_size_per_layer(target_modules).values())
+
+
+    def _calc_max_block_params(self) -> int:
+        """
+        The number of parameters in the largest decoder block. For MoE and hybrid models the
+        blocks differ a lot (e.g. Nemotron's MoE blocks are ~2.2x the average block).
+
+        Returns:
+            int: The largest decoder block's parameter count
+        """
+        return max(sum(param.numel() for param in block.parameters())
+                   for block in self.model.get_submodule(self._find_decoder_blocks()))
 
 
     def _calc_osft_params(self) -> int:
@@ -214,7 +441,8 @@ class BasicEstimator:
         many bytes would be needed to store this model when trained with OSFT
         """
         total_bytes: int = 0
-        for layer_name in self.model.state_dict().keys():
+        # named_parameters() lists tied weights (e.g. embeddings shared with lm_head) once
+        for layer_name, _ in self.model.named_parameters():
             total_bytes += self._check_layer_params(layer_name)
         return total_bytes
 
@@ -281,8 +509,8 @@ class BasicEstimator:
         """
         if hasattr(self.model, 'embed_tokens') and hasattr(self.model.embed_tokens, 'num_embeddings'):
             vocab_size = self.model.embed_tokens.num_embeddings
-        elif hasattr(self.model, 'config') and hasattr(self.model.config, 'vocab_size'):
-            vocab_size = self.model.config.vocab_size
+        elif hasattr(self.model, 'config') and hasattr(self.model.config.get_text_config(), 'vocab_size'):
+            vocab_size = self.model.config.get_text_config().vocab_size
         elif hasattr(self.model, 'vocab_size'):
             vocab_size = self.model.vocab_size
         else:
@@ -307,9 +535,33 @@ class BasicEstimator:
 
     def _calc_additional(self, **kwargs):
         """
-        Calculate any additional VRAM that this training method might need
+        Calculate any additional VRAM that this training method might need.
+        With count_fsdp_gather on more than one GPU, each GPU also needs:
+            the gathered FSDP unit: 4 bytes (16-bit weight + gradient) x the largest unit's
+              parameters, as in DeepSpeed's estimate_zero3_model_states_mem_needs. The units are
+              each decoder block and the root (the embeddings, plus the lm_head when it isn't tied).
+            + the prefetched unit: 2 bytes (bf16 weight) x the largest decoder block. Both backends
+              gather the next block during backward while the current one is still held:
+              instructlab-training (sft, FSDP1) uses BackwardPrefetch.BACKWARD_PRE for full
+              fine-tuning, and mini_trainer (osft, FSDP2) prefetches one block by default.
+              Measured +0.188 GiB on Qwen3-4B, which matches 2 bytes x one block.
+            + FSDP_RUNTIME_OVERHEAD_BYTES: memory outside PyTorch's allocator (see the constant).
         """
-        return 0
+        if not self.count_fsdp_gather or self.num_gpus <= 1:
+            return 0
+        # The largest block needs the model structure, unless the CSV cache already has it
+        cached = getattr(self.model, 'max_block_params', None) if self.found_model else None
+        if self.found_model and (cached is None or pd.isna(cached)):
+            self._load_model("Could not find the largest decoder block's size in the CSV cache.",
+                            trust_remote_code=self.trust_remote_code)
+            self._update_model_storage()
+            cached = None
+        block = int(cached) if cached is not None else self._calc_max_block_params()
+        embed = self._get_vocab_size() * self.hidden_size
+        root = embed if self._get_config().get_text_config().tie_word_embeddings else 2 * embed
+        gathered = FLOAT32_BYTES_N * max(root, block)  # 16-bit weight + 16-bit gradient
+        prefetched = FLOAT16_BYTES_N * block
+        return gathered + prefetched + FSDP_RUNTIME_OVERHEAD_BYTES
 
 
     def _apply_overhead(self, subtotal):
@@ -478,9 +730,25 @@ class LoRAEstimator(BasicEstimator):
     An estimator for the memory usage of an LLM trained via LoRA.
     Subclasses the BasicEstimator class.
 
+    batch_size is the micro-batch per process (lora_sft's micro_batch_size), not the
+    effective batch size: gradient accumulation doesn't change the peak memory.
+
     Args (in addition to the BasicEstimator args):
         lora_r (int): The rank size of LoRA's approximation matrices
+        enable_model_splitting (bool): If true, estimate for model splitting
+                        (device_map="balanced"): work out which GPU holds each layer
+                        and return the busiest GPU's memory (default: False). If false
+                        and num_gpus > 1, estimate for DDP: one full replica per GPU.
+        target_modules (list[str] | None): Module names LoRA is applied to. None (default)
+                        matches Unsloth's default: every linear layer in the text decoder.
+        fused_loss (bool | None): Whether the loss fuses the lm_head into the cross-entropy, so the
+                        logits are never materialized. None (default) decides from measurements:
+                        fused, except for the model types in MATERIALIZES_LOGITS. Set it for
+                        models whose behavior hasn't been measured yet.
     """
+    # QLoRA loads the quantized weights at 4 bits; used when working out the GPU placement
+    quantize_4bit: bool = False
+
     @override
     def __init__(
         self,
@@ -493,7 +761,11 @@ class LoRAEstimator(BasicEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
+        enable_model_splitting: bool = False,
+        target_modules: list[str] | None = None,
+        fused_loss: bool | None = None,
     ):
+        self.enable_model_splitting = enable_model_splitting  # used by _resolve_tokens_per_gpu
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
                         model_path=model_path,
@@ -508,25 +780,31 @@ class LoRAEstimator(BasicEstimator):
         self.LOW_MULTIPLIER = 0.95
         self.MEDIUM_MULTIPLIER = 1.1
         self.HIGH_MULTIPLIER = 1.2
-        self.output_constant = 2
 
         # LoRA stores everything in Float16
         self.main_dtype_bytes = FLOAT16_BYTES_N
         self.model_bytes = FLOAT16_BYTES_N
 
-        # Determine the number of parameters needed by LoRA
-        if self.found_model:
-            if hasattr(self.model, 'weight_size_total'):
-                self.weight_size_total = self.model.weight_size_total
-            else:
-                self.found_model = False
-                self._load_model("Could not find the number of LoRA-relevant parameters in the CSV cache.",
-                                trust_remote_code=trust_remote_code)
-                self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
+        self.lora_r = lora_r
+        self.target_modules = target_modules
+        self.fused_loss = fused_loss
+
+        # Determine the number of parameters needed by LoRA. The CSV cache only holds the
+        # default (all linear layers), so custom target_modules need the meta model, and so
+        # does model splitting, to work out which GPU holds each layer, and QLoRA, to work out
+        # which weights bitsandbytes quantizes.
+        cached = getattr(self.model, 'lora_weight_size', None) if self.found_model else None
+        has_cached = cached is not None and not pd.isna(cached)
+        needs_structure = target_modules is not None or enable_model_splitting or self.quantize_4bit
+        if self.found_model and (needs_structure or not has_cached):
+            self._load_model("The estimate needs the model structure.", trust_remote_code=trust_remote_code)
+            if not has_cached:
                 self._update_model_storage()
+        if target_modules is None and has_cached:
+            self.lora_weight_size = int(cached)
         else:
-            self.weight_size_total = self._calc_weight_size(self._find_valid_layers())
-        self.AB_params = self.weight_size_total * lora_r
+            self.lora_weight_size = self._calc_lora_weight_size(target_modules)
+        self.AB_params = self.lora_weight_size * lora_r
 
 
     @override
@@ -534,81 +812,323 @@ class LoRAEstimator(BasicEstimator):
                                 max_seq_len: int | None, max_tokens_per_gpu: int | None):
         """
         Find the number of tokens that will be processed by each GPU.
-        For LoRA, we simply use the product of the batch size and sequence length
-        to produce the number of tokens
+        For LoRA, batch_size is the micro-batch (lora_sft's micro_batch_size, i.e. the
+        per_device_train_batch_size), so each GPU processes batch_size * max_seq_len tokens in
+        both modes: with model splitting the one process's micro-batch passes through every GPU,
+        and without it (DDP) every process runs its own micro-batch.
         """
         if batch_size is None or max_seq_len is None:
             raise ValueError("batch_size and max_seq_len must be provided")
-        self.tokens_per_gpu = batch_size * max_seq_len / self.num_gpus
+        self.tokens_per_gpu = batch_size * max_seq_len
+
+
+    def _calc_weight_bytes(self) -> float:
+        """
+        The size of the whole model's frozen weights as loaded: bf16 for LoRA (see QLoRAEstimator).
+
+        Returns:
+            float: The weights' bytes
+        """
+        return self.num_params * self.model_bytes
+
+
+    def _gpu_components(self, weights: float, lora_weight_size: float, outputs: float) -> tuple[float, ...]:
+        """
+        One GPU's memory, the same per-GPU formula for every mode:
+            weights on the GPU (bf16, or 4-bit for QLoRA)
+            + LoRA params on the GPU x 16 bytes: fp32 weight (4), fp32 gradient (4), 2 fp32 AdamW moments (8)
+            + one decoder layer's working set (_calc_intermediate_activations)
+            + the outputs (logits and lm_head workspace), on the lm_head GPU only
+
+        Args:
+            weights (float): Bytes of frozen weights on the GPU
+            lora_weight_size (float): LoRA weight dims (in + out) on the GPU, before multiplying by lora_r
+            outputs (float): Bytes of logits and lm_head workspace on the GPU
+
+        Returns:
+            tuple: (params, optimizer, gradients, activations, outputs), in bytes
+        """
+        lora_params = lora_weight_size * self.lora_r
+        return (
+            weights + lora_params * FLOAT32_BYTES_N,
+            lora_params * FLOAT32_BYTES_N * ADAMW_PARAMS_N,
+            lora_params * FLOAT32_BYTES_N,
+            self._calc_intermediate_activations(),
+            outputs,
+        )
 
 
     @override
     def _calc_model_params(self):
         """
-        Calcuate the VRAM for storing the model parameters.
-        For LORA, we include the memory used by the low rank matrices
+        Calcuate the VRAM for storing one full replica's parameters: the frozen weights plus
+        the fp32 LoRA matrices. Without model splitting (DDP) every GPU holds this.
         """
-        return ((self.num_params * self.model_bytes) + (self.AB_params * FLOAT32_BYTES_N)) / self.num_gpus
+        return self._gpu_components(self._calc_weight_bytes(), self.lora_weight_size, 0)[0]
 
 
     @override
     def _calc_gradients(self):
         """
-        Calcuate the VRAM for storing the gradients.
-        In LoRA, this value is based on number of parameters in the low rank matrices
+        Calcuate the VRAM for storing one full replica's gradients: fp32, LoRA matrices only.
         """
-        return (self.main_dtype_bytes * self.AB_params / self.num_gpus)
+        return self._gpu_components(0, self.lora_weight_size, 0)[2]
 
 
     @override
     def _calc_optimizer(self):
         """
-        Calculate the VRAM for storing the optimizer states
-        In LoRA, this value is based on number of parameters in the low rank matrices
+        Calculate the VRAM for storing one full replica's optimizer states: 2 fp32 AdamW
+        moments, LoRA matrices only.
         """
-        return (self.main_dtype_bytes * self.AB_params * self.opt_params / self.num_gpus)
+        return self._gpu_components(0, self.lora_weight_size, 0)[1]
+
+
+    @override
+    def _calc_intermediate_activations(self):
+        """
+        One decoder layer's live working set: WS_BYTES_PER_MLP_UNIT x MLP width x tokens.
+        With Unsloth's offloaded gradient checkpointing each GPU holds about one layer's working
+        set, so it isn't multiplied by the number of layers or divided by the number of GPUs.
+        """
+        return WS_BYTES_PER_MLP_UNIT * self._calc_mlp_width() * self.tokens_per_gpu
+
+
+    def _calc_split_placement(self) -> tuple[dict[str, int | str], dict[int | str, float]] | None:
+        """
+        Work out which device holds each module under device_map="balanced", using the same
+        transformers helpers that from_pretrained runs, on the meta model.
+
+        transformers' get_balanced_memory is used rather than accelerate's: accelerate sizes the
+        per-GPU buffer from the first no-split block, transformers from the largest one, which
+        matters for models mixing block types (e.g. Nemotron's MoE and Mamba layers).
+
+        Returns:
+            tuple | None: (device_map, loaded weight bytes per device), or None if this
+                          transformers version doesn't provide the helpers or accelerate
+                          (which they need) isn't installed
+        """
+        from transformers.utils import is_accelerate_available
+        if not is_accelerate_available():
+            return None
+        try:
+            from transformers.integrations.accelerate import (
+                compute_module_sizes,
+                get_balanced_memory,
+                infer_auto_device_map,
+            )
+        except ImportError:
+            return None
+
+        sizer = _PlacementSizer(self.model, self.quantize_4bit)
+        no_split = self.model._no_split_modules
+        max_memory = {gpu: self.gpu_memory for gpu in range(self.num_gpus)} | {"cpu": 10 * 1024**4}
+        # accelerate warns about every GPU in max_memory that this machine doesn't have,
+        # but the estimate is usually run away from the training hardware
+        accelerate_logger = logging.getLogger("accelerate.utils.modeling")
+        old_level = accelerate_logger.level
+        accelerate_logger.setLevel(logging.ERROR)
+        try:
+            balanced = get_balanced_memory(self.model, max_memory=max_memory,
+                                           no_split_module_classes=no_split, hf_quantizer=sizer)
+            balanced = sizer.adjust_max_memory(balanced)
+            device_map = infer_auto_device_map(self.model, max_memory=balanced,
+                                               no_split_module_classes=no_split, hf_quantizer=sizer)
+        finally:
+            accelerate_logger.setLevel(old_level)
+        module_sizes, _ = compute_module_sizes(self.model, sizer)
+        weights: dict[int | str, float] = defaultdict(float)
+        for module_name, device in device_map.items():
+            weights[device] += module_sizes[module_name]
+        return device_map, dict(weights)
+
+
+    @staticmethod
+    def _device_of(module_name: str, device_map: dict[str, int | str]) -> int | str | None:
+        """
+        Find the device a module was placed on.
+
+        Args:
+            module_name (str): The module's name
+            device_map (dict[str, int | str]): Module name -> device, as from infer_auto_device_map
+
+        Returns:
+            int | str | None: The device of the most specific entry containing the module, or of the
+                              module's first child if it was split across devices
+        """
+        best_len, device = -1, None
+        for key, dev in device_map.items():
+            if (key == "" or module_name == key or module_name.startswith(key + ".")) and len(key) > best_len:
+                best_len, device = len(key), dev
+        if device is None:
+            device = next((dev for key, dev in device_map.items() if key.startswith(module_name + ".")), None)
+        return device
+
+
+    def _calc_mlp_width(self) -> int:
+        """
+        The MLP width a token goes through in one decoder layer: intermediate_size for dense
+        models, or experts per token x expert width + shared expert width for MoE models.
+
+        Returns:
+            int: The MLP width
+        """
+        text_config = self._get_config().get_text_config()
+
+        def first(*names: str) -> int | None:
+            """The first of these text config attributes that is set (the largest, if per-layer)."""
+            for name in names:
+                value = getattr(text_config, name, None)
+                if value:
+                    return max(value) if isinstance(value, (list, tuple)) else value
+            return None
+
+        experts_per_token = first("num_experts_per_tok")
+        if experts_per_token and first("n_routed_experts", "num_experts", "num_local_experts"):
+            expert_width = first("moe_intermediate_size", "expert_intermediate_size", "intermediate_size")
+            shared_width = (first("moe_shared_expert_intermediate_size", "shared_expert_intermediate_size")
+                            or (first("n_shared_experts") or 0) * expert_width)
+            return experts_per_token * expert_width + shared_width
+        return first("intermediate_size") or 4 * self.hidden_size
+
+
+    def _materializes_logits(self) -> bool:
+        """
+        Whether training materializes the output logits. Unsloth fuses the lm_head into the
+        cross-entropy loss by default, so the logits never exist, except for the model types
+        in MATERIALIZES_LOGITS, whose lm_head was observed to run every step.
+
+        Returns:
+            bool: True if the logits are materialized
+        """
+        if self.fused_loss is not None:
+            return not self.fused_loss
+        if self.use_liger:  # Liger's loss is a fused linear + cross-entropy too
+            return False
+        config = self._get_config()  # the CSV cache doesn't store the model type
+        model_types = (config.model_type, config.get_text_config().model_type)
+        return any(model_type.startswith(MATERIALIZES_LOGITS) for model_type in model_types)
+
+
+    def _calc_logits(self) -> int:
+        """
+        Memory for the output logits of one GPU's tokens, or 0 if they're never materialized
+        (see _materializes_logits).
+
+        Returns:
+            int: The logits' bytes: fp32 logits plus a bf16 copy
+        """
+        if not self._materializes_logits():
+            return 0
+        return int(self.tokens_per_gpu * self._get_vocab_size() * (FLOAT32_BYTES_N + FLOAT16_BYTES_N))
+
+
+    def _calc_lm_head_workspace(self) -> int:
+        """
+        Extra memory the loss needs next to the lm_head. None for LoRA; see QLoRAEstimator.
+
+        Returns:
+            int: The workspace's bytes
+        """
+        return 0
+
+
+    @override
+    def _calc_outputs(self):
+        """
+        Calculate the VRAM for storing the output logits and the loss's lm_head workspace.
+        Without model splitting every GPU runs its own lm_head on its own tokens.
+        """
+        return self._calc_logits() + self._calc_lm_head_workspace()
+
+
+    def _calc_split_subtotal(self):
+        """
+        Estimate each GPU's memory under model splitting and return the busiest GPU's.
+
+        device_map="balanced" doesn't divide the model evenly, and the lm_head lives on a single
+        GPU, so each GPU gets its own estimate:
+            weights on the GPU (bf16, or 4-bit for QLoRA)
+            + LoRA params on the GPU x 16 bytes (fp32 weight, gradient and 2 AdamW moments)
+            + one decoder layer's working set: 30 bytes x MLP width x tokens. Not divided by the
+              number of GPUs, and not multiplied by the number of layers.
+            + logits, on the lm_head GPU only, and only if they're materialized (_calc_logits),
+              plus QLoRA's lm_head workspace there (_calc_lm_head_workspace).
+        This is _gpu_components, the formula the DDP / one-GPU path applies to the whole model.
+        Falls back to an even split if transformers can't work out the placement.
+
+        Returns:
+            The busiest GPU's subtotal and its components, in the same order as _calc_subtotal
+        """
+        blocks = self._find_decoder_blocks()
+        lora_per_layer = self._calc_lora_weight_size_per_layer(self.target_modules)
+        head = self.model.get_output_embeddings()
+        head_name = next((name for name, module in self.model.named_modules() if module is head), None)
+
+        placement = self._calc_split_placement()
+        lora_on: dict[int | str, int] = defaultdict(int)
+        if placement is not None:
+            device_map, weights = placement
+            gpus = sorted(device for device in weights if isinstance(device, int))
+            for layer, size in lora_per_layer.items():
+                lora_on[self._device_of(f"{blocks}.{layer}", device_map)] += size
+            head_gpu = self._device_of(head_name, device_map) if head_name else gpus[-1]
+            # If the model doesn't fit, the placement offloads the rest to the CPU or disk. Count it
+            # on the GPUs anyway, so the estimate shows how much memory a fitting setup needs.
+            offloaded = sum(size for device, size in weights.items() if not isinstance(device, int))
+            if offloaded:
+                warnings.warn("The model doesn't fit on " + str(self.num_gpus) + " GPUs: "
+                              "device_map=\"balanced\" would offload part of it to the CPU or disk.",
+                              stacklevel=2)
+                for gpu in gpus:
+                    weights[gpu] += offloaded / len(gpus)
+        else:
+            warnings.warn("Could not work out the device_map=\"balanced\" placement with this "
+                          "transformers version. Assuming the model is split evenly across GPUs.")
+            gpus = list(range(self.num_gpus))
+            total = _PlacementSizer(self.model, self.quantize_4bit).total_size(self.model)
+            weights = {gpu: total / self.num_gpus for gpu in gpus}
+            lora_on = {gpu: sum(lora_per_layer.values()) / self.num_gpus for gpu in gpus}
+            head_gpu = gpus[-1]
+
+        outputs = self._calc_outputs()
+        self.split_components: dict[int, tuple[float, ...]] = {
+            gpu: self._gpu_components(weights[gpu], lora_on.get(gpu, 0), outputs if gpu == head_gpu else 0)
+            for gpu in gpus
+        }
+        busiest = max(gpus, key=lambda gpu: sum(self.split_components[gpu]))
+        par, opt, grad, act, outputs = self.split_components[busiest]
+        subtotal = par + opt + grad + act + outputs
+        return subtotal, par, opt, grad, act, outputs, 0
 
 
     @override
     def _calc_subtotal(self):
         """
         Calculate the amount of memory expected before applying overhead.
+        With model splitting, this is the busiest GPU's memory (see _calc_split_subtotal).
+        Without it (one GPU or DDP), every GPU holds a full replica, its own LoRA and optimizer
+        state and its own micro-batch, so the same per-GPU formula (_gpu_components) is applied
+        to the whole model on one GPU.
         """
-        # Calculate each piece of memory to be factored into the estimation
-        gpu_vram_par = self._calc_model_params()
-        gpu_vram_opt: int = self._calc_optimizer()
-        gpu_vram_grad: int = self._calc_gradients()
-        gpu_vram_act: int = self._calc_intermediate_activations()
-        gpu_vram_outputs: int = self._calc_outputs()
-        gpu_vram_additional: int = self._calc_additional()
+        if self.enable_model_splitting:
+            return self._calc_split_subtotal()
 
-        # The memory is bounded by either the size of the outputs or the size of
-        # the gradients, whichever is higher (these tensors are NOT allocated simultaneously)
-        if gpu_vram_grad > gpu_vram_outputs:
-            if self.verbose > 0:
-                print("NOTE: The peak memory allocation of the output tensors is " + ROUNDER(gpu_vram_outputs) + " GB.")
-                print("However, in practice, this allocation does not impact the peak memory usage since the gradient allocation is higher.")
-                print("To reduce memory usage, focus on reducing the gradient allocation first.\n")
-            gpu_vram_outputs = 0
-        else:
-            if self.verbose > 0:
-                print("NOTE: The peak memory allocation of the gradient tensors is " + ROUNDER(gpu_vram_grad) + " GB.")
-                print("However, in practice, this allocation does not impact the peak memory usage since the output allocation is higher.")
-                print("To reduce memory usage, focus on reducing the output allocation first.\n")
-            gpu_vram_grad = 0
-
-        # Sum up each proposed amount of memory
-        subtotal: int = gpu_vram_par + gpu_vram_opt + gpu_vram_grad + \
-                        gpu_vram_act + gpu_vram_outputs + gpu_vram_additional
-
-        return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
-            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
+        par, opt, grad, act, outputs = self._gpu_components(
+            self._calc_weight_bytes(), self.lora_weight_size, self._calc_outputs())
+        subtotal = par + opt + grad + act + outputs
+        return subtotal, par, opt, grad, act, outputs, 0
 
     def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
         if self.verbose > 0:
             print("NOTE: Due to its memory efficiency, " + \
                     "LoRA's lower bound estimate is lower than the basic sum of the components.\n")
+        if self.enable_model_splitting:
+            print("With model splitting, the GPUs don't use the same amount of memory. Before overhead:")
+            for gpu, components in self.split_components.items():
+                print("  GPU " + str(gpu) + ": " + ROUNDER(sum(components)) + " GB")
+            print("The estimate below is for the busiest GPU.\n")
         super()._print_results(results, overhead, gpu_vram_par, gpu_vram_opt,
                         gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional)
 
@@ -616,8 +1136,11 @@ class LoRAEstimator(BasicEstimator):
 class QLoRAEstimator(LoRAEstimator):
     """
     An estimator for the memory usage of an LLM trained via QLoRA.
-    It's the same as LoRA, just with a smaller data for the model. 
+    It's the same as LoRA, except that bitsandbytes loads the nn.Linear weights in 4 bits.
+    Everything else (embeddings, lm_head, norms, vision towers, fused 3D expert tensors)
+    stays in bf16, so MoE models with fused experts save much less than num_params x 0.5.
     """
+    quantize_4bit: bool = True
     @override
     def __init__(
         self,
@@ -630,6 +1153,9 @@ class QLoRAEstimator(LoRAEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         lora_r: int = 32,
+        enable_model_splitting: bool = False,
+        target_modules: list[str] | None = None,
+        fused_loss: bool | None = None,
     ):
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
@@ -639,32 +1165,41 @@ class QLoRAEstimator(LoRAEstimator):
                         use_liger=use_liger,
                         verbose=verbose,
                         trust_remote_code=trust_remote_code,
-                        lora_r=lora_r)
+                        lora_r=lora_r,
+                        enable_model_splitting=enable_model_splitting,
+                        target_modules=target_modules,
+                        fused_loss=fused_loss)
         self.HIGH_MULTIPLIER = 1.3 # Use a looser upper bound
-        self.model_bytes = FLOAT4_BYTES_N # The model will be stored in Float4
+        self.model_bytes = FLOAT4_BYTES_N # The quantized weights are stored in 4 bits
+        # The size bitsandbytes actually loads: the same sizes transformers uses for the placement
+        self.loaded_weight_bytes = _PlacementSizer(self.model, quantize_4bit=True).total_size(self.model)
 
 
     @override
-    def _calc_subtotal(self):
+    def _calc_weight_bytes(self) -> float:
         """
-        Calculate the amount of memory expected before applying overhead.
-        """
-        # Get the subtotal from training in QLoRA, based on LoRA's calculation
-        subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
-            gpu_vram_act, gpu_vram_outputs, gpu_vram_additional = super()._calc_subtotal()
+        The size of the whole model's frozen weights as bitsandbytes loads them: 4-bit
+        nn.Linear weights, everything else bf16.
 
-        # If the memory needed to place the pre-quantized model onto a GPU is more than
-        # the memory needed to perform QLoRA, that's the memory bottleneck.  
-        # TODO: Check that the model is actually stored in Float8 or if it gets sharded across GPUs...
-        offload_memory = self.num_params * FLOAT8_BYTES_N
-        if subtotal < offload_memory:
-            if self.verbose > 0:
-                print("NOTE: The memory needed for this QLoRA training setup is bounded by the pre-quantized size of the model.")
-                print("You can only reduce the memory further by using a smaller model.\n")
-            return offload_memory / self.num_gpus, offload_memory / self.num_gpus, 0, 0, 0, 0, 0
-        else:
-            return subtotal, gpu_vram_par, gpu_vram_opt, gpu_vram_grad, \
-                gpu_vram_act, gpu_vram_outputs, gpu_vram_additional
+        Returns:
+            float: The weights' bytes
+        """
+        return self.loaded_weight_bytes
+
+
+    @override
+    def _calc_lm_head_workspace(self) -> int:
+        """
+        With the fused loss, an untied lm_head needs a workspace the size of a bf16 copy of
+        itself on its GPU. Measured on Muse Glimmer 30B (PR #163 review).
+
+        Returns:
+            int: lm_head parameters x 2 bytes for untied models with a fused loss, otherwise 0
+        """
+        head = self.model.get_output_embeddings()
+        if head is None or self._materializes_logits() or self.model.config.get_text_config().tie_word_embeddings:
+            return 0
+        return head.weight.numel() * FLOAT16_BYTES_N
 
 
 class OSFTEstimator(BasicEstimator):
@@ -690,6 +1225,7 @@ class OSFTEstimator(BasicEstimator):
         verbose: int = 1,
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
+        count_fsdp_gather: bool = False,
     ):
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
@@ -699,7 +1235,8 @@ class OSFTEstimator(BasicEstimator):
                         max_tokens_per_gpu=max_tokens_per_gpu,
                         use_liger=use_liger,
                         verbose=verbose,
-                        trust_remote_code=trust_remote_code)
+                        trust_remote_code=trust_remote_code,
+                        count_fsdp_gather=count_fsdp_gather)
 
         self.output_constant = 7/3
         self.unfreeze_rank_ratio = unfreeze_rank_ratio
@@ -763,6 +1300,7 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                 verbose: int = 1,
                 trust_remote_code: bool = False,
                 unfreeze_rank_ratio: float = 0.25,
+                count_fsdp_gather: bool = False,
                 ):
         reason = "All experimental functionality has been moved into the main OSFTEstimator class, " + \
             "please use that instead.\nIf you are seeing this by using the 'osft-e' option in the " + \
@@ -778,7 +1316,8 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                         use_liger=use_liger,
                         verbose=verbose,
                         trust_remote_code=trust_remote_code,
-                        unfreeze_rank_ratio=unfreeze_rank_ratio)
+                        unfreeze_rank_ratio=unfreeze_rank_ratio,
+                        count_fsdp_gather=count_fsdp_gather)
 
 def estimate(
         training_method: str = "sft",
@@ -793,9 +1332,22 @@ def estimate(
         trust_remote_code: bool = False,
         unfreeze_rank_ratio: float = 0.25,
         lora_r: int = 32,
+        count_fsdp_gather: bool = False,
+        enable_model_splitting: bool = False,
+        target_modules: list[str] | None = None,
+        fused_loss: bool | None = None,
     ):
     """
     Convenience function for performing estimation
+
+    The lora/qlora estimates are calibrated against the Unsloth backend (lora_sft), which uses
+    a fused linear + cross-entropy loss and offloaded gradient checkpointing. WS_BYTES_PER_MLP_UNIT
+    (one decoder layer's working set) and MATERIALIZES_LOGITS (model types whose logits are
+    materialized anyway) come from Unsloth measurements, so other backends may differ.
+
+    The sft/osft estimates are for nvidia-smi peaks with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    With the default allocator, fragmentation can make nvidia-smi read much higher than the memory
+    training actually uses (76 vs. 44 GiB allocated on Qwen3.5-4B sft), and the job may OOM sooner.
 
     Args:
         training_method (str): The training method to estimate the memory for. 
@@ -816,6 +1368,18 @@ def estimate(
                         set to 2 for a detailed memory breakdown.
         unfreeze_rank_ratio (float): The portion of the weight matrix that is unfrozen
                                     during OSFT.
+        count_fsdp_gather (bool): sft/osft only. When num_gpus > 1, add the per-GPU FSDP unit gather,
+                                    the backward-prefetched unit and the memory outside PyTorch's
+                                    allocator (see BasicEstimator._calc_additional).
+        enable_model_splitting (bool): lora/qlora only. Estimate for model splitting
+                                    (device_map="balanced"). If false and num_gpus > 1, estimate
+                                    for DDP (one full replica per GPU). For lora/qlora, batch_size
+                                    is the micro-batch per process (lora_sft's micro_batch_size)
+                                    in both modes.
+        target_modules (list[str] | None): lora/qlora only. Module names LoRA is applied to.
+                                    None (default) means every linear layer in the text decoder.
+        fused_loss (bool | None): lora/qlora only. Whether the loss fuses away the logits.
+                                    None (default) decides from the model type (see MATERIALIZES_LOGITS).
 
     Return:
         A tuple containing three values:
@@ -836,7 +1400,8 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    unfreeze_rank_ratio=unfreeze_rank_ratio)
+                                    unfreeze_rank_ratio=unfreeze_rank_ratio,
+                                    count_fsdp_gather=count_fsdp_gather)
     elif training_method.lower() == "osft-e":
         if use_liger is None:
             use_liger = True
@@ -849,7 +1414,8 @@ def estimate(
                                                 use_liger=use_liger,
                                                 verbose=verbose,
                                                 trust_remote_code=trust_remote_code,
-                                                unfreeze_rank_ratio=unfreeze_rank_ratio)
+                                                unfreeze_rank_ratio=unfreeze_rank_ratio,
+                                                count_fsdp_gather=count_fsdp_gather)
     elif training_method.lower() == "lora":
         if use_liger is None:
             use_liger = False
@@ -861,7 +1427,10 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    lora_r=lora_r)
+                                    lora_r=lora_r,
+                                    enable_model_splitting=enable_model_splitting,
+                                    target_modules=target_modules,
+                                    fused_loss=fused_loss)
     elif training_method.lower() == "qlora":
         if use_liger is None:
             use_liger = False
@@ -873,7 +1442,10 @@ def estimate(
                                     use_liger=use_liger,
                                     verbose=verbose,
                                     trust_remote_code=trust_remote_code,
-                                    lora_r=lora_r)
+                                    lora_r=lora_r,
+                                    enable_model_splitting=enable_model_splitting,
+                                    target_modules=target_modules,
+                                    fused_loss=fused_loss)
     else:
         if use_liger is None:
             use_liger = False
@@ -885,7 +1457,8 @@ def estimate(
                                     max_tokens_per_gpu=max_tokens_per_gpu,
                                     use_liger=use_liger,
                                     verbose=verbose,
-                                    trust_remote_code=trust_remote_code)
+                                    trust_remote_code=trust_remote_code,
+                                    count_fsdp_gather=count_fsdp_gather)
 
     
     return estimator.estimate()
