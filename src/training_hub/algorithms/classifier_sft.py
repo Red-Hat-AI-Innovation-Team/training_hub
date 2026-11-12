@@ -39,6 +39,14 @@ from . import Algorithm, Backend, AlgorithmRegistry
 logger = logging.getLogger(__name__)
 
 _TASKS = ("sequence_classification", "multiple_choice", "token_classification")
+# Token-classification label that the cross-entropy loss ignores (HF convention).
+_IGNORE_INDEX = -100
+# Per-choice model inputs carried through multiple-choice prep + collation, with the value a
+# padded (placeholder) choice uses for each: one attended pad token, segment 0.
+_MC_INPUT_KEYS = ("input_ids", "attention_mask", "token_type_ids")
+# Task-head module names PEFT keeps fully trainable (modules_to_save) for SEQ_CLS / TOKEN_CLS;
+# never LoRA-wrap them.
+_HEAD_MODULE_NAMES = ("classifier", "score")
 
 _KNOWN_PARAMS: set[str] = {
     "model_path",
@@ -103,6 +111,14 @@ def _encode_labels(values: list[Any]) -> tuple[dict[int, str], dict[Any, int], b
         )
     sample = non_null[0]
     if isinstance(sample, int) and not isinstance(sample, bool):
+        negatives = sorted({int(v) for v in non_null if int(v) < 0})
+        if negatives:
+            # A negative id is outside the head's 0..N-1 class range; left alone it surfaces
+            # only as an opaque CUDA device-side assert inside the loss.
+            raise ValueError(
+                f"Integer class labels must be non-negative class ids (0..N-1); found negative "
+                f"label(s) {negatives[:5]}. Remap or drop them before training."
+            )
         max_id = max(int(v) for v in non_null)
         id2label = {i: str(i) for i in range(max_id + 1)}
         return id2label, {v: v for v in range(max_id + 1)}, True
@@ -110,6 +126,22 @@ def _encode_labels(values: list[Any]) -> tuple[dict[int, str], dict[Any, int], b
     label2id = {name: idx for idx, name in enumerate(uniques)}
     id2label = {idx: name for name, idx in label2id.items()}
     return id2label, label2id, False
+
+
+def _set_pad_token_id(config: Any, pad_token_id: Any) -> None:
+    """Set ``pad_token_id`` where the classification head will read it. Decoder heads need it
+    to find each row's last real token; models with a nested text config (e.g. Qwen3.5, whose
+    head reads ``config.text_config.pad_token_id``) need it on the sub-config too. Never
+    overrides a value the checkpoint already defines."""
+    configs = [config]
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        text_config = get_text_config()
+        if text_config is not None and text_config is not config:
+            configs.append(text_config)
+    for cfg in configs:
+        if getattr(cfg, "pad_token_id", None) is None:
+            cfg.pad_token_id = pad_token_id
 
 
 def _require_columns(ds: Any, task: str, **columns: str) -> None:
@@ -143,7 +175,7 @@ def _align_word_labels(
             labels.append(-100)  # special tokens
         elif wid != prev:
             t = tags[wid]
-            labels.append(t if already_int else label2id[str(t)])
+            labels.append(t if already_int or t == _IGNORE_INDEX else label2id[str(t)])
         else:
             labels.append(-100)  # sub-word continuation
         prev = wid
@@ -206,8 +238,7 @@ class DecisionHeadBackend(Backend):
         model = model_cls.from_pretrained(
             model_path, id2label=id2label, label2id=label2id, **head_kwargs, **from_pretrained_kw
         )
-        if getattr(model.config, "pad_token_id", None) is None:
-            model.config.pad_token_id = tokenizer.pad_token_id
+        _set_pad_token_id(model.config, tokenizer.pad_token_id)
 
         if use_peft:
             model = _apply_lora(model, task, p)
@@ -322,7 +353,9 @@ class DecisionHeadBackend(Backend):
         label_col = p.get("label_column") or "ner_tags"
         ds = load_training_dataset(data_path)
         _require_columns(ds, "token_classification", tokens_column=tokens_col, label_column=label_col)
-        flat = [t for row in ds[label_col] for t in (row or [])]
+        # -100 is the standard "ignore this token" marker (the loss skips it); keep it in the
+        # data but out of the label vocabulary.
+        flat = [t for row in ds[label_col] for t in (row or []) if t != _IGNORE_INDEX]
         id2label, label2id, already_int = _encode_labels(flat)
 
         def _align(example):
@@ -353,17 +386,23 @@ class DecisionHeadBackend(Backend):
             ds, "multiple_choice", text_column=text_col, options_column=options_col, label_column=label_col
         )
 
-        def _tok(example):
+        def _tok(example: dict[str, Any]) -> dict[str, Any]:
             context = example[text_col]
             options = list(example[options_col])
+            label = int(example[label_col])
+            if not 0 <= label < len(options):
+                raise ValueError(
+                    f"multiple_choice: {label_col}={label} is not a valid option index for a "
+                    f"question with {len(options)} option(s) (expected 0..{len(options) - 1})."
+                )
             enc = tokenizer(
                 [context] * len(options), options, truncation=True, max_length=max_seq_len
             )
-            return {
-                "input_ids": enc["input_ids"],
-                "attention_mask": enc["attention_mask"],
-                "label": int(example[label_col]),
-            }
+            # Keep every model input the tokenizer produced — including token_type_ids, which
+            # BERT-family models use to tell the context segment from the option segment.
+            out = {k: enc[k] for k in _MC_INPUT_KEYS if k in enc}
+            out["label"] = label
+            return out
 
         tokenized = ds.map(_tok, remove_columns=ds.column_names)
         tokenized = tokenized.cast_column("label", Value("int64"))
@@ -393,20 +432,21 @@ class _MultipleChoiceCollator:
         labels = [f["label"] for f in features]
         real_counts = [len(f["input_ids"]) for f in features]
         num_choices = max(real_counts)
+        keys = [k for k in _MC_INPUT_KEYS if k in features[0]]
+        # Placeholder for a missing choice: ONE ATTENDED pad token (attention 1, not 0) in
+        # segment 0. An all-zero mask makes mean-pooling heads (e.g. ModernBERT's default)
+        # divide by zero -> NaN logits; masked_fill(-inf) hides that in the forward pass but
+        # the backward pass still writes NaN into every weight. A real token keeps the forward
+        # finite, and choice_mask below still drops the slot from the softmax (zero gradient).
+        placeholder = {"input_ids": [self.tokenizer.pad_token_id], "attention_mask": [1], "token_type_ids": [0]}
         flat: list[dict] = []
         for f in features:
-            ids = list(f["input_ids"])
-            masks = list(f["attention_mask"])
-            # Pad missing choices with ONE ATTENDED pad token (mask [1], not [0]). An all-zero
-            # mask makes mean-pooling heads (e.g. ModernBERT's default) divide by zero -> NaN
-            # logits; masked_fill(-inf) hides that in the forward pass but the backward pass
-            # still writes NaN into every weight. A real token keeps the forward finite, and
-            # choice_mask below still drops the slot from the softmax (zero gradient).
-            while len(ids) < num_choices:
-                ids.append([self.tokenizer.pad_token_id])
-                masks.append([1])
+            per_key = {k: list(f[k]) for k in keys}
+            for _ in range(num_choices - len(per_key["input_ids"])):
+                for k in keys:
+                    per_key[k].append(placeholder[k])
             for c in range(num_choices):
-                flat.append({"input_ids": ids[c], "attention_mask": masks[c]})
+                flat.append({k: per_key[k][c] for k in keys})
         padded = self.tokenizer.pad(flat, return_tensors="pt")
         bsz, seq = len(features), padded["input_ids"].shape[-1]
         batch = {k: v.view(bsz, num_choices, seq) for k, v in padded.items()}
@@ -460,13 +500,17 @@ def _apply_lora(model: Any, task: str, p: dict[str, Any]) -> Any:
         "token_classification": TaskType.TOKEN_CLS,
     }[task]
 
-    def _config(target_modules: Any) -> Any:
+    def _config(target_modules: Any, exclude_modules: Optional[list[str]] = None) -> Any:
+        kwargs: dict[str, Any] = {}
+        if exclude_modules:
+            kwargs["exclude_modules"] = exclude_modules
         return LoraConfig(
             task_type=peft_task,
             r=p.get("lora_r", 16),
             lora_alpha=p.get("lora_alpha", 32),
             lora_dropout=p.get("lora_dropout", 0.05),
             target_modules=target_modules,
+            **kwargs,
         )
 
     targets = p.get("lora_target_modules")
@@ -480,7 +524,10 @@ def _apply_lora(model: Any, task: str, p: dict[str, Any]) -> Any:
             getattr(model.config, "model_type", "this architecture"),
         )
         targets = "all-linear"
-        wrapped = get_peft_model(model, _config(targets))
+        # "all-linear" skips the classification head for SEQ_CLS but NOT for TOKEN_CLS, so the
+        # head would be LoRA-wrapped and then can't go into modules_to_save. Exclude the head
+        # names PEFT keeps trainable (modules_to_save) for these task types.
+        wrapped = get_peft_model(model, _config(targets, exclude_modules=list(_HEAD_MODULE_NAMES)))
     logger.info("Applied LoRA (%s, target_modules=%s)", peft_task, targets or "PEFT default")
     return wrapped
 
@@ -501,18 +548,44 @@ def _normalize_loss_over_accumulation(trainer: Any, trainer_cls: Optional[type] 
     trainer.model_accepts_loss_kwargs = False
 
 
+def _accepts_choice_mask(loss_fn: Callable) -> bool:
+    """Whether a custom ``loss_fn`` can take the multiple-choice ``choice_mask`` keyword."""
+    import inspect
+
+    try:
+        params = inspect.signature(loss_fn).parameters.values()
+    except (TypeError, ValueError):  # builtins / C callables without a signature
+        return False
+    return any(p.name == "choice_mask" or p.kind is p.VAR_KEYWORD for p in params)
+
+
+def _call_loss_fn(loss_fn: Callable, logits: Any, labels: Any, choice_mask: Any = None, pass_mask: bool = False) -> Any:
+    """Call a custom ``loss_fn(logits, labels)``. For multiple choice, padded (placeholder)
+    choices get ``-inf`` logits first — they carry finite logits from their attended pad
+    token, so a plain two-argument cross-entropy would otherwise score them as real options.
+    A ``loss_fn`` that accepts a ``choice_mask`` keyword also receives the boolean mask."""
+    extra: dict[str, Any] = {}
+    if choice_mask is not None:
+        logits = logits.masked_fill(~choice_mask, float("-inf"))
+        if pass_mask:
+            extra["choice_mask"] = choice_mask
+    return loss_fn(logits, labels, **extra)
+
+
 def _trainer_with_loss(loss_fn: Callable, **trainer_kwargs):
     """Wrap a callable ``loss_fn(logits, labels) -> loss`` in a Trainer subclass."""
     from transformers import Trainer
 
+    pass_mask = _accepts_choice_mask(loss_fn)
+
     class _CustomLossTrainer(Trainer):
         def compute_loss(self, model, inputs, return_outputs=False, **kw):
-            # The MC collator adds a choice_mask the backbone doesn't accept; drop it so
-            # model(**inputs) is clean. A 2-arg loss_fn owns any masking it needs itself.
-            inputs.pop("choice_mask", None)
+            # The MC collator adds a choice_mask the backbone doesn't accept: pop it so
+            # model(**inputs) is clean, and use it to keep padded choices out of the loss.
+            choice_mask = inputs.pop("choice_mask", None)
             labels = inputs.pop("labels")
             outputs = model(**inputs)
-            loss = loss_fn(outputs.logits, labels)
+            loss = _call_loss_fn(loss_fn, outputs.logits, labels, choice_mask, pass_mask)
             return (loss, outputs) if return_outputs else loss
 
     return _CustomLossTrainer(**trainer_kwargs)
@@ -649,7 +722,9 @@ def classifier_sft(
             ``multiple_choice`` (default ``text``).
         label_column: Label column. Default ``label`` for ``sequence_classification`` /
             ``multiple_choice``, ``ner_tags`` for ``token_classification``. String labels
-            are encoded to contiguous ints (recorded in ``label_mapping.json``).
+            are encoded to contiguous ints (recorded in ``label_mapping.json``); integer
+            labels must be non-negative class ids (token classification may use ``-100`` to
+            ignore a token), and a multiple-choice label must index one of its options.
         options_column: Options-list column for ``multiple_choice`` (default ``options``).
         tokens_column: Pre-split tokens column for ``token_classification``
             (default ``tokens``).
@@ -671,7 +746,11 @@ def classifier_sft(
             ``Trainer`` subclass, for a bespoke objective. Losses are treated as per-batch
             means (normalized across gradient-accumulation steps by the Trainer); a
             ``Trainer`` subclass that consumes ``num_items_in_batch`` itself can opt out by
-            setting the class attribute ``model_accepts_loss_kwargs = True``.
+            setting the class attribute ``model_accepts_loss_kwargs = True``. For
+            ``multiple_choice``, padded placeholder choices reach a callable loss with
+            ``-inf`` logits (a loss accepting a ``choice_mask`` keyword also gets the boolean
+            mask); a ``Trainer`` subclass finds ``choice_mask`` in its batch and must pop it
+            before calling the model.
         warmup_ratio: Fraction of total steps used for LR warmup (default 0.0).
         weight_decay: Weight decay (default 0.01).
         gradient_accumulation_steps: Steps to accumulate before an optimizer update

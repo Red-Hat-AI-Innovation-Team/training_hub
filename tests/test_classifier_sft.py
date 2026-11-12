@@ -11,11 +11,14 @@ from training_hub import ClassifierSFTAlgorithm
 from training_hub.algorithms.classifier_sft import (
     DecisionHeadBackend,
     _MultipleChoiceCollator,
+    _accepts_choice_mask,
     _align_word_labels,
     _apply_lora,
+    _call_loss_fn,
     _encode_labels,
     _normalize_loss_over_accumulation,
     _resolve_dotted,
+    _set_pad_token_id,
     _training_metrics_entry,
 )
 
@@ -110,9 +113,11 @@ class TestMultipleChoiceCollator:
             import torch
 
             maxlen = max(len(f["input_ids"]) for f in features)
-            ids = [f["input_ids"] + [self.pad_token_id] * (maxlen - len(f["input_ids"])) for f in features]
-            masks = [f["attention_mask"] + [0] * (maxlen - len(f["attention_mask"])) for f in features]
-            return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(masks)}
+            out = {}
+            for key in features[0]:
+                fill = self.pad_token_id if key == "input_ids" else 0
+                out[key] = torch.tensor([f[key] + [fill] * (maxlen - len(f[key])) for f in features])
+            return out
 
     def test_variable_k_padding_shapes_and_mask(self):
         collator = _MultipleChoiceCollator(self._StubTokenizer())
@@ -125,6 +130,17 @@ class TestMultipleChoiceCollator:
         assert batch["labels"].tolist() == [2, 0]
         # the second example had 1 real choice of 3 → only its first slot is real
         assert batch["choice_mask"].tolist() == [[True, True, True], [True, False, False]]
+
+    def test_token_type_ids_are_carried_and_padded(self):
+        collator = _MultipleChoiceCollator(self._StubTokenizer())
+        features = [
+            {"input_ids": [[1, 2], [3, 4]], "attention_mask": [[1, 1]] * 2, "token_type_ids": [[0, 1]] * 2, "label": 0},
+            {"input_ids": [[5, 6]], "attention_mask": [[1, 1]], "token_type_ids": [[0, 1]], "label": 0},
+        ]
+        batch = collator(features)
+        assert batch["token_type_ids"].shape == (2, 2, 2)
+        assert batch["token_type_ids"][0].tolist() == [[0, 1], [0, 1]]
+        assert batch["token_type_ids"][1, 1].tolist() == [0, 0]  # placeholder choice: segment 0
 
     def test_padded_choices_have_an_attended_token(self):
         # An all-zero attention mask on a padded choice makes mean-pooling heads (ModernBERT's
@@ -284,3 +300,129 @@ class TestTrainingMetricsEntry:
         entry = _training_metrics_entry(self._State([{"train_loss": math.nan}], epoch=math.inf), "x")
         assert entry["train_loss"] is None and entry["epoch"] is None
         json.loads(json.dumps(entry, allow_nan=False))  # strict JSON round-trips
+
+
+
+class TestNegativeAndOutOfRangeLabels:
+    def test_negative_integer_labels_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            _encode_labels([0, 1, -1])
+
+    def test_multiple_choice_label_must_index_an_option(self, tmp_path):
+        import json
+
+        class _PairTokenizer:
+            pad_token_id = 0
+
+            def __call__(self, contexts, options, truncation=True, max_length=None):
+                n = len(options)
+                return {"input_ids": [[1, 2]] * n, "attention_mask": [[1, 1]] * n, "token_type_ids": [[0, 1]] * n}
+
+        path = tmp_path / "mc.jsonl"
+        path.write_text(json.dumps({"text": "q", "options": ["a", "b"], "label": 2}))
+        with pytest.raises(ValueError, match="not a valid option index"):
+            DecisionHeadBackend()._prep_multiple_choice(str(path), _PairTokenizer(), 16, {})
+
+    def test_multiple_choice_keeps_token_type_ids(self, tmp_path):
+        import json
+
+        class _PairTokenizer:
+            pad_token_id = 0
+
+            def __call__(self, contexts, options, truncation=True, max_length=None):
+                n = len(options)
+                return {"input_ids": [[1, 2]] * n, "attention_mask": [[1, 1]] * n, "token_type_ids": [[0, 1]] * n}
+
+        path = tmp_path / "mc.jsonl"
+        path.write_text(json.dumps({"text": "q", "options": ["a", "b"], "label": 1}))
+        tokenized, *_ = DecisionHeadBackend()._prep_multiple_choice(str(path), _PairTokenizer(), 16, {})
+        assert "token_type_ids" in tokenized.column_names
+
+
+class TestCustomLossMasking:
+    def test_padded_choices_masked_before_two_arg_loss(self):
+        import torch
+
+        seen = {}
+
+        def loss(logits, labels):
+            seen["logits"] = logits
+            return logits.sum() * 0
+
+        logits = torch.zeros(1, 3)
+        mask = torch.tensor([[True, True, False]])
+        _call_loss_fn(loss, logits, torch.tensor([0]), mask, pass_mask=_accepts_choice_mask(loss))
+        assert seen["logits"][0, 2] == float("-inf") and torch.isfinite(seen["logits"][0, :2]).all()
+
+    def test_choice_mask_passed_only_to_losses_that_accept_it(self):
+        def two_arg(logits, labels):
+            return 0
+
+        def with_mask(logits, labels, choice_mask=None):
+            return 0
+
+        def with_kwargs(logits, labels, **kw):
+            return 0
+
+        assert not _accepts_choice_mask(two_arg)
+        assert _accepts_choice_mask(with_mask) and _accepts_choice_mask(with_kwargs)
+
+
+class TestSetPadTokenId:
+    def test_sets_nested_text_config(self):
+        # Qwen3.5-style: the head reads config.text_config.pad_token_id
+        class Text:
+            pad_token_id = None
+
+        class Top:
+            pad_token_id = None
+            text_config = Text()
+
+            def get_text_config(self):
+                return self.text_config
+
+        cfg = Top()
+        _set_pad_token_id(cfg, 7)
+        assert cfg.pad_token_id == 7 and cfg.text_config.pad_token_id == 7
+
+    def test_does_not_override_existing(self):
+        class Flat:
+            pad_token_id = 3
+
+            def get_text_config(self):
+                return self
+
+        cfg = Flat()
+        _set_pad_token_id(cfg, 7)
+        assert cfg.pad_token_id == 3
+
+
+class TestApplyLoraRealPeft:
+    """Real PEFT (no mock) on a tiny ModernBERT built from config — PEFT has no default LoRA
+    targets for ModernBERT, so this exercises the all-linear fallback for each head type."""
+
+    @staticmethod
+    def _tiny(cls_name):
+        transformers = pytest.importorskip("transformers")
+        if not hasattr(transformers, "ModernBertConfig"):
+            pytest.skip("this transformers has no ModernBERT")
+        cfg = transformers.ModernBertConfig(
+            vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+            num_attention_heads=2, max_position_embeddings=64, num_labels=3,
+            pad_token_id=0, bos_token_id=1, eos_token_id=2, cls_token_id=1, sep_token_id=2,
+        )
+        return getattr(transformers, cls_name)(cfg)
+
+    @pytest.mark.parametrize(
+        "cls_name,task",
+        [
+            ("ModernBertForSequenceClassification", "sequence_classification"),
+            ("ModernBertForTokenClassification", "token_classification"),
+        ],
+    )
+    def test_all_linear_fallback_keeps_head_trainable(self, cls_name, task):
+        pytest.importorskip("peft")
+        model = _apply_lora(self._tiny(cls_name), task, {})
+        trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+        assert any("lora_" in n for n in trainable)  # LoRA applied to the backbone
+        assert any("classifier" in n and "lora_" not in n for n in trainable)  # head fully trainable
