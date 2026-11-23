@@ -700,16 +700,46 @@ def _write_agent_loop(output_dir: str) -> str:
     return dst
 
 
-def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
-    """Merge tokenizer files into verl's lora_adapter dirs for direct vLLM use.
+def _export_verl_lora_adapter(actor_dir: str) -> str | None:
+    """Write ``actor_dir/lora_adapter/`` (PEFT format) from verl's FSDP model shards.
 
-    verl saves adapter weights and tokenizer files in separate subdirs:
-        global_step_N/actor/lora_adapter/{adapter_config.json, adapter_model.safetensors}
+    verl's trainer checkpoints only hold FSDP shards plus ``lora_train_meta.json``; the PEFT
+    adapter is produced by its model merger. This runs just the merger's shard-merge and
+    ``save_lora_adapter`` steps, skipping its full merged-model export (multi-GB, and impossible
+    from ``save_lora_only`` shards, which have no base weights).
+
+    Returns:
+        The adapter directory, or None if the shards contain no LoRA weights.
+    """
+    from verl.model_merger.base_model_merger import ModelMergerConfig
+    from verl.model_merger.fsdp_model_merger import FSDPModelMerger
+
+    merger = FSDPModelMerger(ModelMergerConfig(
+        operation="merge",
+        backend="fsdp",
+        local_dir=actor_dir,
+        target_dir=actor_dir,
+        hf_model_config_path=os.path.join(actor_dir, "huggingface"),
+    ))
+    world_size = merger._get_world_size()
+    mesh, mesh_dim_names = merger._extract_device_mesh_info(
+        merger._load_rank_zero_state_dict(world_size), world_size
+    )
+    total_shards, mesh_shape = merger._calculate_shard_configuration(mesh, mesh_dim_names)
+    state_dict = merger._load_and_merge_state_dicts(world_size, total_shards, mesh_shape, mesh_dim_names)
+    return merger.save_lora_adapter(state_dict)
+
+
+def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
+    """Build self-contained ``lora_adapter`` dirs from verl checkpoints for direct vLLM use.
+
+    verl (0.9.x) saves each checkpoint as FSDP shards plus config/tokenizer files:
+        global_step_N/actor/{model_world_size_W_rank_R.pt, fsdp_config.json, lora_train_meta.json}
         global_step_N/actor/huggingface/{tokenizer files, config.json}
 
-    This copies the huggingface files into lora_adapter/ so that directory
-    is self-contained and directly loadable by vLLM as a LoRA adapter path.
-    The full checkpoint (FSDP state, optimizer, etc.) is preserved for resume.
+    For each LoRA checkpoint this exports the adapter to actor/lora_adapter/ (unless it already
+    exists) and copies the huggingface files into it, so that directory is directly loadable by
+    vLLM as a LoRA adapter path. The FSDP checkpoint is preserved for resume.
 
     Returns:
         List of paths to the usable lora_adapter checkpoint directories.
@@ -725,11 +755,16 @@ def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
             continue
 
         raw_dir = os.path.join(checkpoint_dir, entry)
-        lora_dir = os.path.join(raw_dir, "actor", "lora_adapter")
-        hf_dir = os.path.join(raw_dir, "actor", "huggingface")
+        actor_dir = os.path.join(raw_dir, "actor")
+        lora_dir = os.path.join(actor_dir, "lora_adapter")
+        hf_dir = os.path.join(actor_dir, "huggingface")
 
         if not os.path.isdir(lora_dir):
-            continue
+            if not os.path.exists(os.path.join(actor_dir, "lora_train_meta.json")):
+                continue  # not a LoRA checkpoint (full fine-tuning)
+            if _export_verl_lora_adapter(actor_dir) is None:
+                continue
+            logger.info("Exported LoRA adapter from FSDP shards: %s/actor/lora_adapter/", entry)
 
         # Copy tokenizer/config files into lora_adapter dir
         if os.path.isdir(hf_dir):
@@ -871,6 +906,11 @@ class VeRLLoRAGRPOBackend(Backend):
             cmd.extend([
                 f"actor_rollout_ref.model.lora_rank={lora_r}",
                 f"actor_rollout_ref.model.lora_alpha={lora_alpha}",
+                # Checkpoint only the LoRA params, not the full base model (~100 MiB vs
+                # ~8 GiB per save for a 4B model); verl auto-detects LoRA-only checkpoints
+                # on resume. `+` because save_lora_only is in verl's CheckpointConfig
+                # dataclass but not its generated trainer YAML, so a plain override fails.
+                "+actor_rollout_ref.actor.checkpoint.save_lora_only=True",
             ])
         cmd.extend([
             "actor_rollout_ref.model.enable_gradient_checkpointing=True",
@@ -1116,6 +1156,11 @@ class VeRLLoRAGRPOBackend(Backend):
         # (matching ART's format for uniform vLLM loading)
         checkpoint_dir = os.path.join(ckpt_output_dir, "checkpoints")
         adapter_checkpoints = _normalize_verl_checkpoints(checkpoint_dir)
+        if lora_r and not adapter_checkpoints:
+            raise RuntimeError(
+                f"verl training finished but no LoRA adapter could be exported from {checkpoint_dir}; "
+                "check that checkpoints were saved (trainer.save_freq) and contain LoRA weights."
+            )
 
         return {
             "status": "success",
