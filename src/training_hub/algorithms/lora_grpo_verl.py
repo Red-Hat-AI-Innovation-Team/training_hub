@@ -786,6 +786,10 @@ def _export_verl_lora_adapter(actor_dir: str) -> str | None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+# Files written by save_lora_adapter: copying the huggingface/ files must never overwrite them
+_ADAPTER_FILES = frozenset({"adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"})
+
+
 def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
     """Build self-contained ``lora_adapter`` dirs from verl checkpoints for direct vLLM use.
 
@@ -841,14 +845,16 @@ def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
                 logger.info("Exported LoRA adapter from FSDP shards: %s/actor/lora_adapter/", entry)
 
             # Copy the tokenizer/config files into lora_dir, including folders such as
-            # additional_chat_templates/ (tokenizers with several chat templates)
+            # additional_chat_templates/ (tokenizers with several chat templates). They are
+            # small, so they are copied again on every run: that also repairs a copy
+            # interrupted on an earlier run. The adapter's own files are never overwritten.
             if os.path.isdir(hf_dir):
                 for name in os.listdir(hf_dir):
-                    src, dst = os.path.join(hf_dir, name), os.path.join(lora_dir, name)
-                    if os.path.exists(dst):  # don't overwrite adapter files
+                    if name in _ADAPTER_FILES:
                         continue
+                    src, dst = os.path.join(hf_dir, name), os.path.join(lora_dir, name)
                     if os.path.isdir(src):
-                        shutil.copytree(src, dst)
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
                     else:
                         shutil.copy2(src, dst)
         except Exception as e:

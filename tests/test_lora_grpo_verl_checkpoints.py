@@ -1,7 +1,7 @@
 """Tests for exporting PEFT adapters from verl FSDP checkpoints (_normalize_verl_checkpoints)."""
 
 import json
-import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,12 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 from training_hub.algorithms.lora_grpo_verl import _normalize_verl_checkpoints
 
 TARGET_MODULES = ["q_proj", "v_proj"]
+SHARD = "model_world_size_1_rank_0.pt"
+TOKENIZER_CONFIG = {"tokenizer_class": "Qwen2Tokenizer"}
+CHAT_TEMPLATE = "{{ messages }}"
 
+
+# --- helpers ------------------------------------------------------------------------
 
 def _tiny_base():
     torch.manual_seed(0)
@@ -37,148 +42,172 @@ def _trained_peft_model():
     return model
 
 
-def _write_verl_checkpoint(actor_dir, model, lora_only: bool, lora: bool = True):
-    """Mimic verl 0.9.1 FSDPCheckpointManager.save_checkpoint output for world_size=1."""
-    os.makedirs(os.path.join(actor_dir, "huggingface"))
-    state_dict = model.state_dict()
-    if lora_only:
-        state_dict = {k: v for k, v in state_dict.items() if "lora_" in k}
-    torch.save(state_dict, os.path.join(actor_dir, "model_world_size_1_rank_0.pt"))
-    with open(os.path.join(actor_dir, "fsdp_config.json"), "w") as f:
-        json.dump({"FSDP_version": 1, "world_size": 1}, f)
-    if lora:
-        with open(os.path.join(actor_dir, "lora_train_meta.json"), "w") as f:
-            json.dump({"r": 4, "lora_alpha": 8, "task_type": "CAUSAL_LM"}, f)
-    base_config = model.config if not lora else model.base_model.model.config
-    base_config.save_pretrained(os.path.join(actor_dir, "huggingface"))
-    with open(os.path.join(actor_dir, "huggingface", "tokenizer_config.json"), "w") as f:
-        json.dump({"tokenizer_class": "Qwen2Tokenizer"}, f)
+def _lora_weights(model) -> dict:
+    return {k: v for k, v in model.state_dict().items() if "lora_" in k}
 
+
+def _write_verl_checkpoint(actor_dir: Path, model, lora_only: bool = True, lora: bool = True) -> Path:
+    """Mimic verl 0.9.1 FSDPCheckpointManager.save_checkpoint output for world_size=1."""
+    hf_dir = actor_dir / "huggingface"
+    hf_dir.mkdir(parents=True)
+    torch.save(_lora_weights(model) if lora_only else model.state_dict(), actor_dir / SHARD)
+    (actor_dir / "fsdp_config.json").write_text(json.dumps({"FSDP_version": 1, "world_size": 1}))
+    if lora:
+        (actor_dir / "lora_train_meta.json").write_text(json.dumps({"r": 4, "lora_alpha": 8, "task_type": "CAUSAL_LM"}))
+    (model.base_model.model.config if lora else model.config).save_pretrained(hf_dir)
+    (hf_dir / "tokenizer_config.json").write_text(json.dumps(TOKENIZER_CONFIG))
+    return actor_dir
+
+
+def _checkpoint(tmp_path: Path, step: int = 3, model=None, **kwargs) -> Path:
+    """Write global_step_<step>/actor/ under tmp_path/checkpoints and return the actor dir."""
+    actor_dir = tmp_path / "checkpoints" / f"global_step_{step}" / "actor"
+    return _write_verl_checkpoint(actor_dir, model if model is not None else _trained_peft_model(), **kwargs)
+
+
+def _normalize(tmp_path: Path) -> list[Path]:
+    return [Path(p) for p in _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))]
+
+
+def _add_chat_template(actor_dir: Path) -> None:
+    """Tokenizers with several chat templates save them under additional_chat_templates/."""
+    templates = actor_dir / "huggingface" / "additional_chat_templates"
+    templates.mkdir()
+    (templates / "tool_use.jinja").write_text(CHAT_TEMPLATE)
+
+
+def _assert_loads_with_weights(lora_dir: Path, trained) -> None:
+    """The adapter loads in PEFT and holds the trained LoRA weights (the verl merger exports bf16)."""
+    loaded = _lora_weights(peft.PeftModel.from_pretrained(_tiny_base(), str(lora_dir)))
+    expected = _lora_weights(trained)
+    assert loaded.keys() == expected.keys()
+    for key, value in expected.items():
+        torch.testing.assert_close(loaded[key], value.to(torch.bfloat16).to(value.dtype))
+
+
+@pytest.fixture
+def gloo_group(tmp_path):
+    import torch.distributed as dist
+
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'pg'}", rank=0, world_size=1)
+    yield
+    dist.destroy_process_group()
+
+
+# --- export -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("lora_only", [True, False], ids=["save_lora_only", "full_shards"])
 def test_exports_loadable_peft_adapter(tmp_path, lora_only):
     trained = _trained_peft_model()
-    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
-    _write_verl_checkpoint(str(actor_dir), trained, lora_only=lora_only)
-
-    adapters = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+    actor_dir = _checkpoint(tmp_path, model=trained, lora_only=lora_only)
 
     lora_dir = actor_dir / "lora_adapter"
-    assert adapters == [str(lora_dir)]
-    files = set(os.listdir(lora_dir))
-    assert {"adapter_config.json", "adapter_model.safetensors", "tokenizer_config.json"} <= files
-
+    assert _normalize(tmp_path) == [lora_dir]
+    assert {"adapter_config.json", "adapter_model.safetensors", "tokenizer_config.json"} <= {
+        p.name for p in lora_dir.iterdir()}
     adapter_config = json.loads((lora_dir / "adapter_config.json").read_text())
     assert (adapter_config["r"], adapter_config["lora_alpha"]) == (4, 8)
     assert sorted(adapter_config["target_modules"]) == TARGET_MODULES
-
-    loaded = peft.PeftModel.from_pretrained(_tiny_base(), str(lora_dir))
-    expected = {k: v for k, v in trained.state_dict().items() if "lora_" in k}
-    got = {k: v for k, v in loaded.state_dict().items() if "lora_" in k}
-    assert got.keys() == expected.keys()
-    for key, value in expected.items():
-        # the verl merger exports in bf16
-        torch.testing.assert_close(got[key], value.to(torch.bfloat16).to(value.dtype))
+    _assert_loads_with_weights(lora_dir, trained)
 
 
-def test_skips_full_finetune_checkpoints(tmp_path):
-    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
-    _write_verl_checkpoint(str(actor_dir), _tiny_base(), lora_only=False, lora=False)
-
-    assert _normalize_verl_checkpoints(str(tmp_path / "checkpoints")) == []
-    assert not (actor_dir / "lora_adapter").exists()
-
-
-def _write_steps(tmp_path, steps):
-    for step in steps:
-        _write_verl_checkpoint(str(tmp_path / "checkpoints" / f"global_step_{step}" / "actor"),
-                               _trained_peft_model(), lora_only=True)
-    return tmp_path / "checkpoints"
-
-
-def test_checkpoints_are_in_step_order(tmp_path):
-    ckpt = _write_steps(tmp_path, [9, 10, 2])
-    adapters = _normalize_verl_checkpoints(str(ckpt))
-    assert adapters == [str(ckpt / f"global_step_{s}" / "actor" / "lora_adapter") for s in (2, 9, 10)]
-
-
-def test_skips_a_broken_earlier_checkpoint(tmp_path, caplog):
-    ckpt = _write_steps(tmp_path, [5, 10])
-    os.remove(ckpt / "global_step_5" / "actor" / "model_world_size_1_rank_0.pt")
-
-    adapters = _normalize_verl_checkpoints(str(ckpt))
-
-    assert adapters == [str(ckpt / "global_step_10" / "actor" / "lora_adapter")]
-    assert "Skipping checkpoint global_step_5" in caplog.text
-
-
-def test_raises_if_the_latest_checkpoint_is_broken(tmp_path):
-    ckpt = _write_steps(tmp_path, [5, 10])
-    os.remove(ckpt / "global_step_10" / "actor" / "model_world_size_1_rank_0.pt")
-
-    with pytest.raises(RuntimeError, match="latest checkpoint .*global_step_10"):
-        _normalize_verl_checkpoints(str(ckpt))
-
-
-def test_raises_if_the_latest_checkpoint_has_no_lora_meta(tmp_path):
-    ckpt = _write_steps(tmp_path, [5, 10])
-    os.remove(ckpt / "global_step_10" / "actor" / "lora_train_meta.json")
-
-    with pytest.raises(RuntimeError, match="lora_train_meta.json"):
-        _normalize_verl_checkpoints(str(ckpt))
-
-
-def test_exports_dtensor_shards(tmp_path):
+def test_exports_dtensor_shards(tmp_path, gloo_group):
     """FSDP saves sharded params as DTensors; check the export unwraps them (world_size=1)."""
-    import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor import Shard, distribute_tensor
 
-    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'pg'}", rank=0, world_size=1)
-    try:
-        trained = _trained_peft_model()
-        actor_dir = tmp_path / "checkpoints" / "global_step_1" / "actor"
-        _write_verl_checkpoint(str(actor_dir), trained, lora_only=True)
-        mesh = init_device_mesh("cpu", (1,), mesh_dim_names=("fsdp",))
-        shard = actor_dir / "model_world_size_1_rank_0.pt"
-        state_dict = torch.load(shard, weights_only=False)
-        torch.save({k: distribute_tensor(v, mesh, [Shard(0)]) for k, v in state_dict.items()}, shard)
+    trained = _trained_peft_model()
+    shard = _checkpoint(tmp_path, model=trained) / SHARD
+    mesh = init_device_mesh("cpu", (1,), mesh_dim_names=("fsdp",))
+    state_dict = torch.load(shard, weights_only=False)
+    torch.save({k: distribute_tensor(v, mesh, [Shard(0)]) for k, v in state_dict.items()}, shard)
 
-        (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
-        loaded = peft.PeftModel.from_pretrained(_tiny_base(), lora_dir)
-        for key, value in trained.state_dict().items():
-            if "lora_" in key:
-                torch.testing.assert_close(loaded.state_dict()[key], value.to(torch.bfloat16).to(value.dtype))
-    finally:
-        dist.destroy_process_group()
+    (lora_dir,) = _normalize(tmp_path)
+    _assert_loads_with_weights(lora_dir, trained)
+
+
+def test_skips_full_finetune_checkpoints(tmp_path):
+    actor_dir = _checkpoint(tmp_path, model=_tiny_base(), lora_only=False, lora=False)
+
+    assert _normalize(tmp_path) == []
+    assert not (actor_dir / "lora_adapter").exists()
 
 
 def test_redoes_a_partial_adapter_export(tmp_path):
     """A lora_adapter/ with adapter_config.json but no weights (interrupted export) is redone."""
     trained = _trained_peft_model()
-    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
-    _write_verl_checkpoint(str(actor_dir), trained, lora_only=True)
+    actor_dir = _checkpoint(tmp_path, model=trained)
     (actor_dir / "lora_adapter").mkdir()
     (actor_dir / "lora_adapter" / "adapter_config.json").write_text("{}")
 
-    (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+    (lora_dir,) = _normalize(tmp_path)
 
-    assert (actor_dir / "lora_adapter" / "adapter_model.safetensors").exists()
-    assert json.loads((actor_dir / "lora_adapter" / "adapter_config.json").read_text())["r"] == 4
-    peft.PeftModel.from_pretrained(_tiny_base(), lora_dir)
-    # the temporary export directory is cleaned up
-    assert not [name for name in os.listdir(actor_dir) if name.startswith(".lora_export_")]
+    _assert_loads_with_weights(lora_dir, trained)
+    assert not list(actor_dir.glob(".lora_export_*"))  # the temporary export dir is cleaned up
 
+
+# --- checkpoint selection -----------------------------------------------------------
+
+def test_checkpoints_are_in_step_order(tmp_path):
+    for step in (9, 10, 2):
+        _checkpoint(tmp_path, step)
+
+    assert [p.parent.parent.name for p in _normalize(tmp_path)] == [
+        "global_step_2", "global_step_9", "global_step_10"]
+
+
+def test_skips_a_broken_earlier_checkpoint(tmp_path, caplog):
+    (_checkpoint(tmp_path, 5) / SHARD).unlink()
+    latest = _checkpoint(tmp_path, 10)
+
+    assert _normalize(tmp_path) == [latest / "lora_adapter"]
+    assert "Skipping checkpoint global_step_5" in caplog.text
+
+
+def test_raises_if_the_latest_checkpoint_is_broken(tmp_path):
+    _checkpoint(tmp_path, 5)
+    (_checkpoint(tmp_path, 10) / SHARD).unlink()
+
+    with pytest.raises(RuntimeError, match="latest checkpoint .*global_step_10"):
+        _normalize(tmp_path)
+
+
+def test_raises_if_the_latest_checkpoint_has_no_lora_meta(tmp_path):
+    _checkpoint(tmp_path, 5)
+    (_checkpoint(tmp_path, 10) / "lora_train_meta.json").unlink()
+
+    with pytest.raises(RuntimeError, match="lora_train_meta.json"):
+        _normalize(tmp_path)
+
+
+# --- tokenizer/config files ---------------------------------------------------------
 
 def test_copies_nested_tokenizer_folders(tmp_path):
-    """Tokenizers with several chat templates save them under additional_chat_templates/."""
-    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
-    _write_verl_checkpoint(str(actor_dir), _trained_peft_model(), lora_only=True)
-    templates = actor_dir / "huggingface" / "additional_chat_templates"
-    templates.mkdir()
-    (templates / "tool_use.jinja").write_text("{{ messages }}")
+    _add_chat_template(_checkpoint(tmp_path))
 
-    (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+    (lora_dir,) = _normalize(tmp_path)
 
-    copied = Path(lora_dir) / "additional_chat_templates" / "tool_use.jinja"
-    assert copied.read_text() == "{{ messages }}"
+    assert (lora_dir / "additional_chat_templates" / "tool_use.jinja").read_text() == CHAT_TEMPLATE
+
+
+def test_rerun_repairs_an_interrupted_tokenizer_copy(tmp_path):
+    _add_chat_template(_checkpoint(tmp_path))
+    (lora_dir,) = _normalize(tmp_path)
+    # Simulate a copy interrupted on an earlier run: an empty folder and a truncated file
+    shutil.rmtree(lora_dir / "additional_chat_templates")
+    (lora_dir / "additional_chat_templates").mkdir()
+    (lora_dir / "tokenizer_config.json").write_text("")
+
+    _normalize(tmp_path)
+
+    assert (lora_dir / "additional_chat_templates" / "tool_use.jinja").read_text() == CHAT_TEMPLATE
+    assert json.loads((lora_dir / "tokenizer_config.json").read_text()) == TOKENIZER_CONFIG
+
+
+def test_tokenizer_copy_never_overwrites_adapter_files(tmp_path):
+    actor_dir = _checkpoint(tmp_path)
+    (actor_dir / "huggingface" / "adapter_config.json").write_text('{"r": 999}')
+
+    (lora_dir,) = _normalize(tmp_path)
+
+    assert json.loads((lora_dir / "adapter_config.json").read_text())["r"] == 4
