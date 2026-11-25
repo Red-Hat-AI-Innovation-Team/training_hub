@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -167,3 +168,17 @@ def test_redoes_a_partial_adapter_export(tmp_path):
     peft.PeftModel.from_pretrained(_tiny_base(), lora_dir)
     # the temporary export directory is cleaned up
     assert not [name for name in os.listdir(actor_dir) if name.startswith(".lora_export_")]
+
+
+def test_copies_nested_tokenizer_folders(tmp_path):
+    """Tokenizers with several chat templates save them under additional_chat_templates/."""
+    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
+    _write_verl_checkpoint(str(actor_dir), _trained_peft_model(), lora_only=True)
+    templates = actor_dir / "huggingface" / "additional_chat_templates"
+    templates.mkdir()
+    (templates / "tool_use.jinja").write_text("{{ messages }}")
+
+    (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+
+    copied = Path(lora_dir) / "additional_chat_templates" / "tool_use.jinja"
+    assert copied.read_text() == "{{ messages }}"

@@ -98,6 +98,22 @@ def test_full_grpo_counts_the_dummy_gather_on_multi_gpu(configs):
     assert gap == dummy.num_params * 4 - me.VERL_SYNC_BUCKET_BYTES
 
 
+def test_cache_reload_keeps_the_lora_trainable_count(configs):
+    """A cache row without max_block_params makes the multi-GPU estimate rebuild the model;
+    that must not reset the trained-param count to the full model for later estimates."""
+    import pandas as pd
+
+    grpo()  # writes the CSV row for "dense"
+    storage = pd.read_csv(me.MODEL_STORAGE_PATH, index_col="name")
+    storage["max_block_params"] = float("nan")
+    storage.to_csv(me.MODEL_STORAGE_PATH, index_label="name")
+
+    est = grpo(num_gpus=4)
+    first = est.estimate()
+    assert est.estimate() == first
+    assert est.num_trainable_params == est.lora_params
+
+
 def test_estimate_dispatches_grpo_methods(configs):
     lora = me.estimate(training_method="lora_grpo", num_gpus=1, gpu_memory=GPU, model_path="dense",
                        max_seq_len=1000, lora_r=8, verbose=0)

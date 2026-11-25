@@ -839,20 +839,25 @@ def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
                 if _export_verl_lora_adapter(actor_dir) is None:
                     raise RuntimeError("the FSDP shards contain no LoRA weights")
                 logger.info("Exported LoRA adapter from FSDP shards: %s/actor/lora_adapter/", entry)
+
+            # Copy the tokenizer/config files into lora_dir, including folders such as
+            # additional_chat_templates/ (tokenizers with several chat templates)
+            if os.path.isdir(hf_dir):
+                for name in os.listdir(hf_dir):
+                    src, dst = os.path.join(hf_dir, name), os.path.join(lora_dir, name)
+                    if os.path.exists(dst):  # don't overwrite adapter files
+                        continue
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
         except Exception as e:
             if entry == latest:
                 raise RuntimeError(
-                    f"Could not export the LoRA adapter from the latest checkpoint {actor_dir}: {e}"
+                    f"Could not build the LoRA adapter from the latest checkpoint {actor_dir}: {e}"
                 ) from e
-            logger.warning("Skipping checkpoint %s: could not export its LoRA adapter: %s", entry, e)
+            logger.warning("Skipping checkpoint %s: could not build its LoRA adapter: %s", entry, e)
             continue
-
-        # Copy tokenizer/config files into lora_adapter dir
-        if os.path.isdir(hf_dir):
-            for f in os.listdir(hf_dir):
-                dst = os.path.join(lora_dir, f)
-                if not os.path.exists(dst):  # don't overwrite adapter files
-                    shutil.copy2(os.path.join(hf_dir, f), dst)
 
         adapter_paths.append(lora_dir)
         logger.info("Normalized checkpoint: %s/actor/lora_adapter/", entry)

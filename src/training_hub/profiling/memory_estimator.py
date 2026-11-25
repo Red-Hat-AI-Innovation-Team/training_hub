@@ -10,6 +10,7 @@ from torch.distributed.fsdp import ShardingStrategy
 
 import os
 from collections import defaultdict
+from collections.abc import Callable
 import pandas as pd
 
 """
@@ -1418,17 +1419,29 @@ class GRPOEstimator(BasicEstimator):
         self.tokens_per_gpu = max_seq_len
 
 
-    def _cached_or_computed(self, key: str, compute) -> int:
+    def _cached_or_computed(self, key: str, compute: Callable[[], int]) -> int:
         """
         A model size from the CSV cache, or computed from the meta model (built if needed).
+
+        Args:
+            key (str): The CSV cache column, e.g. 'lora_weight_size' or 'max_block_params'
+            compute (Callable[[], int]): Computes the value from the meta model on a cache miss
+
+        Returns:
+            int: The cached or computed value
         """
         cached = getattr(self.model, key, None) if self.found_model else None
         if cached is not None and not pd.isna(cached):
             return int(cached)
         if self.found_model:
+            # _load_model resets num_trainable_params to every weight of the meta model;
+            # keep this estimator's count (the LoRA params for LoRA runs)
+            trainable = getattr(self, "num_trainable_params", None)
             self._load_model(f"Could not find {key} in the CSV cache.", trust_remote_code=self.trust_remote_code)
             self.found_model = False
             self._update_model_storage()
+            if trainable is not None:
+                self.num_trainable_params = trainable
         return int(compute())
 
 
