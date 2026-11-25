@@ -86,3 +86,84 @@ def test_skips_full_finetune_checkpoints(tmp_path):
 
     assert _normalize_verl_checkpoints(str(tmp_path / "checkpoints")) == []
     assert not (actor_dir / "lora_adapter").exists()
+
+
+def _write_steps(tmp_path, steps):
+    for step in steps:
+        _write_verl_checkpoint(str(tmp_path / "checkpoints" / f"global_step_{step}" / "actor"),
+                               _trained_peft_model(), lora_only=True)
+    return tmp_path / "checkpoints"
+
+
+def test_checkpoints_are_in_step_order(tmp_path):
+    ckpt = _write_steps(tmp_path, [9, 10, 2])
+    adapters = _normalize_verl_checkpoints(str(ckpt))
+    assert adapters == [str(ckpt / f"global_step_{s}" / "actor" / "lora_adapter") for s in (2, 9, 10)]
+
+
+def test_skips_a_broken_earlier_checkpoint(tmp_path, caplog):
+    ckpt = _write_steps(tmp_path, [5, 10])
+    os.remove(ckpt / "global_step_5" / "actor" / "model_world_size_1_rank_0.pt")
+
+    adapters = _normalize_verl_checkpoints(str(ckpt))
+
+    assert adapters == [str(ckpt / "global_step_10" / "actor" / "lora_adapter")]
+    assert "Skipping checkpoint global_step_5" in caplog.text
+
+
+def test_raises_if_the_latest_checkpoint_is_broken(tmp_path):
+    ckpt = _write_steps(tmp_path, [5, 10])
+    os.remove(ckpt / "global_step_10" / "actor" / "model_world_size_1_rank_0.pt")
+
+    with pytest.raises(RuntimeError, match="latest checkpoint .*global_step_10"):
+        _normalize_verl_checkpoints(str(ckpt))
+
+
+def test_raises_if_the_latest_checkpoint_has_no_lora_meta(tmp_path):
+    ckpt = _write_steps(tmp_path, [5, 10])
+    os.remove(ckpt / "global_step_10" / "actor" / "lora_train_meta.json")
+
+    with pytest.raises(RuntimeError, match="lora_train_meta.json"):
+        _normalize_verl_checkpoints(str(ckpt))
+
+
+def test_exports_dtensor_shards(tmp_path):
+    """FSDP saves sharded params as DTensors; check the export unwraps them (world_size=1)."""
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Shard, distribute_tensor
+
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'pg'}", rank=0, world_size=1)
+    try:
+        trained = _trained_peft_model()
+        actor_dir = tmp_path / "checkpoints" / "global_step_1" / "actor"
+        _write_verl_checkpoint(str(actor_dir), trained, lora_only=True)
+        mesh = init_device_mesh("cpu", (1,), mesh_dim_names=("fsdp",))
+        shard = actor_dir / "model_world_size_1_rank_0.pt"
+        state_dict = torch.load(shard, weights_only=False)
+        torch.save({k: distribute_tensor(v, mesh, [Shard(0)]) for k, v in state_dict.items()}, shard)
+
+        (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+        loaded = peft.PeftModel.from_pretrained(_tiny_base(), lora_dir)
+        for key, value in trained.state_dict().items():
+            if "lora_" in key:
+                torch.testing.assert_close(loaded.state_dict()[key], value.to(torch.bfloat16).to(value.dtype))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_redoes_a_partial_adapter_export(tmp_path):
+    """A lora_adapter/ with adapter_config.json but no weights (interrupted export) is redone."""
+    trained = _trained_peft_model()
+    actor_dir = tmp_path / "checkpoints" / "global_step_3" / "actor"
+    _write_verl_checkpoint(str(actor_dir), trained, lora_only=True)
+    (actor_dir / "lora_adapter").mkdir()
+    (actor_dir / "lora_adapter" / "adapter_config.json").write_text("{}")
+
+    (lora_dir,) = _normalize_verl_checkpoints(str(tmp_path / "checkpoints"))
+
+    assert (actor_dir / "lora_adapter" / "adapter_model.safetensors").exists()
+    assert json.loads((actor_dir / "lora_adapter" / "adapter_config.json").read_text())["r"] == 4
+    peft.PeftModel.from_pretrained(_tiny_base(), lora_dir)
+    # the temporary export directory is cleaned up
+    assert not [name for name in os.listdir(actor_dir) if name.startswith(".lora_export_")]

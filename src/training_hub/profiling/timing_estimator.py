@@ -448,7 +448,7 @@ def estimate_grpo_cost(
         prompt_batch_size: int = 100,
         group_size: int = 8,
         n_gpus: int = 1,
-        lora_r: int = 16,
+        lora_r: int | None = 16,
         gpu_hour_price: float | None = None,
         verbose: int = 1,
         trust_remote_code: bool = False,
@@ -475,7 +475,7 @@ def estimate_grpo_cost(
         prompt_batch_size (int): Prompts per step
         group_size (int): Rollouts per prompt
         n_gpus (int): GPUs used
-        lora_r (int): LoRA rank, 0 for full GRPO
+        lora_r (int | None): LoRA rank, 0 or None for full GRPO
         gpu_hour_price (float | None): Price of one GPU-hour, to also return the cost
         verbose (int): 0 for no printing, 1 to print a summary
         trust_remote_code (bool): Whether to allow custom model code from the Hub
@@ -487,9 +487,16 @@ def estimate_grpo_cost(
     if num_steps is None:
         if num_prompts is None:
             raise ValueError("Either num_steps or num_prompts must be provided")
+        if num_iterations <= 0:
+            raise ValueError(f"num_iterations must be positive, got {num_iterations}")
+        if num_prompts < prompt_batch_size:
+            raise ValueError(f"The run has no steps: num_prompts ({num_prompts}) must be at least "
+                             f"prompt_batch_size ({prompt_batch_size})")
         num_steps = num_iterations * (num_prompts // prompt_batch_size)
-    if num_steps <= 0:
-        raise ValueError("The run has no steps: num_prompts must be at least prompt_batch_size")
+    elif num_steps <= 0:
+        raise ValueError(f"num_steps must be positive, got {num_steps}")
+    if lora_r is None:
+        lora_r = 0  # as in the verl backend, None means full GRPO
     if mean_response_tokens is None:
         mean_response_tokens = DEFAULT_RESPONSE_SHARE * max_tokens
     if not lora_r:
@@ -515,7 +522,8 @@ def estimate_grpo_cost(
         "rollouts": num_steps * rollouts_per_step,
         "tokens_per_step": tokens_per_step,
         "seconds_per_step": seconds_per_step,
-        "tokens_per_second_per_gpu": tuple(1 / (seconds_per_token * band) for band in bands),
+        # Low throughput goes with the high time band, so the bands are reversed here
+        "tokens_per_second_per_gpu": tuple(1 / (seconds_per_token * band) for band in reversed(bands)),
         "gpu_hours": gpu_hours,
         "wall_hours": tuple(hours / n_gpus for hours in gpu_hours),
     }

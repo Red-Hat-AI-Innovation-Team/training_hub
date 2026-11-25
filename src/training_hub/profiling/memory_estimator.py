@@ -1353,7 +1353,7 @@ class GRPOEstimator(BasicEstimator):
         max_seq_len (int): Longest prompt + response. verl trains one sequence per GPU per
                         micro-batch, so this is the token count of the activations. Use the
                         longest prompt in the data plus max_tokens.
-        lora_r (int): The LoRA rank. 0 means full GRPO (every weight trained).
+        lora_r (int | None): The LoRA rank. 0 or None means full GRPO (every weight trained).
         gpu_memory_utilization (float): vLLM's share of each GPU (lora_grpo's default: 0.45)
         load_format (str): vLLM's rollout.load_format. With "dummy" (the default) the first
                         weight sync gathers the full fp32 model on each GPU when num_gpus > 1.
@@ -1368,15 +1368,17 @@ class GRPOEstimator(BasicEstimator):
         max_seq_len: int | None = None,
         verbose: int = 1,
         trust_remote_code: bool = False,
-        lora_r: int = 16,
+        lora_r: int | None = 32,
         gpu_memory_utilization: float = 0.45,
         load_format: str = "dummy",
         tensor_parallel_size: int = 1,
     ):
         if not 0.0 < gpu_memory_utilization < 1.0:
             raise ValueError("gpu_memory_utilization must be in (0, 1)")
-        if lora_r is None or lora_r < 0:
-            raise ValueError("lora_r must be >= 0 (0 means full GRPO)")
+        if lora_r is None:
+            lora_r = 0  # as in the verl backend, None means full GRPO
+        if lora_r < 0:
+            raise ValueError("lora_r must be >= 0 (0 or None means full GRPO)")
         super().__init__(num_gpus=num_gpus,
                         gpu_memory=gpu_memory,
                         model_path=model_path,
@@ -1480,8 +1482,10 @@ class GRPOEstimator(BasicEstimator):
             rollout:     vLLM's reservation, gpu_memory_utilization x gpu_memory
             training:    with num_gpus > 1, FSDP gathering one decoder block and prefetching the next (bf16)
             weight sync: vLLM's bf16 weights + the params gathered for the sync: the full fp32
-                         model on the first sync with load_format=dummy and num_gpus > 1, one
-                         bucket at a time for full GRPO, otherwise just the LoRA params
+                         model on the first sync with load_format=dummy and num_gpus > 1 (LoRA
+                         and full GRPO), otherwise one bucket at a time for full GRPO and just
+                         the LoRA params for LoRA. The full-GRPO gather hasn't been measured; it
+                         is counted so the estimate errs high (it is the peak from ~7B up).
         """
         if phase == "rollout":
             return self.gpu_memory_utilization * self.gpu_memory + VERL_RUNTIME_OVERHEAD_BYTES
@@ -1490,10 +1494,10 @@ class GRPOEstimator(BasicEstimator):
             if self.num_gpus > 1:
                 gather = 2 * FLOAT16_BYTES_N * self._cached_or_computed('max_block_params', self._calc_max_block_params)
             return gather + VERL_RUNTIME_OVERHEAD_BYTES
-        if not self.lora_r:
-            synced = VERL_SYNC_BUCKET_BYTES
-        elif self.load_format == "dummy" and self.num_gpus > 1:
+        if self.load_format == "dummy" and self.num_gpus > 1:
             synced = self.num_params * FLOAT32_BYTES_N
+        elif not self.lora_r:
+            synced = VERL_SYNC_BUCKET_BYTES
         else:
             synced = self.lora_params * FLOAT32_BYTES_N
         vllm_weights = self.num_params * FLOAT16_BYTES_N / self.tensor_parallel_size

@@ -91,6 +91,13 @@ def test_dummy_load_format_gathers_the_full_model_on_multi_gpu(configs):
     assert gap == dummy.num_params * 4 - dummy.lora_params * 4
 
 
+def test_full_grpo_counts_the_dummy_gather_on_multi_gpu(configs):
+    dummy = grpo(lora_r=0, num_gpus=2, load_format="dummy")
+    preloaded = grpo(lora_r=0, num_gpus=2, load_format="safetensors")
+    gap = dummy._calc_additional("weight sync") - preloaded._calc_additional("weight sync")
+    assert gap == dummy.num_params * 4 - me.VERL_SYNC_BUCKET_BYTES
+
+
 def test_estimate_dispatches_grpo_methods(configs):
     lora = me.estimate(training_method="lora_grpo", num_gpus=1, gpu_memory=GPU, model_path="dense",
                        max_seq_len=1000, lora_r=8, verbose=0)
@@ -100,11 +107,31 @@ def test_estimate_dispatches_grpo_methods(configs):
     assert full == grpo(lora_r=0).estimate()
 
 
+def test_estimate_defaults_to_rank_32(configs):
+    default = me.estimate(training_method="lora_grpo", num_gpus=1, gpu_memory=GPU, model_path="dense",
+                          max_seq_len=1000, verbose=0)
+    assert default == grpo(lora_r=32).estimate()
+
+
+def test_estimate_keeps_the_lora_default_rank(configs):
+    kwargs = {"training_method": "lora", "num_gpus": 1, "gpu_memory": GPU, "model_path": "dense",
+              "batch_size": 1, "max_seq_len": 1000, "verbose": 0}
+    assert me.estimate(**kwargs) == me.estimate(**kwargs, lora_r=32)
+
+
+def test_lora_r_none_means_full_grpo(configs):
+    est = grpo(lora_r=None)
+    assert est.lora_r == 0 and est.num_trainable_params == est.num_params
+    assert cost(lora_r=None)["gpu_hours"] == cost(lora_r=0)["gpu_hours"]
+
+
 def test_invalid_settings_raise(configs):
     with pytest.raises(ValueError):
         grpo(gpu_memory_utilization=1.2)
     with pytest.raises(ValueError):
         grpo(max_seq_len=None)
+    with pytest.raises(ValueError):
+        grpo(lora_r=-1)
 
 
 # --- GPU-hours -------------------------------------------------------------------------
@@ -148,8 +175,20 @@ def test_price_and_default_response_length(configs):
     assert default["tokens_per_step"] == 800 * (2536 + te.DEFAULT_RESPONSE_SHARE * 512)
 
 
+def test_throughput_bands_follow_the_time_bands(configs):
+    result = cost()
+    low, mid, high = result["tokens_per_second_per_gpu"]
+    assert low < mid < high
+    # the pessimistic throughput goes with the pessimistic (high) step time
+    assert low == pytest.approx(result["tokens_per_step"] / result["seconds_per_step"][2])
+
+
 def test_cost_needs_steps(configs):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="num_steps or num_prompts"):
         cost(num_prompts=None)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"num_prompts \(50\)"):
         cost(num_prompts=50)  # fewer prompts than one batch
+    with pytest.raises(ValueError, match="num_steps must be positive"):
+        cost(num_prompts=None, num_steps=0)
+    with pytest.raises(ValueError, match="num_iterations must be positive"):
+        cost(num_iterations=0)

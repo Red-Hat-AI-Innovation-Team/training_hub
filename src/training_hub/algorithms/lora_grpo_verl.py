@@ -22,15 +22,25 @@ Usage:
     )
 """
 
+import inspect
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import pandas as pd
+import torch
+from torch.distributed.tensor import DTensor
+
 from . import Backend, AlgorithmRegistry
+from .lora_grpo import _load_local_dataset, _load_tool_call_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +69,6 @@ def _prepare_verl_data(
     Returns:
         (train_parquet_path, val_parquet_path)
     """
-    import pandas as pd
-
     os.makedirs(output_dir, exist_ok=True)
     train_path = os.path.join(output_dir, "train.parquet")
     val_path = os.path.join(output_dir, "val.parquet")
@@ -80,7 +88,6 @@ def _prepare_verl_data(
         )
 
     # Tool-call data loading + decomposition
-    from .lora_grpo import _load_local_dataset, _load_tool_call_dataset
 
     if data_path.endswith((".json", ".jsonl")):
         train_data, val_data = _load_local_dataset(data_path, n_train, n_val)
@@ -186,8 +193,6 @@ def _prepare_generic_data(
     The ground_truth is passed to the reward function via
     reward_model.ground_truth in the parquet schema.
     """
-    import pandas as pd
-
     with open(data_path) as f:
         raw = [json.loads(line) for line in f if line.strip()]
 
@@ -252,8 +257,6 @@ def _prepare_math_data(
     Returns:
         (train_parquet_path, val_parquet_path)
     """
-    import pandas as pd
-
     if system_prompt is None:
         system_prompt = (
             "Please reason step by step, and put your final answer "
@@ -268,7 +271,6 @@ def _prepare_math_data(
         basename = os.path.basename(data_path).lower()
         if "aime" in basename:
             # Extract year if present
-            import re
             year_match = re.search(r'(\d{4})', basename)
             data_source = f"aime{year_match.group(1)}" if year_match else "aime"
         elif "gsm8k" in basename:
@@ -489,9 +491,6 @@ def _write_custom_reward_function(reward_fn, output_dir: str) -> str:
     Returns:
         Path to the reward function file.
     """
-    import inspect
-    import textwrap
-
     # If reward_fn is a string, treat it as a path to a reward file
     if isinstance(reward_fn, str):
         if os.path.isfile(reward_fn):
@@ -670,8 +669,6 @@ def _write_agent_loop(output_dir: str) -> str:
     Returns:
         Path to the agent loop module in output_dir.
     """
-    import shutil
-
     # Copy the agent loop module to the output dir
     src = os.path.join(os.path.dirname(__file__), "verl_tool_agent.py")
     dst = os.path.join(output_dir, "verl_tool_agent.py")
@@ -700,13 +697,67 @@ def _write_agent_loop(output_dir: str) -> str:
     return dst
 
 
+def _load_lora_state_dict(merger, actor_dir: str) -> dict:
+    """Merge only the LoRA entries of verl's FSDP shards into full (unsharded) bf16 tensors.
+
+    verl's own ``_load_and_merge_state_dicts`` loads and merges every entry of every shard, so a
+    checkpoint with base weights (saved without ``save_lora_only``) would need the whole model in
+    CPU RAM. Here each shard is memory-mapped and only its ``lora_`` entries are copied out, so
+    host memory stays at roughly the size of the adapter.
+    """
+    def load_shard(rank: int) -> dict:
+        path = os.path.join(actor_dir, f"model_world_size_{world_size}_rank_{rank}.pt")
+        return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+
+    world_size = merger._get_world_size()
+    rank_zero = load_shard(0)
+    mesh, mesh_dim_names = merger._extract_device_mesh_info(rank_zero, world_size)
+    total_shards, mesh_shape = merger._calculate_shard_configuration(mesh, mesh_dim_names)
+    if len(mesh_shape) != 1:
+        raise NotImplementedError("FSDP + TP checkpoints are not supported")
+
+    shards: dict[str, list] = {}
+    placements: dict[str, tuple] = {}
+    for rank in range(total_shards):
+        state_dict = rank_zero if rank == 0 else load_shard(rank)
+        for key, tensor in state_dict.items():
+            if "lora_" not in key:
+                continue
+            if isinstance(tensor, DTensor):
+                key_placements = tuple(tensor.placements)
+                if mesh_dim_names[0] in ("dp", "ddp"):
+                    key_placements = key_placements[1:]  # replicated across the dp dimension
+                placements.setdefault(key, key_placements)
+                tensor = tensor._local_tensor
+            # copy=True so nothing keeps the memory-mapped shard file alive
+            shards.setdefault(key, []).append(tensor.to(torch.bfloat16, copy=True))
+        del state_dict
+    del rank_zero
+
+    merged = {}
+    for key, parts in shards.items():
+        if key in placements:
+            (placement,) = placements[key]
+            merged[key] = merger._merge_by_placement(parts, placement)
+        else:
+            # Plain tensors are replicated in full on every rank: keep one copy
+            merged[key] = parts[0]
+    return merged
+
+
 def _export_verl_lora_adapter(actor_dir: str) -> str | None:
     """Write ``actor_dir/lora_adapter/`` (PEFT format) from verl's FSDP model shards.
 
     verl's trainer checkpoints only hold FSDP shards plus ``lora_train_meta.json``; the PEFT
-    adapter is produced by its model merger. This runs just the merger's shard-merge and
-    ``save_lora_adapter`` steps, skipping its full merged-model export (multi-GB, and impossible
-    from ``save_lora_only`` shards, which have no base weights).
+    adapter is produced by its model merger. This merges just the LoRA entries of the shards
+    (see _load_lora_state_dict) and runs the merger's ``save_lora_adapter`` step, skipping its
+    full merged-model export (multi-GB, and impossible from ``save_lora_only`` shards, which
+    have no base weights).
+
+    The adapter is written to a temporary directory and renamed to ``actor_dir/lora_adapter/``
+    only once both of its files are complete, so an interrupted export (killed pod, full disk)
+    never leaves a ``lora_adapter/`` without weights that a later run would mistake for a
+    finished one. A partial ``lora_adapter/`` from before is replaced.
 
     Returns:
         The adapter directory, or None if the shards contain no LoRA weights.
@@ -714,20 +765,25 @@ def _export_verl_lora_adapter(actor_dir: str) -> str | None:
     from verl.model_merger.base_model_merger import ModelMergerConfig
     from verl.model_merger.fsdp_model_merger import FSDPModelMerger
 
-    merger = FSDPModelMerger(ModelMergerConfig(
-        operation="merge",
-        backend="fsdp",
-        local_dir=actor_dir,
-        target_dir=actor_dir,
-        hf_model_config_path=os.path.join(actor_dir, "huggingface"),
-    ))
-    world_size = merger._get_world_size()
-    mesh, mesh_dim_names = merger._extract_device_mesh_info(
-        merger._load_rank_zero_state_dict(world_size), world_size
-    )
-    total_shards, mesh_shape = merger._calculate_shard_configuration(mesh, mesh_dim_names)
-    state_dict = merger._load_and_merge_state_dicts(world_size, total_shards, mesh_shape, mesh_dim_names)
-    return merger.save_lora_adapter(state_dict)
+    lora_dir = os.path.join(actor_dir, "lora_adapter")
+    tmp_dir = tempfile.mkdtemp(prefix=".lora_export_", dir=actor_dir)
+    try:
+        merger = FSDPModelMerger(ModelMergerConfig(
+            operation="merge",
+            backend="fsdp",
+            local_dir=actor_dir,
+            target_dir=tmp_dir,
+            hf_model_config_path=os.path.join(actor_dir, "huggingface"),
+        ))
+        tmp_lora_dir = merger.save_lora_adapter(_load_lora_state_dict(merger, actor_dir))
+        if tmp_lora_dir is None:
+            return None
+        if os.path.isdir(lora_dir):
+            shutil.rmtree(lora_dir)  # partial export from an earlier, interrupted run
+        os.replace(tmp_lora_dir, lora_dir)
+        return lora_dir
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
@@ -738,33 +794,58 @@ def _normalize_verl_checkpoints(checkpoint_dir: str) -> list[str]:
         global_step_N/actor/huggingface/{tokenizer files, config.json}
 
     For each LoRA checkpoint this exports the adapter to actor/lora_adapter/ (unless it already
-    exists) and copies the huggingface files into it, so that directory is directly loadable by
+    holds the adapter weights) and copies the huggingface files into it, so that directory is directly loadable by
     vLLM as a LoRA adapter path. The FSDP checkpoint is preserved for resume.
 
+    An earlier checkpoint that can't be exported (e.g. a missing shard) is skipped with a
+    warning. The latest checkpoint is the run's final model, so if it can't be exported (or is
+    missing its LoRA files while earlier checkpoints have them) this raises instead.
+
     Returns:
-        List of paths to the usable lora_adapter checkpoint directories.
+        List of paths to the usable lora_adapter checkpoint directories, in step order.
     """
-    import shutil
+    if not os.path.exists(checkpoint_dir):
+        return []
+
+    # Numeric order: a plain sort puts global_step_10 before global_step_9
+    steps = sorted(
+        (int(entry.removeprefix("global_step_")), entry)
+        for entry in os.listdir(checkpoint_dir)
+        if entry.startswith("global_step_") and entry.removeprefix("global_step_").isdigit()
+    )
+
+    def is_lora(entry: str) -> bool:
+        actor_dir = os.path.join(checkpoint_dir, entry, "actor")
+        return (os.path.isdir(os.path.join(actor_dir, "lora_adapter"))
+                or os.path.exists(os.path.join(actor_dir, "lora_train_meta.json")))
+
+    if not any(is_lora(entry) for _, entry in steps):
+        return []  # full fine-tuning (or no checkpoints)
+    latest = steps[-1][1]
 
     adapter_paths = []
-    if not os.path.exists(checkpoint_dir):
-        return adapter_paths
-
-    for entry in sorted(os.listdir(checkpoint_dir)):
-        if not entry.startswith("global_step_"):
-            continue
-
-        raw_dir = os.path.join(checkpoint_dir, entry)
-        actor_dir = os.path.join(raw_dir, "actor")
+    for _, entry in steps:
+        actor_dir = os.path.join(checkpoint_dir, entry, "actor")
         lora_dir = os.path.join(actor_dir, "lora_adapter")
         hf_dir = os.path.join(actor_dir, "huggingface")
 
-        if not os.path.isdir(lora_dir):
-            if not os.path.exists(os.path.join(actor_dir, "lora_train_meta.json")):
-                continue  # not a LoRA checkpoint (full fine-tuning)
-            if _export_verl_lora_adapter(actor_dir) is None:
-                continue
-            logger.info("Exported LoRA adapter from FSDP shards: %s/actor/lora_adapter/", entry)
+        try:
+            # Check the weights file, not the directory: a lora_adapter/ with only
+            # adapter_config.json is a partial export and has to be redone.
+            if not any(os.path.exists(os.path.join(lora_dir, name))
+                       for name in ("adapter_model.safetensors", "adapter_model.bin")):
+                if not os.path.exists(os.path.join(actor_dir, "lora_train_meta.json")):
+                    raise RuntimeError("no lora_train_meta.json (incomplete checkpoint?)")
+                if _export_verl_lora_adapter(actor_dir) is None:
+                    raise RuntimeError("the FSDP shards contain no LoRA weights")
+                logger.info("Exported LoRA adapter from FSDP shards: %s/actor/lora_adapter/", entry)
+        except Exception as e:
+            if entry == latest:
+                raise RuntimeError(
+                    f"Could not export the LoRA adapter from the latest checkpoint {actor_dir}: {e}"
+                ) from e
+            logger.warning("Skipping checkpoint %s: could not export its LoRA adapter: %s", entry, e)
+            continue
 
         # Copy tokenizer/config files into lora_adapter dir
         if os.path.isdir(hf_dir):
@@ -870,7 +951,6 @@ class VeRLLoRAGRPOBackend(Backend):
 
         # Calculate steps per epoch for checkpoint frequency.
         # Default: save once per epoch. Can be overridden via saves_per_epoch.
-        import pandas as pd
         train_dataset_size = len(pd.read_parquet(train_path))
         steps_per_epoch = max(1, (train_dataset_size + train_batch_size - 1) // train_batch_size)
         saves_per_epoch = algorithm_params.get("saves_per_epoch", 1)
@@ -1046,7 +1126,6 @@ class VeRLLoRAGRPOBackend(Backend):
         env["PYTHONPATH"] = ckpt_output_dir + ":" + env.get("PYTHONPATH", "")
 
         # Stream output to stdout, log file, and parse metrics live
-        import re
         log_path = os.path.join(ckpt_output_dir, "verl_training.log")
         metrics_path = os.path.join(ckpt_output_dir, "training_metrics.jsonl")
         reward_history = []
