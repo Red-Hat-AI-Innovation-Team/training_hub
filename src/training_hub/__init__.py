@@ -46,7 +46,8 @@ from .algorithms.rewards import tool_call_reward, binary_reward
 from .callbacks import TrainingHubCallback, TrainingHubContext, TrainingHubControl, merge_default_callbacks
 from .jit_checkpoint import JITCheckpointCallback, RemoteCheckpointSyncCallback
 from .hub_core import welcome
-from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator
+from .profiling.memory_estimator import BasicEstimator, OSFTEstimatorExperimental, estimate, OSFTEstimator, LoRAEstimator, QLoRAEstimator, GRPOEstimator
+from .profiling.timing_estimator import estimate_grpo_cost
 from .algorithms.its_rollout import ITSRollout
 from .visualization import plot_loss
 
@@ -88,6 +89,8 @@ __all__ = [
     'LoRAEstimator',
     'QLoRAEstimator',
     'estimate',
+    'GRPOEstimator',
+    'estimate_grpo_cost',
     'TrainingHubCallback',
     'TrainingHubContext',
     'TrainingHubControl',

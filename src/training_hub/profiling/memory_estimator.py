@@ -45,6 +45,17 @@ MATERIALIZES_LOGITS: tuple[str, ...] = ("gemma4",)
 # for both sft (instructlab-training) and osft (mini_trainer).
 FSDP_RUNTIME_OVERHEAD_BYTES: int = int(2.6 * 1024**3)
 
+# lora_grpo / grpo (verl backend): see GRPOEstimator. Fitted on 5 verl 0.9.1 runs of
+# Qwen/Qwen3-4B on 1 x H100 80GB (lora_r 16-128); other models and GPU counts are extrapolated.
+# Per-GPU memory verl uses on top of the tensors counted here and vLLM's reservation: CUDA
+# contexts, NCCL and cuBLAS workspaces, allocator slack. Fitted as the nvidia-smi peak minus
+# (vLLM reservation + resident actor state): 3.4-4.0 GiB over the 5 Qwen3-4B runs, mean 3.77.
+VERL_RUNTIME_OVERHEAD_BYTES: int = int(3.8 * 1024**3)
+
+# vLLM's weight-sync bucket that training_hub sets (update_weights_bucket_megabytes=3072).
+# Full GRPO streams every weight through it on each sync.
+VERL_SYNC_BUCKET_BYTES: int = 3072 * 1024**2
+
 # Where the estimator caches each model's sizes: a user cache directory, not the package
 # directory, which is often read-only (e.g. site-packages in containers). Tests point this
 # somewhere temporary. The cache is optional: if it can't be written, the estimate still works.
@@ -1319,6 +1330,206 @@ class OSFTEstimatorExperimental(OSFTEstimator):
                         unfreeze_rank_ratio=unfreeze_rank_ratio,
                         count_fsdp_gather=count_fsdp_gather)
 
+class GRPOEstimator(BasicEstimator):
+    """
+    An estimator for the per-GPU memory of an LLM trained via lora_grpo / grpo on the verl backend.
+    Subclasses the BasicEstimator class.
+
+    verl runs FSDP training and vLLM rollout on the same GPUs and takes turns, so the estimate
+    is the busiest of three phases (see _calc_subtotal):
+        rollout:     model params + optimizer states + vLLM's reservation
+        training:    model params + optimizer states + gradients + activations + outputs
+        weight sync: model params + optimizer states + vLLM's bf16 weights + gathered params
+
+    Calibrated on 5 verl 0.9.1 runs of Qwen/Qwen3-4B on 1 x H100 80GB (lora_r 16-128,
+    gpu_memory_utilization=0.45, max_tokens=512, max_prompt_length=16384, load_format=dummy,
+    Dr. GRPO, longest prompt 14,721 tokens): the expected value is within 0.4 GiB of the
+    nvidia-smi peak. Other models, GPU counts and full GRPO (lora_r=0) are extrapolated.
+
+    vLLM reserves gpu_memory_utilization x the GPU's total memory, so pass the device's real
+    total (nvidia-smi memory.total, e.g. 81559 MiB for an H100 80GB) as gpu_memory.
+
+    Args (in addition to the BasicEstimator args):
+        max_seq_len (int): Longest prompt + response. verl trains one sequence per GPU per
+                        micro-batch, so this is the token count of the activations. Use the
+                        longest prompt in the data plus max_tokens.
+        lora_r (int): The LoRA rank. 0 means full GRPO (every weight trained).
+        gpu_memory_utilization (float): vLLM's share of each GPU (lora_grpo's default: 0.45)
+        load_format (str): vLLM's rollout.load_format. With "dummy" (the default) the first
+                        weight sync gathers the full fp32 model on each GPU when num_gpus > 1.
+        tensor_parallel_size (int): vLLM's tensor parallel size
+    """
+    @override
+    def __init__(
+        self,
+        num_gpus: int = 1,
+        gpu_memory: int = 85899345920,
+        model_path: str = "Qwen/Qwen3-4B",
+        max_seq_len: int | None = None,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+        lora_r: int = 16,
+        gpu_memory_utilization: float = 0.45,
+        load_format: str = "dummy",
+        tensor_parallel_size: int = 1,
+    ):
+        if not 0.0 < gpu_memory_utilization < 1.0:
+            raise ValueError("gpu_memory_utilization must be in (0, 1)")
+        if lora_r is None or lora_r < 0:
+            raise ValueError("lora_r must be >= 0 (0 means full GRPO)")
+        super().__init__(num_gpus=num_gpus,
+                        gpu_memory=gpu_memory,
+                        model_path=model_path,
+                        batch_size=1,
+                        max_seq_len=max_seq_len,
+                        max_tokens_per_gpu=None,
+                        use_liger=False,
+                        verbose=verbose,
+                        trust_remote_code=trust_remote_code)
+
+        # The phases are calibrated to the measured peak, so the expected value isn't padded
+        self.LOW_MULTIPLIER = 0.95
+        self.MEDIUM_MULTIPLIER = 1.0
+        self.HIGH_MULTIPLIER = 1.1
+
+        self.lora_r = lora_r
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.load_format = load_format
+        self.tensor_parallel_size = tensor_parallel_size
+
+        # verl's default target_modules="all-linear" matches the estimator's LoRA count.
+        # LoRA trains only the adapters; full GRPO trains every weight.
+        self.lora_weight_size = self._cached_or_computed('lora_weight_size', self._calc_lora_weight_size) if lora_r else 0
+        self.lora_params = self.lora_weight_size * lora_r
+        self.num_trainable_params = self.lora_params if lora_r else self.num_params
+
+
+    @override
+    def _resolve_tokens_per_gpu(self, batch_size: int | None,
+                                max_seq_len: int | None, max_tokens_per_gpu: int | None):
+        """
+        verl trains one sequence per GPU per micro-batch (ppo_micro_batch_size_per_gpu=1),
+        so each GPU processes one longest sequence.
+        """
+        if max_seq_len is None:
+            raise ValueError("max_seq_len (longest prompt + response) must be provided")
+        self.tokens_per_gpu = max_seq_len
+
+
+    def _cached_or_computed(self, key: str, compute) -> int:
+        """
+        A model size from the CSV cache, or computed from the meta model (built if needed).
+        """
+        cached = getattr(self.model, key, None) if self.found_model else None
+        if cached is not None and not pd.isna(cached):
+            return int(cached)
+        if self.found_model:
+            self._load_model(f"Could not find {key} in the CSV cache.", trust_remote_code=self.trust_remote_code)
+            self.found_model = False
+            self._update_model_storage()
+        return int(compute())
+
+
+    @override
+    def _calc_model_params(self):
+        """
+        Calculate the VRAM for the model parameters: verl trains in fp32 (with bf16 mixed
+        precision), so the base weights and the LoRA weights are fp32, sharded by FSDP.
+        """
+        return (self.num_params + self.lora_params) * FLOAT32_BYTES_N / self.num_gpus
+
+
+    @override
+    def _calc_gradients(self):
+        """
+        Calculate the VRAM for the fp32 gradients of the trained params (training phase only).
+        """
+        return self.num_trainable_params * FLOAT32_BYTES_N / self.num_gpus
+
+
+    @override
+    def _calc_optimizer(self):
+        """
+        Calculate the VRAM for the 2 fp32 AdamW moments of the trained params.
+        """
+        return self.num_trainable_params * FLOAT32_BYTES_N * ADAMW_PARAMS_N / self.num_gpus
+
+
+    @override
+    def _calc_intermediate_activations(self):
+        """
+        Calculate the VRAM for the checkpointed hidden states of one sequence (bf16, every layer).
+        Together with _calc_outputs this fits the Qwen3-4B actor peaks within -1% to +5%.
+        """
+        return self.tokens_per_gpu * FLOAT16_BYTES_N * self.hidden_size * self.num_layers
+
+
+    @override
+    def _calc_outputs(self):
+        """
+        Calculate the VRAM for the logits of one sequence (fp32 plus a bf16 copy).
+        """
+        return self.tokens_per_gpu * self._get_vocab_size() * (FLOAT32_BYTES_N + FLOAT16_BYTES_N)
+
+
+    @override
+    def _calc_additional(self, phase: str = "training"):
+        """
+        Calculate the memory each phase needs on top of the training state:
+            every phase: VERL_RUNTIME_OVERHEAD_BYTES (CUDA contexts, NCCL, allocator slack)
+            rollout:     vLLM's reservation, gpu_memory_utilization x gpu_memory
+            training:    with num_gpus > 1, FSDP gathering one decoder block and prefetching the next (bf16)
+            weight sync: vLLM's bf16 weights + the params gathered for the sync: the full fp32
+                         model on the first sync with load_format=dummy and num_gpus > 1, one
+                         bucket at a time for full GRPO, otherwise just the LoRA params
+        """
+        if phase == "rollout":
+            return self.gpu_memory_utilization * self.gpu_memory + VERL_RUNTIME_OVERHEAD_BYTES
+        if phase == "training":
+            gather = 0
+            if self.num_gpus > 1:
+                gather = 2 * FLOAT16_BYTES_N * self._cached_or_computed('max_block_params', self._calc_max_block_params)
+            return gather + VERL_RUNTIME_OVERHEAD_BYTES
+        if not self.lora_r:
+            synced = VERL_SYNC_BUCKET_BYTES
+        elif self.load_format == "dummy" and self.num_gpus > 1:
+            synced = self.num_params * FLOAT32_BYTES_N
+        else:
+            synced = self.lora_params * FLOAT32_BYTES_N
+        vllm_weights = self.num_params * FLOAT16_BYTES_N / self.tensor_parallel_size
+        return vllm_weights + synced + VERL_RUNTIME_OVERHEAD_BYTES
+
+
+    @override
+    def _calc_subtotal(self):
+        """
+        Calculate the busiest phase's memory before applying overhead. The model params and
+        optimizer states stay on the GPU throughout; the gradients, activations and outputs
+        only exist while training, and vLLM's reservation only while it is awake.
+        """
+        par, opt = self._calc_model_params(), self._calc_optimizer()
+        self.phases = {
+            "rollout": (par, opt, 0, 0, 0, self._calc_additional("rollout")),
+            "training": (par, opt, self._calc_gradients(), self._calc_intermediate_activations(),
+                         self._calc_outputs(), self._calc_additional("training")),
+            "weight sync": (par, opt, 0, 0, 0, self._calc_additional("weight sync")),
+        }
+        self.peak_phase = max(self.phases, key=lambda name: sum(self.phases[name]))
+        components = self.phases[self.peak_phase]
+        return (sum(components), *components)
+
+
+    @override
+    def _print_results(self, results, overhead, gpu_vram_par, gpu_vram_opt,
+                        gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional):
+        print("verl alternates between phases. Per GPU, before overhead:")
+        for name, components in self.phases.items():
+            print("  " + name + ": " + ROUNDER(sum(components)) + " GB")
+        print("The estimate below is for the " + self.peak_phase + " phase.\n")
+        super()._print_results(results, overhead, gpu_vram_par, gpu_vram_opt,
+                        gpu_vram_grad, gpu_vram_act, gpu_vram_outputs, gpu_vram_additional)
+
+
 def estimate(
         training_method: str = "sft",
         num_gpus: int = 8,
@@ -1336,6 +1547,9 @@ def estimate(
         enable_model_splitting: bool = False,
         target_modules: list[str] | None = None,
         fused_loss: bool | None = None,
+        gpu_memory_utilization: float = 0.45,
+        load_format: str = "dummy",
+        tensor_parallel_size: int = 1,
     ):
     """
     Convenience function for performing estimation
@@ -1380,6 +1594,16 @@ def estimate(
                                     None (default) means every linear layer in the text decoder.
         fused_loss (bool | None): lora/qlora only. Whether the loss fuses away the logits.
                                     None (default) decides from the model type (see MATERIALIZES_LOGITS).
+        gpu_memory_utilization (float): lora_grpo/grpo only. vLLM's share of each GPU (default 0.45,
+                                    lora_grpo's default). vLLM reserves this share of gpu_memory, so
+                                    pass the GPU's real total (nvidia-smi memory.total).
+        load_format (str): lora_grpo/grpo only. verl's rollout.load_format (default "dummy").
+        tensor_parallel_size (int): lora_grpo/grpo only. vLLM's tensor parallel size (default 1).
+
+    For lora_grpo/grpo (verl backend, see GRPOEstimator), num_gpus is n_gpus,
+    max_seq_len is the longest prompt + response (verl trains one sequence per GPU per
+    micro-batch), lora_r is the LoRA rank (grpo always uses 0, full GRPO) and the result is
+    per GPU: the busiest of verl's rollout, training and weight-sync phases.
 
     Return:
         A tuple containing three values:
@@ -1388,7 +1612,18 @@ def estimate(
             upper_bound (int): The upper bound of the memory usage (in bytes)
     """
     
-    if training_method.lower() == "osft":
+    if training_method.lower() in ("lora_grpo", "grpo"):
+        estimator = GRPOEstimator(num_gpus=num_gpus,
+                                    gpu_memory=gpu_memory,
+                                    model_path=model_path,
+                                    max_seq_len=max_seq_len,
+                                    lora_r=0 if training_method.lower() == "grpo" else lora_r,
+                                    gpu_memory_utilization=gpu_memory_utilization,
+                                    load_format=load_format,
+                                    tensor_parallel_size=tensor_parallel_size,
+                                    verbose=verbose,
+                                    trust_remote_code=trust_remote_code)
+    elif training_method.lower() == "osft":
         if use_liger is None:
             use_liger = True
         estimator = OSFTEstimator(num_gpus=num_gpus,

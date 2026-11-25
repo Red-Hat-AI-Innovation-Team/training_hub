@@ -7,6 +7,7 @@ import numpy as np
 from datetime import timedelta
 
 from training_hub import sft, osft, lora_sft
+from training_hub.profiling.memory_estimator import GRPOEstimator
 
 """
 Code assisted by Cursor/Claude4
@@ -412,3 +413,120 @@ def time_estimate_from_file(file_path: str, method: str, sample_frac: float=0.05
     low_time, high_time = estimator.estimate_from_file(file_path=file_path, method=method, num_epochs=num_epochs)
 
     return low_time, high_time
+
+
+# --- lora_grpo / grpo (verl backend) GPU-hours ------------------------------------------
+# Fitted on 5 verl 0.9.1 runs of Qwen/Qwen3-4B on 1 x H100 80GB (lora_r 16-128,
+# prompt_batch_size=100, group_size=8, max_tokens=512, mean prompt 2536 tokens): s/step and
+# GPU-hours within -13% to +21%. Two runs with identical settings except the learning rate
+# differ by 38%, so that's the noise floor of the data.
+
+# GPU-seconds per token (prompt + response, padding excluded, as verl's perf/throughput counts
+# them) for each model parameter and for each LoRA parameter (lora_weight_size x lora_r).
+# Least-squares fit of s/step / tokens per step over the 5 Qwen3-4B runs. The LoRA term is
+# what makes r=128 1.4x slower per token than r=16, although its FLOPs are tiny.
+GRPO_SECONDS_PER_TOKEN_PER_PARAM: float = 1.449e-13
+GRPO_SECONDS_PER_TOKEN_PER_LORA_PARAM: float = 1.147e-12
+
+# Spread of measured / predicted step time over the 5 runs (0.87-1.21), widened slightly.
+GRPO_TIME_LOW_MULTIPLIER: float = 0.85
+GRPO_TIME_HIGH_MULTIPLIER: float = 1.25
+
+# Mean response length as a share of max_tokens when it isn't given: 211-295 of 512 tokens
+# in the 5 runs (responses get shorter as training goes on).
+DEFAULT_RESPONSE_SHARE: float = 0.5
+
+
+def estimate_grpo_cost(
+        model_path: str,
+        mean_prompt_tokens: float,
+        mean_response_tokens: float | None = None,
+        max_tokens: int = 512,
+        num_steps: int | None = None,
+        num_prompts: int | None = None,
+        num_iterations: int = 15,
+        prompt_batch_size: int = 100,
+        group_size: int = 8,
+        n_gpus: int = 1,
+        lora_r: int = 16,
+        gpu_hour_price: float | None = None,
+        verbose: int = 1,
+        trust_remote_code: bool = False,
+    ) -> dict:
+    """
+    Estimate the GPU time (and optionally the price) of a lora_grpo / grpo run on verl.
+
+    GPU-seconds per step = tokens per step x (GRPO_SECONDS_PER_TOKEN_PER_PARAM x params +
+    GRPO_SECONDS_PER_TOKEN_PER_LORA_PARAM x LoRA params), where tokens per step =
+    prompt_batch_size x group_size x (mean prompt + mean response tokens). Fitted on Qwen3-4B
+    on 1 x H100 (see the constants above). The time is assumed to scale with the model size
+    and to divide evenly across GPUs; neither has been measured yet.
+
+    Args:
+        model_path (str): HuggingFace model path
+        mean_prompt_tokens (float): Mean prompt length in tokens (chat template included)
+        mean_response_tokens (float | None): Mean response length. None means
+                        DEFAULT_RESPONSE_SHARE x max_tokens.
+        max_tokens (int): lora_grpo's max_tokens (max response length)
+        num_steps (int | None): Training steps. If None, it is worked out from num_prompts.
+        num_prompts (int | None): Prompts left after verl's length filter. verl drops the last
+                        partial batch, so steps = num_iterations x (num_prompts // prompt_batch_size).
+        num_iterations (int): Epochs (lora_grpo's num_iterations)
+        prompt_batch_size (int): Prompts per step
+        group_size (int): Rollouts per prompt
+        n_gpus (int): GPUs used
+        lora_r (int): LoRA rank, 0 for full GRPO
+        gpu_hour_price (float | None): Price of one GPU-hour, to also return the cost
+        verbose (int): 0 for no printing, 1 to print a summary
+        trust_remote_code (bool): Whether to allow custom model code from the Hub
+
+    Returns:
+        dict: num_steps, rollouts, tokens_per_step, seconds_per_step, tokens_per_second_per_gpu,
+              gpu_hours and wall_hours (each low / expected / high), and cost if gpu_hour_price is set
+    """
+    if num_steps is None:
+        if num_prompts is None:
+            raise ValueError("Either num_steps or num_prompts must be provided")
+        num_steps = num_iterations * (num_prompts // prompt_batch_size)
+    if num_steps <= 0:
+        raise ValueError("The run has no steps: num_prompts must be at least prompt_batch_size")
+    if mean_response_tokens is None:
+        mean_response_tokens = DEFAULT_RESPONSE_SHARE * max_tokens
+    if not lora_r:
+        warnings.warn("Full GRPO (lora_r=0) time is extrapolated from LoRA runs; no full GRPO run has been measured.",
+                      stacklevel=2)
+
+    sizes = GRPOEstimator(num_gpus=n_gpus, model_path=model_path, max_seq_len=1, lora_r=lora_r,
+                          verbose=0, trust_remote_code=trust_remote_code)
+    seconds_per_token = (GRPO_SECONDS_PER_TOKEN_PER_PARAM * sizes.num_params
+                         + GRPO_SECONDS_PER_TOKEN_PER_LORA_PARAM * sizes.lora_params)
+    rollouts_per_step = prompt_batch_size * group_size
+    tokens_per_step = rollouts_per_step * (mean_prompt_tokens + mean_response_tokens)
+    gpu_seconds = tokens_per_step * seconds_per_token
+    bands = (GRPO_TIME_LOW_MULTIPLIER, 1.0, GRPO_TIME_HIGH_MULTIPLIER)
+
+    def triple(value: float) -> tuple[float, float, float]:
+        return tuple(value * band for band in bands)
+
+    seconds_per_step = triple(gpu_seconds / n_gpus)
+    gpu_hours = triple(gpu_seconds * num_steps / 3600)
+    result = {
+        "num_steps": num_steps,
+        "rollouts": num_steps * rollouts_per_step,
+        "tokens_per_step": tokens_per_step,
+        "seconds_per_step": seconds_per_step,
+        "tokens_per_second_per_gpu": tuple(1 / (seconds_per_token * band) for band in bands),
+        "gpu_hours": gpu_hours,
+        "wall_hours": tuple(hours / n_gpus for hours in gpu_hours),
+    }
+    if gpu_hour_price is not None:
+        result["cost"] = tuple(hours * gpu_hour_price for hours in gpu_hours)
+
+    if verbose > 0:
+        low, mid, high = gpu_hours
+        print(f"{model_path}: {num_steps} steps x {rollouts_per_step} rollouts, "
+              f"~{mid:.1f} GPU-hours ({low:.1f} - {high:.1f}) on {n_gpus} GPU(s), "
+              f"~{seconds_per_step[1]:.0f} s/step")
+        if gpu_hour_price is not None:
+            print(f"Cost: ~{result['cost'][1]:.2f} ({result['cost'][0]:.2f} - {result['cost'][2]:.2f})")
+    return result
