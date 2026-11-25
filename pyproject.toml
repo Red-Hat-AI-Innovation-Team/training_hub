@@ -80,7 +80,7 @@ grpo = [
 
 grpo-verl = [
     "training_hub[grpo]",
-    "verl>=0.7",
+    "verl>=0.9.0",  # save_lora_only + the model-merger internals _export_verl_lora_adapter uses
 ]
 
 gepa = [
